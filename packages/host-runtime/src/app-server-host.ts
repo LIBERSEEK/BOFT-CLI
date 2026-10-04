@@ -4086,11 +4086,9 @@ export class AppServerHost {
             },
           }),
         );
-        await this.#writer.json({
-          method: "thread/started",
-          emittedAtMs: Date.now(),
-          params: { thread },
-        });
+        // A prewarmed draft without a native identity cannot be restored after
+        // release. Publish it only once the Harness commits that identity.
+        if (record.state === "ready") await this.#notifyExternalThreadStarted(thread);
       } catch {
         this.#externalRuntime.remove(record.hostThreadId);
         this.#routeObservationTracker.forgetThread(record.hostThreadId);
@@ -5010,6 +5008,7 @@ export class AppServerHost {
         if (event.state.nativeRef) {
           if (!thread.record.nativeSessionRef) {
             thread.record = await this.#repository.commitNative(thread.id, event.state.nativeRef);
+            await this.#notifyExternalThreadStarted(thread.thread);
           } else if (
             thread.record.nativeSessionRef.harnessId !== event.state.nativeRef.harnessId ||
             thread.record.nativeSessionRef.nativeSessionId !== event.state.nativeRef.nativeSessionId

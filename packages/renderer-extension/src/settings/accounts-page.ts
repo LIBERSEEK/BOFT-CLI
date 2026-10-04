@@ -108,6 +108,26 @@ export function createAccountsSettingsPage(
       refreshUsage.title = messages.accountCreditsRefresh;
       refreshUsage.setAttribute("aria-label", messages.accountCreditsRefresh);
       refreshUsage.append(createRendererSettingsIcon("refresh", 16));
+      let hideEmails = false;
+      const privacyToggle = document.createElement("button");
+      privacyToggle.type = "button";
+      privacyToggle.className = "settings-icon-button settings-account-privacy-toggle";
+      const updatePrivacyToggle = (): void => {
+        const label = hideEmails ? messages.accountEmailsShow : messages.accountEmailsHide;
+        privacyToggle.title = label;
+        privacyToggle.setAttribute("aria-label", label);
+        privacyToggle.setAttribute("aria-pressed", String(hideEmails));
+        privacyToggle.replaceChildren(
+          createRendererSettingsIcon(hideEmails ? "eye-off" : "eye", 16),
+        );
+      };
+      updatePrivacyToggle();
+      privacyToggle.addEventListener("click", () => {
+        hideEmails = !hideEmails;
+        updatePrivacyToggle();
+        credentialImports.setHideEmails(hideEmails);
+        render();
+      });
       refreshUsage.addEventListener("click", () => {
         usageByAccountId.clear();
         loadUsage(accounts);
@@ -115,7 +135,7 @@ export function createAccountsSettingsPage(
         void credentialImports.refresh();
       });
       search.addEventListener("input", () => render());
-      toolbar.append(connected, searchWrapper, displayControls, refreshUsage);
+      toolbar.append(connected, privacyToggle, searchWrapper, displayControls, refreshUsage);
       const groups = document.createElement("div");
       groups.className = "settings-account-groups";
       const apiGroup = createAccountsGroup(document, messages, "api");
@@ -222,6 +242,7 @@ export function createAccountsSettingsPage(
                     if (open) expandedResetAccounts.add(account.accountId);
                     else expandedResetAccounts.delete(account.accountId);
                   },
+                  hideEmails,
                 }),
               );
             }
@@ -247,6 +268,7 @@ export function createAccountsSettingsPage(
                     if (open) expandedResetAccounts.add(account.accountId);
                     else expandedResetAccounts.delete(account.accountId);
                   },
+                  hideEmails,
                 }),
               );
             }
@@ -261,6 +283,7 @@ export function createAccountsSettingsPage(
                     account.harnessId,
                     account.email ?? account.label ?? account.harnessName,
                   ),
+                  hideEmails,
                 ),
               );
             }

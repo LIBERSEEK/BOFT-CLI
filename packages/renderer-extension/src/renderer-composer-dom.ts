@@ -45,6 +45,7 @@ import {
 } from "./renderer-usage-control.js";
 import type { RendererSettingsLocale } from "./settings/localization.js";
 import type { RendererAdapterStatus } from "./versioned-renderer-adapter.js";
+import { isOrbitComposer } from "./renderer-composer-kind.js";
 import {
   mountRendererHarnessCommandControl,
   type RendererHarnessCommandControl,
@@ -228,11 +229,12 @@ export function isComposerSubmissionKey(event: KeyboardEvent): boolean {
 }
 
 export function composerForEditor(editor: Element): Element | null {
-  return editor.closest(CODEX_COMPOSER_SELECTOR);
+  return composerForElement(editor);
 }
 
 export function composerForElement(element: Element): Element | null {
-  return element.closest(CODEX_COMPOSER_SELECTOR);
+  const composer = element.closest(CODEX_COMPOSER_SELECTOR);
+  return composer && !isOrbitComposer(composer) ? composer : null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

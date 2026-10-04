@@ -19,6 +19,7 @@ import {
   type AccountUsageViewState,
 } from "./accounts-usage.js";
 import { createRendererSettingsIcon } from "./icons.js";
+import { accountDisplayText } from "./account-privacy.js";
 import type { RendererSettingsMessages } from "./localization.js";
 
 let resetDetailsSequence = 0;
@@ -107,7 +108,7 @@ export function createAccountsTable(
         : [
             messages.accountColumnAccount,
             accountUsageColumnLabel(display, messages),
-            messages.credentialImports.column,
+            messages.accountColumnActions,
           ];
     headers.forEach((cell, index) => {
       cell.textContent = labels[index] ?? "";
@@ -272,6 +273,7 @@ export function renderAccountRows(
     importAction?: HTMLElement | null;
     onOpenSite?: (url: string) => void;
     onResetExpanded: (open: boolean) => void;
+    hideEmails?: boolean;
   },
 ): HTMLTableRowElement[] {
   const row = document.createElement("tr");
@@ -282,7 +284,10 @@ export function renderAccountRows(
   const name = codexAccountDisplayName(account);
   const authKind = codexAccountAuthKind(account);
   const authLabel = formatCodexAccountAuthLabel(account, messages);
-  const titleName = authKind === "api" ? authLabel : name.full;
+  const titleName = accountDisplayText(
+    authKind === "api" ? authLabel : name.full,
+    input.hideEmails === true,
+  );
   row.setAttribute("aria-label", titleName);
   const personCell = document.createElement("td");
   personCell.className = "settings-account-person-cell";
@@ -370,12 +375,13 @@ export function renderHarnessAccountRows(
   messages: RendererSettingsMessages,
   display: AccountUsageDisplay,
   importAction?: HTMLElement | null,
+  hideEmails = false,
 ): HTMLTableRowElement[] {
   const row = document.createElement("tr");
   row.className = "settings-account-row";
   row.dataset.harnessId = account.harnessId;
   row.tabIndex = -1;
-  const name = account.email ?? account.label ?? account.harnessName;
+  const name = accountDisplayText(account.email ?? account.label ?? account.harnessName, hideEmails);
   row.setAttribute("aria-label", name);
   const personCell = document.createElement("td");
   personCell.className = "settings-account-person-cell";

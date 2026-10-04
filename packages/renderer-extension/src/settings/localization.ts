@@ -135,6 +135,8 @@ export interface RendererSettingsMessages {
   readonly accountCreditsFailed: string;
   readonly accountCreditsRetry: string;
   readonly accountCreditsRefresh: string;
+  readonly accountEmailsHide: string;
+  readonly accountEmailsShow: string;
   readonly accountLoadFailed: string;
   readonly accountAuthApiPrefix: string;
   readonly accountAuthChatPrefix: string;
@@ -431,6 +433,8 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   accountCreditsFailed: "Could not load limits",
   accountCreditsRetry: "Retry",
   accountCreditsRefresh: "Refresh limits",
+  accountEmailsHide: "Hide emails",
+  accountEmailsShow: "Show emails",
   accountLoadFailed: "Could not load Codex Accounts.",
   accountAuthApiPrefix: "API",
   accountAuthChatPrefix: "Account",
@@ -767,6 +771,8 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   accountCreditsFailed: "额度读取失败",
   accountCreditsRetry: "重试",
   accountCreditsRefresh: "刷新额度",
+  accountEmailsHide: "隐藏邮箱",
+  accountEmailsShow: "显示邮箱",
   accountLoadFailed: "无法加载 Codex 账号。",
   accountAuthApiPrefix: "API",
   accountAuthChatPrefix: "账号",

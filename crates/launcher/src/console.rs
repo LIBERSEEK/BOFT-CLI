@@ -69,6 +69,8 @@ fn node_command(command: &ConsoleCommand) -> Result<Command, Box<dyn Error>> {
     let launcher = env::current_exe()?.canonicalize()?;
     let mut process = Command::new(&command.node);
     process
+        // Suppress only Node's experimental proxy warning; preserve other diagnostics.
+        .arg("--disable-warning=UNDICI-EHPA")
         .arg(node_entrypoint_path(&command.console_server))
         .env(LAUNCHER_EXECUTABLE_ENV, &launcher)
         .stdin(Stdio::null());
@@ -372,7 +374,7 @@ mod tests {
         std::fs::write(
             &node,
             format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$2\" >> '{}'\nif [ \"$2\" = ensure ]; then echo 'codexhost console: http://127.0.0.1:26339/'; fi\n",
+                "#!/bin/sh\nprintf '%s\\n' \"$3\" >> '{}'\nif [ \"$3\" = ensure ]; then echo 'codexhost console: http://127.0.0.1:26339/'; fi\n",
                 calls.display()
             ),
         )
