@@ -14,7 +14,7 @@ export interface ClaudeSessionImportDependencies {
   getSessionInfo(input: { sessionId: string }): Promise<ClaudeSessionMetadata | undefined>;
   isRunning(nativeSessionId: string): boolean;
   listSessions(): Promise<readonly ClaudeSessionMetadata[]>;
-  readSessionMessages(input: { cwd: string; sessionId: string }): Promise<unknown[]>;
+  readSessionMessages(input: { cwd: string; sessionId: string }): Promise<unknown[] | null>;
 }
 
 function titleFromMetadata(metadata: ClaudeSessionMetadata): string | null {
@@ -147,6 +147,13 @@ export class ClaudeSessionImportIndex {
           sessionId: nativeSessionId,
         });
         signal.throwIfAborted();
+        if (messages === null) return sourceFromMetadata(
+          metadata,
+          this.#dependencies.isRunning,
+          signal,
+          new Map(),
+          preferredCwds,
+        );
         for (let index = messages.length - 1; index >= 0; index -= 1) {
           const message = messages[index];
           if (

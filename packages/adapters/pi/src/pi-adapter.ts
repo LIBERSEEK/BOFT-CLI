@@ -1,3 +1,4 @@
+import { createPiUsageStatistics } from "./pi-usage-statistics.js";
 import { fetchPiAccounts } from "./account-balance.js";
 import { createPiCredentialImports } from "./pi-credential-imports.js";
 import { PI_FAST_COMMAND, piFastModelKeys, withPiFast } from "./pi-fast-mode.js";
@@ -48,6 +49,7 @@ import {
   type PermissionModeSelectCompleted,
   type HostThreadSnapshot,
   type HostUsage,
+  type HostUsageRequest,
   type ThinkingSelectCommand,
   type ThinkingSelectCompleted,
   type TurnCancelAccepted,
@@ -114,6 +116,7 @@ import {
   type PiNativeModel,
   type PiNativeModelRef,
 } from "./pi-model-catalog.js";
+import { piUsageHistory, piUsageRecord, type PiUsageObservation } from "./pi-usage.js";
 import {
   piDynamicCommandPrompt,
   piLiveCommandCatalog,
@@ -135,6 +138,8 @@ export interface PiTurnTransport {
   setSubagentStatusHandler?(handler: (runs: PiSubagentNode[]) => void): void;
   inspectSubagent?(id: string): Promise<PiSubagentInspection>;
   setAutonomousTurnHandler(handler: (turn: PiAutonomousTurn) => void): void;
+  /** Finished assistant messages, for Host usage metering; absent on transports without it. */
+  setUsageHandler?(handler: (observation: PiUsageObservation) => void): void;
   start(): Promise<unknown>;
   getAvailableModels(): Promise<PiNativeModel[]>;
   getAvailableThinkingLevels(): Promise<HarnessThinkingOptionId[] | null>;
@@ -622,6 +627,7 @@ class PiHarnessSession implements HarnessSession {
       startedTransport?: PiTurnTransport;
       startedThinkingLevels?: HarnessThinkingOptionId[] | null;
       initialUsage?: HostUsage | null;
+      usageHistory?: { requests: HostUsageRequest[]; complete: boolean };
     },
   ) {
     this.#cwd = cwd;
@@ -655,6 +661,14 @@ class PiHarnessSession implements HarnessSession {
     this.#usage = this.initialUsage;
     this.#state = this.initialState;
     this.outputs = this.#channel.outputs;
+    // A created Session has no native history yet; an opened one replays it for Host metering.
+    const usageHistory =
+      options.usageHistory ??
+      (options.startedTransport
+        ? { requests: [], complete: false }
+        : { requests: [], complete: true });
+    for (const request of usageHistory.requests) this.#event({ type: "usage.request", request });
+    this.#event({ type: "usage.history", complete: usageHistory.complete });
     if (this.#transport) this.#bindAutonomousTurnHandler(this.#transport);
   }
 
@@ -1338,6 +1352,13 @@ class PiHarnessSession implements HarnessSession {
       if (this.#phase !== "open") return;
       if (this.#transport !== transport) this.#pendingSubagentStatus = runs;
       else this.#subagents.observe(runs);
+    });
+    transport.setUsageHandler?.((observation) => {
+      if (this.#phase !== "open") return;
+      const record = piUsageRecord(observation.message, observation);
+      if (record?.kind === "request")
+        this.#event({ type: "usage.request", request: record.request });
+      else if (record?.kind === "missing") this.#event({ type: "usage.history", complete: false });
     });
     transport.setAutonomousTurnHandler((turn) => {
       if (this.#phase !== "open") return;
@@ -2078,6 +2099,7 @@ export class PiAdapter implements HarnessAdapter {
       }
     },
   };
+  readonly usageStatistics: ReturnType<typeof createPiUsageStatistics>;
   readonly sessionImport = Object.freeze({
     listCandidates: async () => {
       const result = await this.#importScope.read((signal) => this.#importIndex.list(signal));
@@ -2128,6 +2150,7 @@ export class PiAdapter implements HarnessAdapter {
     this.#createTransport = dependencies.createTransport;
     this.#environment = options.environment ?? process.env;
     this.#importIndex = new PiSessionImportIndex({ ...process.env, ...options.environment });
+    this.usageStatistics = createPiUsageStatistics({ ...process.env, ...options.environment });
     this.#closeTimeoutMs = options.closeTimeoutMs ?? 2_000;
     this.#toolOutputLimit = options.toolOutputLimit ?? DEFAULT_TOOL_OUTPUT_LIMIT;
   }
@@ -2470,7 +2493,12 @@ export class PiAdapter implements HarnessAdapter {
       const startedThinkingLevels = await transport.getAvailableThinkingLevels();
       this.#thinkingSelectionSupported = startedThinkingLevels !== null;
       const initialUsage = await transport.getSessionUsage().catch(() => null);
+      const usageHistory = await transport
+        .getEntries()
+        .then(piUsageHistory)
+        .catch(() => ({ requests: [], complete: false }));
       session = this.#trackSession(input.cwd, {
+        usageHistory,
         ...(input.environment ? { environment: input.environment } : {}),
         startedTransport: transport,
         startedThinkingLevels,
@@ -2502,6 +2530,7 @@ export class PiAdapter implements HarnessAdapter {
       startedTransport?: PiTurnTransport;
       startedThinkingLevels?: HarnessThinkingOptionId[] | null;
       initialUsage?: HostUsage | null;
+      usageHistory?: { requests: HostUsageRequest[]; complete: boolean };
     },
   ): PiHarnessSession {
     const environment = options.environment;
@@ -2536,6 +2565,7 @@ export class PiAdapter implements HarnessAdapter {
           ? { startedThinkingLevels: options.startedThinkingLevels }
           : {}),
         ...(options.initialUsage !== undefined ? { initialUsage: options.initialUsage } : {}),
+        ...(options.usageHistory ? { usageHistory: options.usageHistory } : {}),
       },
     );
     this.#sessions.add(session);

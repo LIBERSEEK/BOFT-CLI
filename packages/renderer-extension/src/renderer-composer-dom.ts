@@ -8,6 +8,7 @@ import { catalogModelForRef } from "@codexhost/shared-contracts";
 import type {
   AccountCreditsSnapshot,
   CodexAccountSummary,
+  HarnessPluginDescriptor,
   ThreadUsageSnapshot,
 } from "@codexhost/shared-contracts";
 import {
@@ -85,6 +86,7 @@ export interface ComposerAgentControl {
   composer: Element;
   root: HTMLElement;
   picker: RendererAgentPickerControl;
+  setPlugins(plugins: readonly HarnessPluginDescriptor[]): void;
   modelPicker: RendererModelPickerControl;
   permissionModePicker: RendererPermissionModePickerControl;
   nativeModelControl: NativeModelControlState | null;
@@ -760,6 +762,34 @@ export function mountComposerAgentControl(
     composerId,
     root: picker.root,
     picker,
+    setPlugins(plugins: readonly HarnessPluginDescriptor[]) {
+      // Rendering can produce a new array (and remote presentation objects)
+      // without changing the catalog. Replacing the picker closes its popover.
+      const current = control.picker.plugins;
+      if (
+        current === plugins ||
+        (current.length === plugins.length &&
+          current.every(
+            (plugin, index) =>
+              plugin === plugins[index] ||
+              JSON.stringify(plugin) === JSON.stringify(plugins[index]),
+          ))
+      ) {
+        return;
+      }
+      const next = mountRendererAgentPicker(
+        composerId,
+        ["codex", ...plugins.map(({ id }) => id)],
+        onSelect,
+        onOpenProviderPicker,
+        undefined,
+        plugins,
+      );
+      control.picker.root.replaceWith(next.root);
+      control.picker.dispose();
+      control.picker = next;
+      control.root = next.root;
+    },
     modelPicker,
     permissionModePicker,
     nativeModelControl,

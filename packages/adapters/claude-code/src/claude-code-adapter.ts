@@ -1,3 +1,5 @@
+import { claudeUsageHistory, type ClaudeUsageRecord } from "./claude-usage.js";
+import { createClaudeUsageStatistics } from "./claude-usage-statistics.js";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 
@@ -11,6 +13,7 @@ import {
 import {
   HarnessOutputChannel,
   parseHostUsage,
+  sanitizeDiagnosticTail,
   validateHostApprovalResponse,
   validateHostQuestionResponse,
   type HarnessAdapter,
@@ -36,6 +39,7 @@ import {
   type HostQuestionInteraction,
   type HostReasoningItem,
   type HostUsage,
+  type HostUsageRequest,
   type InspectHarnessInput,
   type InteractionRespondAccepted,
   type InteractionRespondCommand,
@@ -116,7 +120,6 @@ import { estimateClaudeRequestCostUsd } from "./usage-estimate.js";
 import type {
   ClaudeAdapterDependencies,
   ClaudeApprovalRequest,
-  ClaudeAutonomousTurn,
   ClaudeInteractionRequest,
   ClaudeInteractionResponse,
   ClaudeLastRequestUsage,
@@ -459,9 +462,10 @@ function claudePermissionModeSelectionFailure(
       };
     }
   }
+  const detail = sanitizeDiagnosticTail(error instanceof Error ? error.message : String(error));
   return {
     code: "nativeFailure",
-    message: "Claude Code rejected the Permission Mode selection",
+    message: `Claude Code rejected the Permission Mode selection${detail ? `: ${detail}` : ""}`,
     retryable: true,
   };
 }
@@ -618,12 +622,8 @@ class ClaudeHarnessSession implements HarnessSession {
   #contextUsageCooldownUntilMs = 0;
   #requestUsageBoundary = 0;
   #autonomousOrdinal = 0;
-  /**
-   * Wall-clock observation time of the native message currently being replayed
-   * from a buffered autonomous Turn; null during live delivery. Read by the Item
-   * lifecycle to stamp replayed reasoning/agentMessage durations.
-   */
-  #replayObservedAtMs: number | null = null;
+  /** The Host Turn that receives the native Segment Claude started on its own. */
+  #autonomousTarget: ActiveTurn | null = null;
   #occupancy = new ClaudeBackgroundOccupancy();
   #cancelEscalation: ReturnType<typeof setTimeout> | null = null;
   #continuationQuiescence: ReturnType<typeof setTimeout> | null = null;
@@ -649,6 +649,8 @@ class ClaudeHarnessSession implements HarnessSession {
       toolOutputLimit: number;
       cancelTimeoutMs: number;
       continuationQuiescenceMs: number;
+      /** Native requests already in the transcript, replayed for Host usage metering. */
+      usageHistory: { requests: HostUsageRequest[]; complete: boolean };
     },
   ) {
     this.#cwd = cwd;
@@ -703,6 +705,10 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#state = this.initialState;
     this.#statePublished = durable;
     this.outputs = this.#channel.outputs;
+    for (const request of options.usageHistory.requests) {
+      this.#event({ type: "usage.request", request });
+    }
+    this.#event({ type: "usage.history", complete: options.usageHistory.complete });
   }
 
   get nativeWriterRef(): NativeSessionRef {
@@ -732,10 +738,11 @@ class ClaudeHarnessSession implements HarnessSession {
         // Native result frames can arrive before the transcript batch is written.
         const deadline = Date.now() + this.#closeTimeoutMs;
         for (;;) {
-          messages = await this.#readSessionMessages({
-            cwd: this.#cwd,
-            sessionId: this.#sessionId,
-          });
+          messages =
+            (await this.#readSessionMessages({
+              cwd: this.#cwd,
+              sessionId: this.#sessionId,
+            })) ?? [];
           const ids = new Set(
             messages.flatMap((message) =>
               isRecord(message) && typeof message.uuid === "string" ? [message.uuid] : [],
@@ -888,6 +895,17 @@ class ClaudeHarnessSession implements HarnessSession {
     if (this.#phase !== "open") {
       return { ok: false, error: invalidState("Claude Code Session closed during startup") };
     }
+    // Native Root output can start an autonomous Turn while transport admission yields.
+    if (this.#active) {
+      return {
+        ok: false,
+        error: {
+          code: "sessionBusy",
+          message: "Claude Code Session already has an active Turn",
+          retryable: true,
+        },
+      };
+    }
     if (startingTransport) this.#publishState();
     this.#usageGeneration += 1;
     this.#contextUsageFreshUntilMs = 0;
@@ -1020,6 +1038,17 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#acceptingTurn = false;
     if (this.#phase !== "open") {
       return { ok: false, error: invalidState("Claude Code Session closed during startup") };
+    }
+    // Commands must not replace a continuation that began during transport admission.
+    if (this.#active) {
+      return {
+        ok: false,
+        error: {
+          code: "sessionBusy",
+          message: "Claude Code Session already has an active operation",
+          retryable: true,
+        },
+      };
     }
     if (startingTransport) this.#publishState();
     this.#usageGeneration += 1;
@@ -1604,21 +1633,24 @@ class ClaudeHarnessSession implements HarnessSession {
         onPlanLimit: (planLimit) => this.#handlePlanLimit(planLimit),
       });
       this.#transport = transport;
-      transport.setAutonomousTurnHandler((turn) => this.#handleAutonomousTurn(turn));
+      transport.setAutonomousTurnHandler({
+        start: (nativeTurnKey) => {
+          this.#autonomousTarget = this.#startAutonomousTurn(nativeTurnKey);
+        },
+        onEvent: (event) => this.#deliverLiveEvent(this.#autonomousTarget, event),
+        onTerminal: (result) => {
+          const target = this.#autonomousTarget;
+          this.#autonomousTarget = null;
+          if (target) this.#finishResult(target, result);
+        },
+      });
       transport.setThreadEventHandler((event) => {
         // Thread-level events (e.g. a background Subagent settling) are not
         // Turn-scoped and must not be gated on an active Turn.
         if (event.type === "subagent.settled") this.#settleNativeTask(event);
       });
       transport.setIdleTurnHandler({
-        onEvent: (event) => {
-          const active = this.#active;
-          if (active) {
-            this.#handleTurnEvent(active, event);
-            return;
-          }
-          if (event.type === "subagent.settled") this.#settleNativeTask(event);
-        },
+        onEvent: (event) => this.#deliverLiveEvent(this.#active, event),
         onTerminal: (result) => {
           const active = this.#active;
           if (active) this.#finishResult(active, result);
@@ -1698,6 +1730,11 @@ class ClaudeHarnessSession implements HarnessSession {
   }
 
   #handleTurnEvent(active: ActiveTurn, event: ClaudeTurnEvent): void {
+    // Usage belongs to the Session, so a request settling after its Turn ended still counts.
+    if (event.type === "usage.request") {
+      if (this.#phase !== "closed" && this.#phase !== "faulted") this.#meterUsage(event.record);
+      return;
+    }
     if (this.#active !== active || this.#phase === "closed" || this.#phase === "faulted") return;
     switch (event.type) {
       case "segment.started":
@@ -1839,6 +1876,12 @@ class ClaudeHarnessSession implements HarnessSession {
         this.#applyResultUsage(active, event);
         return;
     }
+  }
+
+  /** Publishes one live request to Host metering; an unusable one marks history incomplete. */
+  #meterUsage(record: ClaudeUsageRecord): void {
+    if (record.kind === "request") this.#event({ type: "usage.request", request: record.request });
+    else this.#event({ type: "usage.history", complete: false });
   }
 
   #startCompaction(active: ActiveTurn): void {
@@ -2007,8 +2050,8 @@ class ClaudeHarnessSession implements HarnessSession {
     if (this.#active !== active || delta.length === 0) return;
     this.#activateAssistantMessage(active, messageId);
     if (!active.item) throw new Error("Claude Assistant text has no active Item");
-    if (active.agentMessageStartedAtMs === null && this.#replayObservedAtMs !== null) {
-      active.agentMessageStartedAtMs = this.#replayObservedAtMs;
+    if (active.agentMessageStartedAtMs === null) {
+      active.agentMessageStartedAtMs = Date.now();
     }
     active.item = { ...active.item, text: active.item.text + delta };
     this.#event({
@@ -2024,7 +2067,7 @@ class ClaudeHarnessSession implements HarnessSession {
     const item = active.item;
     if (!item || (!completeEmpty && item.text.length === 0)) return;
     active.item = null;
-    const durationMs = this.#replayDurationMs(active.agentMessageStartedAtMs);
+    const durationMs = this.#itemDurationMs(active.agentMessageStartedAtMs);
     active.agentMessageStartedAtMs = null;
     this.#event({
       type: "item.completed",
@@ -2034,13 +2077,12 @@ class ClaudeHarnessSession implements HarnessSession {
   }
 
   /**
-   * Elapsed milliseconds for a replayed reasoning/agentMessage Item, measured
-   * between the observation of its first delta and the current replayed
-   * observation. Undefined for live delivery or when either endpoint is unknown.
+   * Elapsed time between the first live delta and native Item completion.
+   * Autonomous Segments now stream live, so they share the same clock as requested Turns.
    */
-  #replayDurationMs(startedAtMs: number | null): number | undefined {
-    if (startedAtMs === null || this.#replayObservedAtMs === null) return undefined;
-    const durationMs = this.#replayObservedAtMs - startedAtMs;
+  #itemDurationMs(startedAtMs: number | null): number | undefined {
+    if (startedAtMs === null) return undefined;
+    const durationMs = Date.now() - startedAtMs;
     return durationMs >= 0 ? durationMs : undefined;
   }
 
@@ -2055,9 +2097,7 @@ class ClaudeHarnessSession implements HarnessSession {
         text: "",
       };
       active.reasoningItems.set(messageId, item);
-      if (this.#replayObservedAtMs !== null) {
-        active.reasoningStartedAtMs.set(messageId, this.#replayObservedAtMs);
-      }
+      active.reasoningStartedAtMs.set(messageId, Date.now());
       this.#event({ type: "item.started", turnId: active.command.turnId, item });
     }
     item = { ...item, text: item.text + delta };
@@ -2074,7 +2114,7 @@ class ClaudeHarnessSession implements HarnessSession {
     const item = active.reasoningItems.get(messageId);
     if (!item) return;
     active.reasoningItems.delete(messageId);
-    const durationMs = this.#replayDurationMs(active.reasoningStartedAtMs.get(messageId) ?? null);
+    const durationMs = this.#itemDurationMs(active.reasoningStartedAtMs.get(messageId) ?? null);
     active.reasoningStartedAtMs.delete(messageId);
     this.#event({
       type: "item.completed",
@@ -2083,21 +2123,24 @@ class ClaudeHarnessSession implements HarnessSession {
     });
   }
 
-  #handleAutonomousTurn(turn: ClaudeAutonomousTurn): void {
-    if (this.#phase !== "open") return;
-    const held = this.#active;
-    if (held?.held) {
-      this.#continueHeldTurn(held, turn);
-      return;
-    }
-    if (this.#active) return;
+  /**
+   * Claude started Root output in a Segment no requested Turn owns. A held Turn continues with
+   * it; otherwise it becomes a live autonomous Turn, so the Thread shows it running and a new
+   * request waits instead of absorbing it.
+   */
+  #startAutonomousTurn(segmentKey: string): ActiveTurn | null {
+    if (this.#phase !== "open") return null;
+    const current = this.#active;
+    if (current?.held) return current;
+    // A requested Turn still owns the Session; never merge this Segment into it.
+    if (current) return null;
     this.#autonomousOrdinal += 1;
     const turnId = hostTurnIdSchema.parse(this.#randomUUID());
     let resolveCompletion = (): void => undefined;
     const completion = new Promise<void>((resolve) => {
       resolveCompletion = resolve;
     });
-    const nativeTurnKey = turn.nativeTurnKey || `autonomous-${this.#autonomousOrdinal}`;
+    const nativeTurnKey = segmentKey || `autonomous-${this.#autonomousOrdinal}`;
     const item: HostAgentMessageItem = {
       type: "agentMessage",
       itemId: claudeTranscriptItemId(nativeTurnKey, "agentMessage", 1),
@@ -2157,34 +2200,25 @@ class ClaudeHarnessSession implements HarnessSession {
       type: "turn.autonomous.started",
       turnId,
       input: [],
-      ...(turn.startedAtMs !== undefined ? { startedAtMs: turn.startedAtMs } : {}),
+      startedAtMs: Date.now(),
     });
     this.#event({ type: "turn.started", turnId });
     this.#event({ type: "item.started", turnId, item });
-    this.#replayAutonomousEvents(active, turn);
+    return active;
   }
 
-  #continueHeldTurn(active: ActiveTurn, turn: ClaudeAutonomousTurn): void {
-    this.#replayAutonomousEvents(active, turn);
-  }
-
-  /**
-   * Replays buffered autonomous events as though they were just observed. The
-   * replay clock is set per event so reasoning/agentMessage Items are stamped
-   * with native elapsed time instead of the near-zero replay interval, and the
-   * native terminal observation is recorded for the completed Turn.
-   */
-  #replayAutonomousEvents(active: ActiveTurn, turn: ClaudeAutonomousTurn): void {
-    if (turn.completedAtMs !== undefined) active.completedAtMs = turn.completedAtMs;
-    try {
-      for (const event of turn.events) {
-        this.#replayObservedAtMs = event.observedAtMs ?? null;
-        this.#handleTurnEvent(active, event);
-      }
-    } finally {
-      this.#replayObservedAtMs = null;
+  /** Live native events outside a requested Root Segment; settlements stay Thread-level. */
+  #deliverLiveEvent(target: ActiveTurn | null, event: ClaudeTurnEvent): void {
+    // Requests belong to Session usage even when no foreground Turn owns the event.
+    if (event.type === "usage.request") {
+      this.#meterUsage(event.record);
+      return;
     }
-    this.#finishResult(active, turn.result);
+    if (target && this.#active === target) {
+      this.#handleTurnEvent(target, event);
+      return;
+    }
+    if (event.type === "subagent.settled") this.#settleNativeTask(event);
   }
 
   /**
@@ -2364,7 +2398,7 @@ class ClaudeHarnessSession implements HarnessSession {
         ) {
           return;
         }
-        const usage = transcriptRequestUsage(messages, request.messageId);
+        const usage = transcriptRequestUsage(messages ?? [], request.messageId);
         if (!usage) continue;
         const active = this.#active;
         if (!active || active.command.turnId !== request.turnId) return;
@@ -2749,6 +2783,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
     resolveCandidate: (nativeSessionId: string) =>
       this.#importScope.resolve((signal) => this.#importIndex.resolve(nativeSessionId, signal)),
   } satisfies HarnessSessionImportCapability);
+  readonly usageStatistics: ReturnType<typeof createClaudeUsageStatistics>;
   readonly subagents = {
     readSnapshot: async (input: {
       parent: NativeSessionRef;
@@ -2783,7 +2818,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
             messages,
             input.parent.nativeSessionId,
             input.nativeSubagentId,
-            parentMessages,
+            parentMessages ?? [],
           ),
         };
       } catch {
@@ -2823,6 +2858,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   constructor(options: ClaudeCodeAdapterOptions = {}, dependencies?: ClaudeAdapterDependencies) {
     const environment = options.environment ?? process.env;
     this.#environment = environment;
+    this.usageStatistics = createClaudeUsageStatistics(environment);
     this.#pendingSessions = new ClaudePendingSessions(environment);
     this.#closeTimeoutMs = options.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
     this.#cancelTimeoutMs = options.cancelTimeoutMs ?? DEFAULT_CANCEL_TIMEOUT_MS;
@@ -2881,7 +2917,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
           environment: options.environment ?? process.env,
           sessionId,
         });
-        return transcript ?? [];
+        return transcript;
       },
       readSubagentMessages: async ({ cwd, sessionId, nativeSubagentId }) => {
         // Prefer the raw subagent transcript file (complete, in file order);
@@ -3194,7 +3230,10 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
             cwd,
             sessionId: durableRef.nativeSessionId,
           });
-          if (messages.length > 0 || (input.kind === "resume" && input.knownTurnRefs?.length))
+          if (
+            (messages?.length ?? 0) > 0 ||
+            (input.kind === "resume" && input.knownTurnRefs?.length)
+          )
             throw new Error("Pending Session unexpectedly contains history");
           openMode = "create";
         }
@@ -3225,6 +3264,12 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         };
       }
     }
+    const sessionId = forked?.ok
+      ? forked.value.sessionId
+      : nativeRef?.success
+        ? nativeRef.data.nativeSessionId
+        : this.#dependencies.randomUUID();
+    const usageHistory = await this.#readUsageHistory(cwd, sessionId, openMode);
     const session: ClaudeHarnessSession = new ClaudeHarnessSession(
       cwd,
       this.#dependencies,
@@ -3241,11 +3286,8 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
           (input.kind === "resume" && Boolean(input.model || input.thinkingOptionId)) ||
           Boolean(durableRef && isPendingClaudeSession(durableRef)),
         ...(durableRef ? { nativeRef: durableRef } : {}),
-        sessionId: forked?.ok
-          ? forked.value.sessionId
-          : nativeRef?.success
-            ? nativeRef.data.nativeSessionId
-            : this.#dependencies.randomUUID(),
+        sessionId,
+        usageHistory,
         ...(requestedModel ? { requestedModel } : {}),
         longContextEnabled: () => readClaudeLongContext(this.#environment),
         requestedPermissionModeId,
@@ -3257,6 +3299,24 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
     );
     this.#sessions.add(session);
     return { ok: true, value: session };
+  }
+
+  /**
+   * Every request already in the native transcript, for Host usage metering. A new Session has
+   * none; an unreadable transcript is an incomplete history rather than an empty one.
+   */
+  async #readUsageHistory(
+    cwd: string,
+    sessionId: string,
+    openMode: "create" | "resume",
+  ): Promise<{ requests: HostUsageRequest[]; complete: boolean }> {
+    if (openMode === "create") return { requests: [], complete: true };
+    try {
+      const messages = await this.#dependencies.readSessionMessages({ cwd, sessionId });
+      return messages === null ? { requests: [], complete: false } : claudeUsageHistory(messages);
+    } catch {
+      return { requests: [], complete: false };
+    }
   }
 
   /** Account-level plan windows are shared, but only stable native pushes may update them. */

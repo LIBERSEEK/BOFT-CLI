@@ -6,5 +6,24 @@
   "adapterApiVersion": 1,
   "entry": "./dist/plugin.js",
   "icon": "./assets/icon.svg",
-  "links": { "installation": "https://www.meta.ai/" }
+  "links": {
+    "website": "https://www.meta.ai/",
+    "installation": "https://developer.meta.com/ai/products/muse-code/"
+  },
+  "installation": {
+    "commands": [
+      {
+        "terminal": "macOS / Linux · Terminal (sh/bash)",
+        "command": "curl -fsSL https://dev.meta.ai/install.sh | bash"
+      },
+      {
+        "terminal": "Windows · Git Bash",
+        "command": "curl -fsSL https://dev.meta.ai/install.sh | bash"
+      }
+    ],
+    "after": {
+      "en": "After installation, run muse and complete login or setup.",
+      "zh-CN": "安装后运行 muse，完成登录或配置。"
+    }
+  }
 }
