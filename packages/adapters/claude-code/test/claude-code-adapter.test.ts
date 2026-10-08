@@ -2595,9 +2595,21 @@ describe("Claude Code HarnessAdapter", () => {
       error: { code: "sessionBusy" },
     });
     transport.autonomousTurnHandler?.start("task-notification-fg");
-    transport.autonomousTurnHandler?.onEvent({ type: "subagent.settled", nativeSubagentId: "native-agent-fg", status: "completed", resultSummary: "Inspection complete" });
-    transport.autonomousTurnHandler?.onEvent({ type: "text.delta", messageId: "fg-continuation", delta: "Inspection complete" });
-    transport.autonomousTurnHandler?.onEvent({ type: "message.completed", messageId: "fg-continuation" });
+    transport.autonomousTurnHandler?.onEvent({
+      type: "subagent.settled",
+      nativeSubagentId: "native-agent-fg",
+      status: "completed",
+      resultSummary: "Inspection complete",
+    });
+    transport.autonomousTurnHandler?.onEvent({
+      type: "text.delta",
+      messageId: "fg-continuation",
+      delta: "Inspection complete",
+    });
+    transport.autonomousTurnHandler?.onEvent({
+      type: "message.completed",
+      messageId: "fg-continuation",
+    });
     transport.autonomousTurnHandler?.onTerminal({ status: "succeeded" });
     expect(await nextEvent(iterator)).toMatchObject({
       type: "subagent.state.changed",

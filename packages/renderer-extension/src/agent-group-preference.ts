@@ -63,7 +63,13 @@ const DEFAULT_AGENT_ORDER = [
   "zcode",
 ];
 const defaultRank = new Map(DEFAULT_AGENT_ORDER.map((id, index) => [id, index]));
-export const DEFAULT_MAIN_EXTERNAL_AGENTS = ["claude-code", "grok", "pi", "hermes", "opencode"] as const;
+export const DEFAULT_MAIN_EXTERNAL_AGENTS = [
+  "claude-code",
+  "grok",
+  "pi",
+  "hermes",
+  "opencode",
+] as const;
 export function defaultAgentGroupSection(agent: ExternalRendererAgent): AgentGroupSection {
   return (DEFAULT_MAIN_EXTERNAL_AGENTS as readonly string[]).includes(agent) ? "main" : "more";
 }
@@ -171,7 +177,11 @@ export function createAgentGroupPreferenceStore(
     },
     sectionOf(agent, notInstalled = false) {
       const section = entries.find((entry) => entry.agent === agent)?.section;
-      return section && section !== "auto" ? section : notInstalled ? "more" : defaultAgentGroupSection(agent);
+      return section && section !== "auto"
+        ? section
+        : notInstalled
+          ? "more"
+          : defaultAgentGroupSection(agent);
     },
     moveAgent(agent, section, beforeAgent = null, catalog) {
       if (agent === "codex") return;

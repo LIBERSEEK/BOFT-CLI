@@ -382,7 +382,10 @@ export function renderHarnessAccountRows(
   row.className = "settings-account-row";
   row.dataset.harnessId = account.harnessId;
   row.tabIndex = -1;
-  const name = accountDisplayText(account.email ?? account.label ?? account.harnessName, hideEmails);
+  const name = accountDisplayText(
+    account.email ?? account.label ?? account.harnessName,
+    hideEmails,
+  );
   row.setAttribute("aria-label", name);
   const personCell = document.createElement("td");
   personCell.className = "settings-account-person-cell";

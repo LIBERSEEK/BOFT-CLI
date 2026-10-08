@@ -10,9 +10,24 @@ export type ExternalRendererAgent = string;
 export const DEFAULT_RENDERER_AGENTS: readonly RendererAgent[] = ["codex"];
 /** Legacy test/migration catalog; runtime availability comes from Host descriptors. */
 export const KNOWN_RENDERER_AGENTS = [
-  "codex", "pi", "claude-code", "deepseek-harness", "opencode", "grok", "omp",
-  "antigravity", "hermes", "muse", "kiro-cli", "codebuddy", "workbuddy", "cursor-cli",
-  "qoder", "qoder-cn", "kimi-code", "zcode",
+  "codex",
+  "pi",
+  "claude-code",
+  "deepseek-harness",
+  "opencode",
+  "grok",
+  "omp",
+  "antigravity",
+  "hermes",
+  "muse",
+  "kiro-cli",
+  "codebuddy",
+  "workbuddy",
+  "cursor-cli",
+  "qoder",
+  "qoder-cn",
+  "kimi-code",
+  "zcode",
 ] as const;
 export type RendererAgentAvailability =
   "checking" | "ready" | "notInstalled" | "unavailable" | "error";

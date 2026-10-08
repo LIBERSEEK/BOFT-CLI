@@ -147,13 +147,14 @@ export class ClaudeSessionImportIndex {
           sessionId: nativeSessionId,
         });
         signal.throwIfAborted();
-        if (messages === null) return sourceFromMetadata(
-          metadata,
-          this.#dependencies.isRunning,
-          signal,
-          new Map(),
-          preferredCwds,
-        );
+        if (messages === null)
+          return sourceFromMetadata(
+            metadata,
+            this.#dependencies.isRunning,
+            signal,
+            new Map(),
+            preferredCwds,
+          );
         for (let index = messages.length - 1; index >= 0; index -= 1) {
           const message = messages[index];
           if (

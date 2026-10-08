@@ -83,9 +83,7 @@ import { RendererMethodUnavailableError } from "./renderer-request-sender.js";
 import { thinkingOptionsForModel } from "./renderer-model-picker.js";
 import { installRendererApprovalStyle } from "./renderer-approval-style.js";
 import { installRendererSubagentRowMeta } from "./renderer-subagent-row-meta.js";
-import {
-  readClaudePermissionModePreference,
-} from "./renderer-permission-mode-preference.js";
+import { readClaudePermissionModePreference } from "./renderer-permission-mode-preference.js";
 import { isPermissionModeControlReady } from "./renderer-permission-mode-picker.js";
 import {
   readNewThreadAgentPreference,

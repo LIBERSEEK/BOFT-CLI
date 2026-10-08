@@ -412,12 +412,15 @@ export function createAccountsSettingsPage(
       const harnessAccounts = createHarnessAccounts(context.signal, getClient, render);
       void credentialImports.refresh();
       const directoryClient = getClient();
-      void directoryClient?.listHarnessPlugins?.().then(({ plugins: next }) => {
-        if (context.signal.aborted || getClient() !== directoryClient) return;
-        plugins = next;
-        render();
-        void credentialImports.refresh();
-      }).catch(() => undefined);
+      void directoryClient
+        ?.listHarnessPlugins?.()
+        .then(({ plugins: next }) => {
+          if (context.signal.aborted || getClient() !== directoryClient) return;
+          plugins = next;
+          render();
+          void credentialImports.refresh();
+        })
+        .catch(() => undefined);
       void harnessAccounts.refresh();
       load();
       return () => {

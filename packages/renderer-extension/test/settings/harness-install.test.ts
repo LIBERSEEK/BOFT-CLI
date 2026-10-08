@@ -10,7 +10,9 @@ import {
   harnessInstallPlatform,
 } from "../../src/settings/harness-install.js";
 
-const EXTERNAL_AGENTS = KNOWN_RENDERER_AGENTS.filter((agent) => agent !== "codex") as ExternalRendererAgent[];
+const EXTERNAL_AGENTS = KNOWN_RENDERER_AGENTS.filter(
+  (agent) => agent !== "codex",
+) as ExternalRendererAgent[];
 
 describe("Harness install guides", () => {
   it("covers every external Agent with a command, binary, and official URL", () => {
