@@ -269,3 +269,22 @@ test("updates compact countdowns without requests or inventing a reset", async (
     await page.evaluate(() => Reflect.get(globalThis, "accountsFixture").calls.inspect),
   ).toEqual(inspect);
 });
+
+test("masks account emails from the settings toolbar without changing search", async ({ page }) => {
+  await setup(page, { scenario: "external" });
+  const toolbar = page.locator(".settings-account-toolbar");
+  const toggle = toolbar.getByRole("button", { name: "隐藏邮箱", exact: true });
+  const nativeEmail = page.locator(`${nativeRow} .settings-account-email`);
+  await expect(nativeEmail).toHaveText("zhaobin_jiang@163.com");
+  await toggle.click();
+  await expect(toolbar.getByRole("button", { name: "显示邮箱", exact: true })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(nativeEmail).toHaveText("zh****ng@163.com");
+  await expect(nativeEmail).toHaveAttribute("title", "zh****ng@163.com");
+  await expect(page.locator('[data-harness-id="grok"] .settings-account-email')).toHaveText(
+    "g****k@example.com",
+  );
+  await expect(page.locator(".settings-account-search")).toBeVisible();
+});

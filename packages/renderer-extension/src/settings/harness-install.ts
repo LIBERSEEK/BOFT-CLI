@@ -135,6 +135,7 @@ export function harnessInstallGuide(
   platform: HarnessInstallPlatform,
 ): HarnessInstallGuide {
   const spec = HARNESS_INSTALL_SPECS[agent];
+  if (!spec) throw new Error(`Installation guide is unavailable for ${agent}`);
   return {
     url: spec.url,
     binary: spec.binary,

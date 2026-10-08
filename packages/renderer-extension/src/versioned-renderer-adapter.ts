@@ -1,4 +1,5 @@
 import { startAgentGroupSync } from "./agent-group-sync.js";
+import { isOrbitComposer } from "./renderer-composer-kind.js";
 import { getSharedAgentGroupPreferenceStore } from "./agent-group-preference.js";
 import {
   committedReactAncestors,
@@ -11,7 +12,6 @@ import { installIdleReleasePreferenceSync } from "./renderer-idle-release-prefer
 import {
   encodeHarnessPluginRoute,
   harnessIdSchema,
-  harnessPluginIdSchema,
   harnessModelRefSchema,
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
@@ -158,18 +158,6 @@ declare global {
     __codexhostDraftPrewarmPolicyV1?: RendererDraftPrewarmPolicy;
     __codexhostHostRoutingV1?: RendererHostRouting;
   }
-}
-
-function transportModelIdForAgent(agent: RendererAgent): string | null {
-  if (agent === "pi") return PI_TRANSPORT_MODEL_ID;
-  if (agent === "claude-code") return CLAUDE_CODE_TRANSPORT_MODEL_ID;
-  if (agent === "deepseek-harness") return DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID;
-  if (agent === "opencode") return OPENCODE_TRANSPORT_MODEL_ID;
-  if (agent === "grok") return GROK_TRANSPORT_MODEL_ID;
-  if (agent === "omp") return OMP_TRANSPORT_MODEL_ID;
-  if (agent === "antigravity") return ANTIGRAVITY_TRANSPORT_MODEL_ID;
-  if (agent === "codex") return null;
-  return encodeHarnessPluginRoute({ harnessId: harnessPluginIdSchema.parse(agent) });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -773,6 +761,7 @@ function findComposerDraftIds(composer: Element): Set<string> {
 }
 
 export function findComposerModelTarget(composer: Element): readonly unknown[] | null {
+  if (isOrbitComposer(composer)) return null;
   const draftIds = findComposerDraftIds(composer);
   const domIdentity = findComposerDomIdentity(composer);
   if (domIdentity.kind === "ambiguous") return null;
@@ -845,36 +834,16 @@ export function modelSelectionForAgent(
   thinkingOptionId?: HarnessThinkingOptionId,
   permissionModeId?: HarnessPermissionModeId,
 ): ModelPowerSelection | null {
-  const transportModelId =
-    agent === "pi"
-      ? piTransportModelId(model, thinkingOptionId)
-      : agent === "claude-code"
-        ? claudeTransportModelId(model, permissionModeId, thinkingOptionId)
-        : agent === "deepseek-harness"
-          ? deepSeekHarnessTransportModelId(model, permissionModeId)
-          : agent === "opencode"
-            ? openCodeTransportModelId(model, permissionModeId, thinkingOptionId)
-            : agent === "grok"
-              ? grokTransportModelId(model, permissionModeId, thinkingOptionId)
-              : agent === "omp"
-                ? ompTransportModelId(model, thinkingOptionId, permissionModeId)
-                : agent === "antigravity"
-                  ? antigravityTransportModelId(model, permissionModeId, thinkingOptionId)
-                  : agent === "hermes"
-                    ? hermesTransportModelId(model, permissionModeId)
-                    : agent === "codex"
-                      ? null
-                      : model || thinkingOptionId || permissionModeId
-                        ? encodeHarnessPluginRoute({
-                            harnessId: harnessPluginIdSchema.parse(agent),
-                            ...(model ? { model } : {}),
-                            ...(thinkingOptionId && agent !== "cursor-cli"
-                              ? { thinkingOptionId }
-                              : {}),
-                            ...(permissionModeId ? { permissionModeId } : {}),
-                          })
-                        : transportModelIdForAgent(agent);
-  return transportModelId ? { model: transportModelId, reasoningEffort } : officialSelection;
+  if (agent === "codex") return officialSelection;
+  return {
+    model: encodeHarnessPluginRoute({
+      harnessId: harnessIdSchema.parse(agent),
+      ...(model ? { model } : {}),
+      ...(thinkingOptionId ? { thinkingOptionId } : {}),
+      ...(permissionModeId ? { permissionModeId } : {}),
+    }),
+    reasoningEffort,
+  };
 }
 
 export function installCurrentRendererAdapter(): {
@@ -1101,7 +1070,7 @@ export function installCurrentRendererAdapter(): {
     permissionModeId?: HarnessPermissionModeId,
     composer?: Element,
   ): boolean => {
-    if (disposed) return false;
+    if (disposed || (composer && isOrbitComposer(composer))) return false;
     const selection = modelSelectionForAgent(
       null,
       null,

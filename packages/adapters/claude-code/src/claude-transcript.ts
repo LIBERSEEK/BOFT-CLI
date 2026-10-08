@@ -54,7 +54,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * records interleaved between messages) survive in transcript order.
  */
 function parseTranscriptRecords(contents: string, sessionId: string): unknown[] {
-  const messages: unknown[] = [];
+  const messages = new Map<string, Record<string, unknown>>();
   for (const line of contents.split("\n")) {
     if (line.trim().length === 0) continue;
     let entry: unknown;
@@ -71,9 +71,9 @@ function parseTranscriptRecords(contents: string, sessionId: string): unknown[] 
     ) {
       continue;
     }
-    messages.push({ ...entry, session_id: sessionId });
+    messages.set(entry.uuid, { ...entry, session_id: sessionId });
   }
-  return messages;
+  return [...messages.values()];
 }
 
 /**

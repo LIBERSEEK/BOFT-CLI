@@ -1,3 +1,4 @@
+import type { ClaudeUsageRecord } from "./claude-usage.js";
 import type {
   HarnessAccountSnapshot,
   HarnessThinkingOptionId,
@@ -150,6 +151,8 @@ export type ClaudeTurnEvent =
       requestId: string;
       reason: "responded" | "cancelled" | "superseded";
     }
+  /** One finished native model request, for Host usage metering. */
+  | { type: "usage.request"; record: ClaudeUsageRecord }
   | {
       type: "usage.result";
       totalCostUsd?: number;
@@ -189,26 +192,6 @@ export interface ClaudePlanLimitEvent {
   sevenDay?: ClaudePlanLimitWindow;
 }
 
-/**
- * A buffered native Turn event plus the wall-clock time the producing native
- * message was observed. Multiple events from one message share its time.
- */
-export type ClaudeAutonomousTurnEvent = ClaudeTurnEvent & { observedAtMs?: number };
-
-export interface ClaudeAutonomousTurn {
-  nativeTurnKey: string;
-  /**
-   * Unix epoch milliseconds when the first native message of this buffered work
-   * was observed. Replayed turns publish it so projected durations reflect
-   * native time instead of replay time.
-   */
-  startedAtMs?: number;
-  /** Unix epoch milliseconds when the terminal native message was observed. */
-  completedAtMs?: number;
-  events: ClaudeAutonomousTurnEvent[];
-  result: ClaudeTransportTurnResult;
-}
-
 export interface ClaudeIdleTurnHandler {
   onEvent(event: ClaudeTurnEvent): void;
   onTerminal(result: ClaudeTransportTurnResult): void;
@@ -219,17 +202,25 @@ export type ClaudeTurnInputPart =
 
 /** Slash-command text, or Host Turn input parts when the Turn carries images. */
 export type ClaudeTurnInput = string | ClaudeTurnInputPart[];
+/**
+ * A native Segment that no requested Turn owns, such as Claude answering a background task
+ * notification. `start` runs once, when the Segment first produces Root output or reaches its
+ * Terminal without any; the Segment's events and Terminal then follow live.
+ */
+export interface ClaudeAutonomousTurnHandler extends ClaudeIdleTurnHandler {
+  start(nativeTurnKey: string): void;
+}
 
 export interface ClaudeTurnTransport {
   readonly sessionId: string;
-  setAutonomousTurnHandler(handler: (turn: ClaudeAutonomousTurn) => void): void;
+  setAutonomousTurnHandler(handler: ClaudeAutonomousTurnHandler): void;
   setIdleTurnHandler(handler: ClaudeIdleTurnHandler | null): void;
   /**
-   * Receives settlements that have no preceding buffered Subagent lifecycle.
+   * Receives settlements that have no preceding unpublished Subagent lifecycle.
    * A task-notification Segment may never produce a Terminal, so independent
-   * settlements must not wait for Turn batching. Settlements that depend on a
-   * buffered creation/reactivation stay in that batch to preserve causal order.
-   * Without a Thread handler, settlements remain in the autonomous Turn batch.
+   * settlements must not wait for that Segment. Settlements that depend on an
+   * unpublished creation/reactivation wait with it to preserve causal order.
+   * Without a Thread handler, settlements wait until the Segment starts its autonomous Turn.
    */
   setThreadEventHandler(handler: ((event: ClaudeTurnEvent) => void) | null): void;
   setIdleLive(live: boolean): void;
@@ -258,12 +249,18 @@ export interface ClaudeTurnTransport {
     userMessageId: string,
     onEvent: (event: ClaudeTurnEvent) => void,
   ): Promise<ClaudeTransportTurnResult>;
+  /**
+   * Rejects while a requested or autonomous Turn runs. A Segment that has not produced Root
+   * output yet belongs to no Turn: the requested Turn takes over its native stream, starting
+   * with the events that Segment still holds.
+   */
   runTurn(
     input: ClaudeTurnInput,
     userMessageId: string,
     onEvent: (event: ClaudeTurnEvent) => void,
   ): Promise<ClaudeTransportTurnResult>;
   respondToInteraction(response: ClaudeInteractionResponse): Promise<void>;
+  /** Interrupts the running requested or autonomous Turn; its Terminal still follows. */
   abort(): Promise<void>;
   close(): Promise<void>;
 }
@@ -317,7 +314,8 @@ export interface ClaudeAdapterDependencies {
   getSessionInfo(input: { sessionId: string }): Promise<ClaudeSessionMetadata | undefined>;
   listSessions(): Promise<readonly ClaudeSessionMetadata[]>;
   inspectInstallation(): void;
-  readSessionMessages(input: { cwd: string; sessionId: string }): Promise<unknown[]>;
+  /** Null means the native transcript is absent, not a successfully read empty history. */
+  readSessionMessages(input: { cwd: string; sessionId: string }): Promise<unknown[] | null>;
   readSubagentMessages(input: {
     cwd: string;
     sessionId: string;

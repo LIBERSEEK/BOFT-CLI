@@ -768,6 +768,7 @@
 
 .settings-connections-content,
 .settings-plugins-content,
+.settings-connections-layout,
 .settings-connection-list,
 .settings-connection-rows {
   min-width: 0;
@@ -779,11 +780,61 @@
   gap: 12px;
 }
 
+.settings-connections-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(260px, 0.9fr);
+  align-items: start;
+  gap: 16px;
+}
+
 .settings-connection-list {
   overflow: hidden;
   background: var(--settings-surface);
   border: 1px solid var(--settings-border);
   border-radius: 10px;
+}
+
+.settings-connection-host-strip {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) 28px;
+  align-items: center;
+  min-width: 0;
+  gap: 6px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--settings-divider);
+}
+
+.settings-connection-host-scroll {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  color: var(--settings-muted);
+  background: var(--settings-inset);
+  border: 1px solid var(--settings-border);
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.settings-connection-host-strip[data-connection-host-overflow="true"]
+  .settings-connection-host-scroll {
+  display: inline-flex;
+}
+
+.settings-connection-host-strip:not([data-connection-host-overflow="true"]) {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.settings-connection-host-scroll:hover:not(:disabled) {
+  color: var(--settings-text);
+  background: var(--settings-hover);
+}
+
+.settings-connection-host-scroll:disabled {
+  cursor: default;
+  opacity: 0.35;
 }
 
 .settings-segmented {
@@ -845,8 +896,9 @@
 }
 
 .settings-segmented__item:focus-visible,
+.settings-connection-host-tab:focus-visible,
+.settings-connection-host-scroll:focus-visible,
 .settings-connection-row:focus-visible,
-.settings-connection-install-link:focus-visible,
 .settings-connection-row__group-toggle:focus-visible,
 .settings-connection-view-error:focus-visible {
   outline: 2px solid var(--settings-focus);
@@ -1213,34 +1265,6 @@
   outline-offset: 1px;
 }
 
-.settings-connection-install-link {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  padding: 0;
-  color: var(--settings-focus);
-  font: inherit;
-  text-decoration: none;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 7px;
-  cursor: pointer;
-}
-
-.settings-connection-install-link:disabled {
-  opacity: 0.45;
-  cursor: wait;
-}
-
-.settings-connection-install-link:hover,
-.settings-connection-install-link:focus-visible {
-  color: var(--settings-focus);
-  background: var(--settings-active);
-  border-color: var(--settings-border);
-}
-
 .settings-connection-long-context {
   position: relative;
   display: inline-flex;
@@ -1395,6 +1419,9 @@
 .settings-connection-inspector {
   position: sticky;
   top: 18px;
+  background: var(--settings-surface);
+  border: 1px solid var(--settings-border);
+  border-radius: 10px;
 }
 
 .settings-connection-inspector__header {
@@ -2535,6 +2562,14 @@
 
   .settings-connection-page-header > .settings-command-button {
     width: 100%;
+  }
+
+  .settings-connections-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-connection-inspector {
+    position: static;
   }
 
   .settings-session-import-row {

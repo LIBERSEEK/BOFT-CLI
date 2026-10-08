@@ -457,6 +457,7 @@ describe("Renderer fixed Model request client", () => {
       "openConsole",
       "openExternalUrl",
       "openHarnessWebUi",
+      "readDelegationThread",
       "readUpdateStatus",
       "refreshCodexAccounts",
       "runtimeStatus",

@@ -12,6 +12,8 @@ import ChevronsUp from "lucide/dist/esm/icons/chevrons-up.mjs";
 import CircleArrowUp from "lucide/dist/esm/icons/circle-arrow-up.mjs";
 import CircleOff from "lucide/dist/esm/icons/circle-off.mjs";
 import Copy from "lucide/dist/esm/icons/copy.mjs";
+import Eye from "lucide/dist/esm/icons/eye.mjs";
+import EyeOff from "lucide/dist/esm/icons/eye-off.mjs";
 import Ellipsis from "lucide/dist/esm/icons/ellipsis.mjs";
 import Download from "lucide/dist/esm/icons/download.mjs";
 import HardDriveDownload from "lucide/dist/esm/icons/hard-drive-download.mjs";
@@ -61,6 +63,8 @@ export const RENDERER_SETTINGS_ICON_NAMES = [
   "about",
   "info",
   "external-link",
+  "eye",
+  "eye-off",
   "refresh",
   "unavailable",
   "alert",
@@ -118,6 +122,8 @@ const iconNodes = {
   about: Info,
   info: Info,
   "external-link": ExternalLink,
+  eye: Eye,
+  "eye-off": EyeOff,
   refresh: RefreshCw,
   unavailable: CircleOff,
   alert: TriangleAlert,

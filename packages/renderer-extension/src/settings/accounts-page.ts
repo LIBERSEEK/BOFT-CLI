@@ -4,6 +4,8 @@ import type {
   CodexAccountSummary,
   CodexAccountUsageParams,
   CodexAccountUsageResult,
+  HarnessPluginDescriptor,
+  HarnessPluginListResult,
 } from "@codexhost/shared-contracts";
 
 import { codexAccountAuthKind } from "../renderer-codex-account-options.js";
@@ -29,6 +31,7 @@ import { shouldApplyCodexAccountSnapshot } from "../renderer-codex-account-state
 
 export interface RendererCodexAccountClient
   extends RendererHarnessAccountClient, RendererCredentialImportClient {
+  listHarnessPlugins?(): Promise<HarnessPluginListResult>;
   listCodexAccounts(): Promise<CodexAccountListResult>;
   refreshCodexAccounts?(): Promise<CodexAccountListResult>;
   inspectCodexAccountUsage?(input: CodexAccountUsageParams): Promise<CodexAccountUsageResult>;
@@ -108,6 +111,26 @@ export function createAccountsSettingsPage(
       refreshUsage.title = messages.accountCreditsRefresh;
       refreshUsage.setAttribute("aria-label", messages.accountCreditsRefresh);
       refreshUsage.append(createRendererSettingsIcon("refresh", 16));
+      let hideEmails = false;
+      const privacyToggle = document.createElement("button");
+      privacyToggle.type = "button";
+      privacyToggle.className = "settings-icon-button settings-account-privacy-toggle";
+      const updatePrivacyToggle = (): void => {
+        const label = hideEmails ? messages.accountEmailsShow : messages.accountEmailsHide;
+        privacyToggle.title = label;
+        privacyToggle.setAttribute("aria-label", label);
+        privacyToggle.setAttribute("aria-pressed", String(hideEmails));
+        privacyToggle.replaceChildren(
+          createRendererSettingsIcon(hideEmails ? "eye-off" : "eye", 16),
+        );
+      };
+      updatePrivacyToggle();
+      privacyToggle.addEventListener("click", () => {
+        hideEmails = !hideEmails;
+        updatePrivacyToggle();
+        credentialImports.setHideEmails(hideEmails);
+        render();
+      });
       refreshUsage.addEventListener("click", () => {
         usageByAccountId.clear();
         loadUsage(accounts);
@@ -115,17 +138,20 @@ export function createAccountsSettingsPage(
         void credentialImports.refresh();
       });
       search.addEventListener("input", () => render());
-      toolbar.append(connected, searchWrapper, displayControls, refreshUsage);
+      toolbar.append(connected, privacyToggle, searchWrapper, displayControls, refreshUsage);
       const groups = document.createElement("div");
       groups.className = "settings-account-groups";
       const apiGroup = createAccountsGroup(document, messages, "api");
       const chatGroup = createAccountsGroup(document, messages, "chatgpt");
+      let plugins: readonly HarnessPluginDescriptor[] = [];
+      const pluginFor = (id: string) => plugins.find((plugin) => plugin.id === id);
       const credentialImports = mountCredentialImports(
         context.content,
         context.signal,
         getClient,
         messages.credentialImports,
         () => render(),
+        pluginFor,
       );
       context.content.append(header, status, toolbar, groups, credentialImports.section);
       const stopCountdowns = mountAccountResetCountdowns(groups, messages, context.signal);
@@ -222,6 +248,7 @@ export function createAccountsSettingsPage(
                     if (open) expandedResetAccounts.add(account.accountId);
                     else expandedResetAccounts.delete(account.accountId);
                   },
+                  hideEmails,
                 }),
               );
             }
@@ -247,6 +274,7 @@ export function createAccountsSettingsPage(
                     if (open) expandedResetAccounts.add(account.accountId);
                     else expandedResetAccounts.delete(account.accountId);
                   },
+                  hideEmails,
                 }),
               );
             }
@@ -261,6 +289,8 @@ export function createAccountsSettingsPage(
                     account.harnessId,
                     account.email ?? account.label ?? account.harnessName,
                   ),
+                  hideEmails,
+                  pluginFor(account.harnessId),
                 ),
               );
             }
@@ -381,6 +411,13 @@ export function createAccountsSettingsPage(
       }
       const harnessAccounts = createHarnessAccounts(context.signal, getClient, render);
       void credentialImports.refresh();
+      const directoryClient = getClient();
+      void directoryClient?.listHarnessPlugins?.().then(({ plugins: next }) => {
+        if (context.signal.aborted || getClient() !== directoryClient) return;
+        plugins = next;
+        render();
+        void credentialImports.refresh();
+      }).catch(() => undefined);
       void harnessAccounts.refresh();
       load();
       return () => {

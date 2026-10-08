@@ -36,6 +36,13 @@
   font-variant-numeric: tabular-nums;
   font-weight: 600;
 }
+.settings-account-privacy-toggle {
+  margin-left: -4px;
+}
+.settings-account-privacy-toggle[aria-pressed="true"] {
+  color: var(--settings-text);
+  background: var(--settings-active);
+}
 .settings-account-search {
   display: flex;
   align-items: center;

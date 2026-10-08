@@ -819,7 +819,10 @@ export function createDefaultRendererSettingsPages(
   getRemoteConnections: () => RemoteConnectionsControl | null = () => null,
 ): readonly RendererSettingsPageDefinition[] {
   return Object.freeze([
-    createConnectionsSettingsPage(messages, getDiagnostics, undefined, getRemoteConnections),
+    createConnectionsSettingsPage(messages, getDiagnostics, undefined, getRemoteConnections, () => {
+      const client = getUpdateClient();
+      return client?.openExternalUrl?.bind(client);
+    }),
     createRemoteConnectionsPage(messages, getRemoteConnections),
     createAccountsSettingsPage(messages, getAccountClient),
     createSessionImportSettingsPage(

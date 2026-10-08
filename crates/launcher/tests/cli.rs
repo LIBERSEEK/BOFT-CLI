@@ -115,7 +115,7 @@ fn console_starts_before_missing_desktop_resources_are_rejected() {
     fs::write(root.join("app/console-server.mjs"), "fixture").expect("console entry");
     let node = root.join("runtime/node");
     // No real server or browser: record the native launch order only.
-    fs::write(&node, "#!/bin/sh\nprintf '%s\\n' \"$2\" >> \"$CODEXHOST_DATA_DIR/calls\"\nif [ \"$2\" = open ]; then\n  echo 'codexhost console: http://127.0.0.1:26339/'\nfi\n")
+    fs::write(&node, "#!/bin/sh\nprintf '%s\\n' \"$3\" >> \"$CODEXHOST_DATA_DIR/calls\"\nif [ \"$3\" = open ]; then\n  echo 'codexhost console: http://127.0.0.1:26339/'\nfi\n")
         .expect("fake Node");
     fs::set_permissions(&node, fs::Permissions::from_mode(0o755)).expect("make executable");
     let output = output_of_copied_binary(
@@ -154,7 +154,7 @@ fn application_launch_opens_the_console_only_after_startup_fails() {
     // Exit before printing an address so the failure path does not open a browser.
     fs::write(
         &node,
-        "#!/bin/sh\nprintf '%s\\n' \"$2\" >> \"$CODEXHOST_DATA_DIR/calls\"\nexit 1\n",
+        "#!/bin/sh\nprintf '%s\\n' \"$3\" >> \"$CODEXHOST_DATA_DIR/calls\"\nexit 1\n",
     )
     .expect("fake Node");
     fs::set_permissions(&node, fs::Permissions::from_mode(0o755)).expect("make executable");
@@ -221,7 +221,7 @@ fn update_runs_packaged_console_without_launching_desktop() {
     let node = root.join("runtime/node");
     fs::write(
         &node,
-        "#!/bin/sh\nprintf '%s\\n' \"$2\"\nexit \"$TEST_UPDATE_EXIT\"\n",
+        "#!/bin/sh\nprintf '%s\\n' \"$3\"\nexit \"$TEST_UPDATE_EXIT\"\n",
     )
     .unwrap();
     fs::set_permissions(&node, fs::Permissions::from_mode(0o755)).unwrap();
