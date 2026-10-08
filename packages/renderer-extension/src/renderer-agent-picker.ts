@@ -112,21 +112,43 @@ export interface RendererAgentPickerView {
   errorVisible: Partial<Record<ExternalRendererAgent, boolean>>;
 }
 
+const AGENT_MENU_GAP = 6;
+const AGENT_MENU_VIEWPORT_PADDING = 8;
+const AGENT_MENU_MAX_HEIGHT = 420;
+
 export function rendererAgentMenuPlacement(
-  triggerRect: Pick<DOMRectReadOnly, "right" | "top">,
+  triggerRect: Pick<DOMRectReadOnly, "right" | "top"> & Partial<Pick<DOMRectReadOnly, "bottom">>,
   viewport: { width: number; height: number },
   windowZoom: number,
-): { left: number; bottom: number } {
+): { left: number; top?: number; bottom?: number; maxHeight: number } {
   const zoom = Number.isFinite(windowZoom) && windowZoom > 0 ? windowZoom : 1;
   const viewportWidth = viewport.width / zoom;
   const viewportHeight = viewport.height / zoom;
+  const triggerTop = triggerRect.top / zoom;
+  const triggerBottom = (triggerRect.bottom ?? triggerRect.top) / zoom;
   const left = Math.max(
-    8,
-    Math.min(triggerRect.right / zoom - AGENT_MENU_WIDTH, viewportWidth - AGENT_MENU_WIDTH - 8),
+    AGENT_MENU_VIEWPORT_PADDING,
+    Math.min(
+      triggerRect.right / zoom - AGENT_MENU_WIDTH,
+      viewportWidth - AGENT_MENU_WIDTH - AGENT_MENU_VIEWPORT_PADDING,
+    ),
   );
+  const spaceAbove = triggerTop - AGENT_MENU_GAP - AGENT_MENU_VIEWPORT_PADDING;
+  const spaceBelow = viewportHeight - triggerBottom - AGENT_MENU_GAP - AGENT_MENU_VIEWPORT_PADDING;
+  // Keep the menu on the side that can show more of it. A short window above
+  // the Composer otherwise paints the list past the top of the screen.
+  const openDownward = spaceAbove < AGENT_MENU_MAX_HEIGHT && spaceBelow > spaceAbove;
+  const maxHeight = Math.max(
+    0,
+    Math.min(AGENT_MENU_MAX_HEIGHT, openDownward ? spaceBelow : spaceAbove),
+  );
+  if (openDownward) {
+    return { left, top: triggerBottom + AGENT_MENU_GAP, maxHeight };
+  }
   return {
     left,
-    bottom: Math.max(8, viewportHeight - triggerRect.top / zoom + 6),
+    bottom: Math.max(AGENT_MENU_VIEWPORT_PADDING, viewportHeight - triggerTop + AGENT_MENU_GAP),
+    maxHeight,
   };
 }
 
@@ -207,7 +229,9 @@ function setMenuPosition(control: RendererAgentPickerControl): void {
     Number.parseFloat(rawWindowZoom),
   );
   control.menu.style.left = `${placement.left}px`;
-  control.menu.style.bottom = `${placement.bottom}px`;
+  control.menu.style.top = placement.top === undefined ? "auto" : `${placement.top}px`;
+  control.menu.style.bottom = placement.bottom === undefined ? "auto" : `${placement.bottom}px`;
+  control.menu.style.maxHeight = `${placement.maxHeight}px`;
 }
 
 function popoverOpen(menu: HTMLElement): boolean {

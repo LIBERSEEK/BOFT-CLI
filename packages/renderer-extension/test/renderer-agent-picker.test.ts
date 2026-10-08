@@ -19,7 +19,7 @@ describe("Renderer Agent picker presentation", () => {
         { width: 1_920, height: 1_440 },
         1.6,
       ),
-    ).toEqual({ left: 676, bottom: 86 });
+    ).toEqual({ left: 676, bottom: 86, maxHeight: 420 });
   });
 
   it("falls back to unscaled positioning when the Codex window zoom is unavailable", () => {
@@ -29,7 +29,27 @@ describe("Renderer Agent picker presentation", () => {
         { width: 1_200, height: 900 },
         Number.NaN,
       ),
-    ).toEqual({ left: 676, bottom: 86 });
+    ).toEqual({ left: 676, bottom: 86, maxHeight: 420 });
+  });
+
+  it("shrinks the upward menu to the space above the trigger", () => {
+    expect(
+      rendererAgentMenuPlacement(
+        { right: 400, top: 300, bottom: 328 },
+        { width: 900, height: 360 },
+        1,
+      ),
+    ).toEqual({ left: 176, bottom: 66, maxHeight: 286 });
+  });
+
+  it("opens downward when the trigger is near the top of the window", () => {
+    expect(
+      rendererAgentMenuPlacement(
+        { right: 400, top: 30, bottom: 58 },
+        { width: 900, height: 700 },
+        1,
+      ),
+    ).toEqual({ left: 176, top: 64, maxHeight: 420 });
   });
 
   it("splits Codex Account email names from their muted domains", () => {
