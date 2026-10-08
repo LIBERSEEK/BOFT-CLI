@@ -81,6 +81,7 @@ class FakeElement {
   value = "";
   tabIndex = 0;
   disabled = false;
+  draggable = false;
   checked = false;
   focused = false;
   open = false;
@@ -1513,9 +1514,11 @@ describe("Renderer Connections page", () => {
     const offersInstall = (agent: string): boolean => {
       const row = descendants(content).find(({ dataset }) => dataset.connectionItem === agent);
       if (!row) throw new Error("Expected Harness row");
-      return descendants(row).some(
-        ({ className }) => className === "settings-connection-install-link",
-      );
+      expect(
+        descendants(row).some(({ className }) => className === "settings-connection-install-link"),
+      ).toBe(false);
+      row.dispatch("click", { target: null });
+      return descendants(content).some(({ dataset }) => dataset.connectionAction === "install");
     };
     expect(offersInstall("kiro-cli")).toBe(true);
     // Desktop apps are downloaded by the user; their plugins expose no installer.
@@ -1666,9 +1669,15 @@ describe("Renderer Connections page", () => {
       refresh: vi.fn(() => refreshRequest.promise),
       subscribe: vi.fn(() => () => undefined),
     };
+    const openExternalUrl = vi.fn(async () => undefined);
     const page = createDefaultRendererSettingsPages(
       rendererSettingsMessages("zh-CN"),
-      () => null,
+      () => ({
+        checkUpdate: vi.fn(async () => null),
+        startUpdate: vi.fn(),
+        readUpdateStatus: vi.fn(async () => ({ status: null })),
+        openExternalUrl,
+      }),
       () => diagnostics,
     ).find(({ id }) => id === "connections");
     if (!page) throw new Error("Connections page is not registered");
@@ -1726,7 +1735,13 @@ describe("Renderer Connections page", () => {
       ({ tagName, href }) =>
         tagName === "a" && href === "https://github.com/LiberSeek/BOFT-CLI/issues/new",
     );
-    expect(issueLink).toBeDefined();
+    if (!issueLink) throw new Error("GitHub Issue link is not rendered");
+    const preventDefault = vi.fn();
+    issueLink.dispatch("click", { preventDefault });
+    expect(preventDefault).toHaveBeenCalledOnce();
+    expect(openExternalUrl).toHaveBeenCalledWith(
+      "https://github.com/LiberSeek/BOFT-CLI/issues/new",
+    );
     const copyButton = descendants(
       elementWithClass(content, "settings-connection-error-log-header"),
     ).find(({ tagName }) => tagName === "button");
@@ -1939,12 +1954,31 @@ describe("Renderer Connections page", () => {
     expect(createRendererSettingsIcon).toHaveBeenCalledWith("chevron-down", 15);
     expect(createRendererSettingsIcon).toHaveBeenCalledWith("chevron-up", 15);
 
-    const divider = elementWithClass(content, "settings-connection-group-divider");
+    const installedRow = descendants(content).find(
+      ({ dataset }) => dataset.connectionItem === "pi",
+    );
+    assert(installedRow);
+    expect(installedRow.draggable).toBe(false);
+    const handle = descendants(installedRow).find(({ className }) =>
+      className.split(" ").includes("settings-connection-row__handle"),
+    );
+    assert(handle);
     const dragEvent = {
       preventDefault() {},
       stopPropagation() {},
       dataTransfer: { setData() {}, effectAllowed: "move" },
     };
+    installedRow.dispatch("dragstart", dragEvent);
+    expect(installedRow.dataset.connectionDragging).not.toBe("true");
+    handle.dispatch("pointerdown", { button: 0 });
+    expect(installedRow.draggable).toBe(true);
+    installedRow.dispatch("pointerup");
+    expect(installedRow.draggable).toBe(false);
+    handle.dispatch("pointerdown", { button: 0 });
+    installedRow.dispatch("dragstart", dragEvent);
+    expect(installedRow.dataset.connectionDragging).toBe("true");
+
+    const divider = elementWithClass(content, "settings-connection-group-divider");
     divider.dispatch("dragover", dragEvent);
     // Simulate the More→Main path exposed by dropping on the divider.
     groupPreference.moveAgent("deepseek-harness", "main", "pi");
@@ -2173,6 +2207,9 @@ describe("Renderer Connections page", () => {
       descendants(missingContent).some((element) =>
         element.className.split(" ").includes("settings-connection-install-link"),
       ),
+    ).toBe(false);
+    expect(
+      descendants(missingContent).some((element) => element.dataset.connectionAction === "install"),
     ).toBe(true);
     expect(
       descendants(missingContent).some((element) =>

@@ -310,8 +310,8 @@ function createConnectionRow(
   const identity = document.createElement("div");
   identity.className = "settings-connection-row__identity";
   identity.setAttribute("role", "cell");
-  if (group) {
-    const handle = document.createElement("span");
+  const handle = group ? document.createElement("span") : null;
+  if (group && handle) {
     handle.className = "settings-connection-row__handle";
     handle.setAttribute("aria-hidden", "true");
     handle.title = group.dragHandleTitle;
@@ -336,22 +336,7 @@ function createConnectionRow(
   const action = document.createElement("div");
   action.className = "settings-connection-row__action";
   action.setAttribute("role", "cell");
-  if (item.agentSnapshot?.availability === "notInstalled" && item.install) {
-    const install = document.createElement("button");
-    install.type = "button";
-    install.className = "settings-connection-install-link";
-    install.addEventListener("click", (event) => {
-      event.stopPropagation();
-      select();
-      item.install?.();
-    });
-    install.disabled = item.availability === "installing" || item.availability === "checking";
-    const installLabel = messages.connectionInstall;
-    install.setAttribute("aria-label", `${installLabel}: ${item.name}`);
-    install.title = installLabel;
-    install.append(createRendererSettingsIcon("download", 17));
-    action.append(install);
-  } else if (item.error) {
+  if (item.error && item.agentSnapshot?.availability !== "notInstalled") {
     const viewError = document.createElement("button");
     viewError.type = "button";
     viewError.className = "settings-connection-view-error";
@@ -391,14 +376,35 @@ function createConnectionRow(
     event.preventDefault();
     select();
   });
-  if (group) {
-    row.draggable = !group.disabled;
+  if (group && handle) {
+    // Arm dragging only from the grip. A draggable row swallows the click
+    // that opens the inspector.
+    row.draggable = false;
     row.dataset.connectionGroupSection = group.section;
-    row.addEventListener("dragstart", group.onDragStart);
+    handle.addEventListener("pointerdown", (event) => {
+      if (group.disabled || event.button !== 0) return;
+      row.draggable = true;
+    });
+    const releaseDrag = (): void => {
+      if (row.dataset.connectionDragging === "true") return;
+      row.draggable = false;
+    };
+    row.addEventListener("pointerup", releaseDrag);
+    row.addEventListener("pointercancel", releaseDrag);
+    row.addEventListener("dragstart", (event) => {
+      if (!row.draggable) {
+        event.preventDefault();
+        return;
+      }
+      group.onDragStart(event);
+    });
     row.addEventListener("dragover", group.onDragOver);
     row.addEventListener("dragleave", group.onDragLeave);
     row.addEventListener("drop", group.onDrop);
-    row.addEventListener("dragend", group.onDragEnd);
+    row.addEventListener("dragend", (event) => {
+      row.draggable = false;
+      group.onDragEnd(event);
+    });
   }
   row.append(identity, status, action);
   return row;
@@ -454,6 +460,7 @@ function renderConnectionInspector(
   diagnostics: RendererConnectionDiagnostics | null,
   existingLaunchControls: HTMLElement | null,
   refresh: () => void,
+  openExternalUrl: () => ((url: string) => Promise<void>) | undefined,
 ): HTMLElement | null {
   inspector.replaceChildren(createInspectorHeader(document, item, messages));
   const body = document.createElement("div");
@@ -553,6 +560,17 @@ function renderConnectionInspector(
     issue.href = CODEXHOST_GITHUB_ISSUES_NEW_URL;
     issue.target = "_blank";
     issue.rel = "noopener noreferrer";
+    issue.addEventListener("click", (event) => {
+      const open = openExternalUrl();
+      if (!open) return;
+      // Codex keeps target=_blank inside the Desktop window. The Host opens the OS browser.
+      event.preventDefault();
+      const url = issue.href;
+      void open(url).catch((error: unknown) => {
+        console.error("codexhost external URL open failed", error);
+        document.defaultView?.open(url, "_blank", "noopener,noreferrer");
+      });
+    });
     issue.append(messages.connectionOpenIssue, createRendererSettingsIcon("external-link", 14));
     actions.append(issue);
     const issueNote = document.createElement("p");
@@ -711,6 +729,7 @@ export function createConnectionsSettingsPage(
   getDiagnostics: () => RendererConnectionDiagnostics | null,
   groupPreference: AgentGroupPreferenceStore = getSharedAgentGroupPreferenceStore(),
   getRemoteConnections: () => RemoteConnectionsControl | null = () => null,
+  openExternalUrl: () => ((url: string) => Promise<void>) | undefined = () => undefined,
 ): RendererSettingsPageDefinition {
   return Object.freeze({
     id: "connections",
@@ -1019,6 +1038,7 @@ export function createConnectionsSettingsPage(
             getDiagnostics(),
             existing,
             runRefresh,
+            openExternalUrl,
           );
           launchControls = { hostId: selectedHost.hostId, itemKey: item.key, element };
           const agent = item.agentSnapshot?.agent;
