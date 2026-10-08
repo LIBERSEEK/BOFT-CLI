@@ -2092,7 +2092,7 @@ describe("DeepSeek Harness Modern Session", () => {
       MODERN_ACCEPTED_CORRELATION_TIMEOUT_MS,
       [replacement],
     );
-    const outputs = test.session.outputs[Symbol.asyncIterator]();
+    const outputs = lifecycleOutputs(test.session);
     const stream = new LiveAttempts(test.feed);
     stream.start("obsolete", 2);
     stream.chunk({ type: "reasoning-delta", index: 0, text: "obsolete draft\n\n" });

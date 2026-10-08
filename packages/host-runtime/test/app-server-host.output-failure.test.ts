@@ -2,18 +2,16 @@ import { describe, expect, it, vi } from "vitest";
 import { hostItemIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
 import {
   createFixture,
-  requestId,
   startExternalThread,
   startPiThread,
   startPiTurn,
   stopFixture,
   threadStatus,
   turnEvent,
-  writeRequest,
 } from "./app-server-host-fixture.js";
 
 describe("AppServerHost output failure", () => {
-  it("fails the Turn and closes its Session when an Item changes type at completion", async () => {
+  it("fails the Turn and keeps its Session when an Item changes type at completion", async () => {
     const fixture = createFixture();
     try {
       const threadId = await startPiThread(fixture);
@@ -49,29 +47,21 @@ describe("AppServerHost output failure", () => {
         },
       });
       await fixture.collector.waitFor((message) => threadStatus(message, threadId, "idle"));
-      expect(close).toHaveBeenCalledOnce();
+      // A projector invariant failure ends the Turn and leaves the Session open.
+      expect(close).not.toHaveBeenCalled();
       expect(
         fixture.collector.messages.filter((message) =>
           turnEvent(message, "turn/completed", turnId),
         ),
       ).toHaveLength(1);
-      expect(fixture.collector.messages).toContainEqual(
-        expect.objectContaining({
-          method: "item/completed",
-          params: expect.objectContaining({
-            item: expect.objectContaining({ id: `${itemId}-summary`, type: "reasoning" }),
-          }),
-        }),
-      );
-      // Never reuse a Session after its output consumer has failed.
-      writeRequest(fixture.desktopInput, {
-        id: 3,
-        method: "turn/start",
-        params: { threadId, input: [{ type: "text", text: "again" }] },
+      const again = hostTurnIdSchema.parse(await startPiTurn(fixture, threadId, 3));
+      expect(fixture.adapter.sessions).toHaveLength(1);
+      session.succeedTurn();
+      expect(
+        await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", again)),
+      ).toMatchObject({
+        params: { turn: { status: "completed" } },
       });
-      expect(await fixture.collector.waitFor((message) => requestId(message, 3))).toHaveProperty(
-        "error",
-      );
       const otherThread = await startExternalThread(fixture, "codexhost/pi-native", 4);
       const otherTurn = await startPiTurn(fixture, otherThread, 5);
       const otherSession = fixture.adapter.sessions[1];
