@@ -24,6 +24,7 @@ import { createHarnessInstallationPanel } from "./harness-installation-panel.js"
 import { harnessInstallStore } from "./harness-install-store.js";
 import { createHarnessVersionPanel } from "./harness-version-panel.js";
 import type { RendererSettingsMessages } from "./localization.js";
+import { keepPageStillDuringTextSelection } from "./selection-scroll.js";
 
 export const CODEXHOST_GITHUB_ISSUES_NEW_URL = "https://github.com/LiberSeek/BOFT-CLI/issues/new";
 
@@ -961,6 +962,7 @@ export function createConnectionsSettingsPage(
         const inspector = document.createElement("aside");
         inspector.className = "settings-connection-inspector";
         inspector.setAttribute("aria-live", "polite");
+        keepPageStillDuringTextSelection(inspector);
         const items = connectionItems(snapshot, selectedHost, messages, diagnostics)
           .filter((item) => item.key !== "renderer-adapter")
           .map((item): ConnectionListItem => {
