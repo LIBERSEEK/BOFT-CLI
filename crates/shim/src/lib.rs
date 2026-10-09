@@ -827,7 +827,7 @@ fn child_command(
 ///
 /// The launcher-provided path remains authoritative except for a Windows path
 /// in Desktop's cache, which is revalidated against the current AppX package.
-/// Discovery requires the exact self override, except for macOS node_repl's
+/// Discovery requires the exact self override, except for Desktop node_repl's
 /// top-level `sandbox` call: it resolves the executable before clearing both
 /// CLI overrides from the child.
 fn resolve_stock_codex_path(
@@ -873,10 +873,9 @@ fn resolve_stock_codex_path(
                         )
                         .into());
                     }
-                } else if !cfg!(target_os = "macos")
-                    || arguments
-                        .first()
-                        .is_none_or(|argument| argument != "sandbox")
+                } else if arguments
+                    .first()
+                    .is_none_or(|argument| argument != "sandbox")
                 {
                     return Err(format!("{STOCK_CODEX_PATH_ENV} is required").into());
                 }

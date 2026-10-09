@@ -28,6 +28,7 @@ describe("Renderer settings foundation", () => {
       "Remote connections",
       "Accounts",
       "Sessions",
+      "Usage statistics",
       "Appearance",
       "Plugins",
       "Updates",
@@ -38,6 +39,7 @@ describe("Renderer settings foundation", () => {
       "gateway",
       "accounts",
       "session-import",
+      "dashboard",
       "settings",
       "plugins",
       "updates",
@@ -45,7 +47,10 @@ describe("Renderer settings foundation", () => {
     ]);
     expect(registry.defaultPageId).toBe("connections");
     expect(RENDERER_SETTINGS_NAV_SECTIONS.map(({ id, pageIds }) => [id, [...pageIds]])).toEqual([
-      ["connection", ["connections", "remote-connections", "accounts", "session-import"]],
+      [
+        "connection",
+        ["connections", "remote-connections", "accounts", "session-import", "usage-statistics"],
+      ],
       ["general", ["appearance", "plugins", "updates"]],
       ["other", ["about"]],
     ]);
@@ -65,6 +70,7 @@ describe("Renderer settings foundation", () => {
       "remote-connections",
       "accounts",
       "session-import",
+      "usage-statistics",
       "appearance",
       "plugins",
       "updates",

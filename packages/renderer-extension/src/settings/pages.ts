@@ -1,3 +1,8 @@
+import {
+  createUsageStatisticsPage,
+  type RendererUsageStatisticsRequest,
+} from "../console/pages/usage-statistics.js";
+import { consoleMessages } from "../console/messages.js";
 import { createRemoteConnectionsPage } from "./remote-connections-page.js";
 import type { RemoteConnectionsControl } from "../remote-connections-control.js";
 import type {
@@ -87,6 +92,7 @@ export const DEFAULT_RENDERER_SETTINGS_PAGE_IDS = [
   "remote-connections",
   "accounts",
   "session-import",
+  "usage-statistics",
   "appearance",
   "plugins",
   "updates",
@@ -96,7 +102,13 @@ export const DEFAULT_RENDERER_SETTINGS_PAGE_IDS = [
 export const RENDERER_SETTINGS_NAV_SECTIONS = [
   {
     id: "connection",
-    pageIds: ["connections", "remote-connections", "accounts", "session-import"],
+    pageIds: [
+      "connections",
+      "remote-connections",
+      "accounts",
+      "session-import",
+      "usage-statistics",
+    ],
   },
   {
     id: "general",
@@ -817,6 +829,8 @@ export function createDefaultRendererSettingsPages(
     Promise.reject(new Error("Imported Thread navigation is unavailable")),
   getLoadedSessionsClient: () => LoadedSessionsClient | null = () => null,
   getRemoteConnections: () => RemoteConnectionsControl | null = () => null,
+  requestUsageStatistics: RendererUsageStatisticsRequest = () =>
+    Promise.reject(new Error("Local Host connection is unavailable")),
 ): readonly RendererSettingsPageDefinition[] {
   return Object.freeze([
     createConnectionsSettingsPage(messages, getDiagnostics, undefined, getRemoteConnections, () => {
@@ -830,6 +844,11 @@ export function createDefaultRendererSettingsPages(
       getSessionImportClient,
       openImportedThread,
       getDiagnostics,
+    ),
+    createUsageStatisticsPage(
+      consoleMessages(messages.locale),
+      requestUsageStatistics,
+      messages.locale,
     ),
     createAppearanceSettingsPage(messages, getLoadedSessionsClient),
     createPluginsSettingsPage(messages, getDiagnostics),
@@ -845,6 +864,7 @@ export function createDefaultRendererSettingsRegistry(
   getAccountClient: () => RendererCodexAccountClient | null = () => null,
   getSessionImportClient: () => RendererSessionImportClient | null = () => null,
   openImportedThread?: RendererImportedThreadOpener,
+  requestUsageStatistics?: RendererUsageStatisticsRequest,
 ): RendererSettingsPageRegistry {
   return createRendererSettingsPageRegistry(
     createDefaultRendererSettingsPages(
@@ -854,6 +874,9 @@ export function createDefaultRendererSettingsRegistry(
       getAccountClient,
       getSessionImportClient,
       openImportedThread,
+      undefined,
+      undefined,
+      requestUsageStatistics,
     ),
   );
 }
