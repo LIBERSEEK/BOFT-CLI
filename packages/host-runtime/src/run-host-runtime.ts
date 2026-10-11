@@ -1,5 +1,6 @@
 import { RuntimeMaintenance } from "./runtime-maintenance.js";
 import { randomBytes } from "node:crypto";
+import { statSync } from "node:fs";
 import path from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -109,10 +110,31 @@ function requiredRuntimeConfiguration(environment: NodeJS.ProcessEnv): {
  * The CLI stays the native Launcher. npm packages ship no Node, so the Launcher
  * runs the delegation CLI with the Node that started this npm installation.
  */
-export function delegationCliEnvironment(environment: NodeJS.ProcessEnv): Record<string, string> {
+export function delegationCliEnvironment(
+  environment: NodeJS.ProcessEnv,
+  hostRuntimePath?: string,
+): Record<string, string> {
+  let packagedCli: string | undefined;
+  if (hostRuntimePath && path.isAbsolute(hostRuntimePath)) {
+    const candidate = path.resolve(
+      path.dirname(hostRuntimePath),
+      "../bin",
+      process.platform === "win32" ? "codexhost.exe" : "codexhost",
+    );
+    try {
+      if (statSync(candidate).isFile()) packagedCli = candidate;
+    } catch {
+      /* Source-only runtimes may have no packaged Launcher. */
+    }
+  }
   const cliPath =
-    environment[DELEGATION_CLI_PATH_ENV] ?? environment[UPDATE_RUNTIME_ENV.launcherExecutable];
-  const nodePath = environment[UPDATE_RUNTIME_ENV.npmNodePath];
+    environment[DELEGATION_CLI_PATH_ENV] ??
+    environment[UPDATE_RUNTIME_ENV.launcherExecutable] ??
+    packagedCli;
+  const nodePath =
+    environment[DELEGATION_CLI_NODE_PATH_ENV] ??
+    environment[UPDATE_RUNTIME_ENV.npmNodePath] ??
+    (packagedCli && cliPath === packagedCli ? process.execPath : undefined);
   return {
     ...(cliPath ? { [DELEGATION_CLI_PATH_ENV]: cliPath } : {}),
     ...(nodePath && path.isAbsolute(nodePath) ? { [DELEGATION_CLI_NODE_PATH_ENV]: nodePath } : {}),
@@ -121,6 +143,7 @@ export function delegationCliEnvironment(environment: NodeJS.ProcessEnv): Record
 
 async function prepareDelegationRuntime(input: {
   environment: NodeJS.ProcessEnv;
+  hostRuntimePath?: string;
   createHost(
     environment: NodeJS.ProcessEnv,
     onDelegationApi: (api: DelegationControlRegistration) => (() => void) | undefined,
@@ -138,7 +161,7 @@ async function prepareDelegationRuntime(input: {
   const server = await startDelegationControlServer({ token, api: registry, watchApi: registry });
   const environment = {
     ...input.environment,
-    ...delegationCliEnvironment(input.environment),
+    ...delegationCliEnvironment(input.environment, input.hostRuntimePath),
     [DELEGATION_RUNTIME_ENDPOINT_ENV]: server.endpoint,
     [DELEGATION_RUNTIME_TOKEN_ENV]: token,
   };
@@ -251,6 +274,7 @@ export async function runHostRuntime(input: {
     const environment = remoteControlPlan?.environment ?? input.environment;
     return prepareDelegationRuntime({
       environment,
+      ...(hostRuntimePath ? { hostRuntimePath } : {}),
       createHost: async (delegationEnvironment, onDelegationApi, registry) => {
         const official = await prepareLocalCodex({
           stockCodexPath,
@@ -366,6 +390,7 @@ export async function runHostRuntime(input: {
   if (!listenUrl) throw new Error("Remote app-server listener URL is unavailable");
   return prepareDelegationRuntime({
     environment: input.environment,
+    ...(hostRuntimePath ? { hostRuntimePath } : {}),
     createHost: async (delegationEnvironment, _onDelegationApi, registry) => {
       const socketPath = remoteAppServerSocketPath(delegationEnvironment, listenUrl);
       const officialPlan = createRemoteOfficialAppServerPlan(input.arguments, socketPath);

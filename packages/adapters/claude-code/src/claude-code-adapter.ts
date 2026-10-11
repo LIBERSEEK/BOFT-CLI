@@ -210,6 +210,8 @@ interface ActiveTurn {
   /** Native requests raised by agents; they stay open while a held Turn waits for them. */
   agentScopedRequestIds: Set<string>;
   checkpointId: string | null;
+  /** Submitted or observed native User UUID, independent of the opaque Turn identity. */
+  userMessageId: string | null;
   nativeTurnKey: string;
   nativeTurnRef: NativeTurnRef | null;
   cancellationRequested: boolean;
@@ -972,6 +974,7 @@ class ClaudeHarnessSession implements HarnessSession {
       interactionByRequestId: new Map(),
       agentScopedRequestIds: new Set(),
       checkpointId: null,
+      userMessageId: null,
       nativeTurnKey,
       nativeTurnRef: null,
       cancellationRequested: false,
@@ -1007,6 +1010,7 @@ class ClaudeHarnessSession implements HarnessSession {
         this.#handleTurnEvent(active, event);
       });
       // Claude preserves caller-assigned User Message UUIDs in native history.
+      active.userMessageId = nativeTurnRef.nativeTurnKey;
       active.nativeTurnRef = nativeTurnRef;
       void running.then(
         (result) => this.#finishResult(active, result),
@@ -1125,6 +1129,7 @@ class ClaudeHarnessSession implements HarnessSession {
       interactionByRequestId: new Map(),
       agentScopedRequestIds: new Set(),
       checkpointId: null,
+      userMessageId: null,
       nativeTurnKey,
       nativeTurnRef: null,
       cancellationRequested: false,
@@ -1766,8 +1771,8 @@ class ClaudeHarnessSession implements HarnessSession {
       });
       this.#transport = transport;
       transport.setAutonomousTurnHandler({
-        start: (nativeTurnKey) => {
-          this.#autonomousTarget = this.#startAutonomousTurn(nativeTurnKey);
+        start: (nativeTurnKey, userMessageId) => {
+          this.#autonomousTarget = this.#startAutonomousTurn(nativeTurnKey, userMessageId);
         },
         onEvent: (event) => this.#deliverLiveEvent(this.#autonomousTarget, event),
         onTerminal: (result) => {
@@ -2312,7 +2317,7 @@ class ClaudeHarnessSession implements HarnessSession {
    * it; otherwise it becomes a live autonomous Turn, so the Thread shows it running and a new
    * request waits instead of absorbing it.
    */
-  #startAutonomousTurn(segmentKey: string): ActiveTurn | null {
+  #startAutonomousTurn(segmentKey: string, userMessageId: string | null): ActiveTurn | null {
     if (this.#phase !== "open") return null;
     const current = this.#active;
     if (current?.held) return current;
@@ -2360,6 +2365,7 @@ class ClaudeHarnessSession implements HarnessSession {
       interactionByRequestId: new Map(),
       agentScopedRequestIds: new Set(),
       checkpointId: null,
+      userMessageId,
       nativeTurnKey,
       nativeTurnRef: nativeTurnRefSchema.parse({
         harnessId: this.harnessId,
@@ -2902,12 +2908,17 @@ class ClaudeHarnessSession implements HarnessSession {
           formatVersion: 1,
         })
       : null;
-    this.#unpersistedMessageIds = [
-      ...new Set([
-        ...(active.nativeTurnRef ? [active.nativeTurnRef.nativeTurnKey] : []),
-        ...(active.checkpointId ? [active.checkpointId] : []),
-      ]),
-    ];
+    // New Segments cannot confirm that earlier Turns have reached the transcript.
+    // Only readSnapshot clears IDs after observing them all in native history.
+    if (active.userMessageId || active.checkpointId) {
+      this.#unpersistedMessageIds = [
+        ...new Set([
+          ...this.#unpersistedMessageIds,
+          ...(active.userMessageId ? [active.userMessageId] : []),
+          ...(active.checkpointId ? [active.checkpointId] : []),
+        ]),
+      ];
+    }
     this.#event({
       type: "turn.completed",
       turnId: active.command.turnId,
@@ -3061,6 +3072,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   readonly #cancelTimeoutMs: number;
   readonly #closeTimeoutMs: number;
   readonly #dependencies: ClaudeAdapterDependencies;
+  readonly #environment: NodeJS.ProcessEnv;
   readonly #importIndex: ClaudeSessionImportIndex;
   readonly #importScope = new SessionImportScope({
     closedMessage: "Claude Code Adapter is closed",
@@ -3075,7 +3087,6 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   readonly #inspectionInFlight = new Map<string, Promise<HarnessInspection>>();
   readonly #inspectors = new Set<ClaudeModelInspector>();
   readonly #sessions = new Set<ClaudeHarnessSession>();
-  readonly #environment: NodeJS.ProcessEnv;
   #closePromise: Promise<void> | null = null;
   #latestPlanLimit: ClaudePlanLimitEvent | null = null;
   #accountInspection: Promise<HarnessAccountSnapshot | null> | null = null;
@@ -3379,9 +3390,11 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         },
       };
     }
-    const bypassPermissionsAvailable = this.#dependencies.bypassPermissionsAvailable(
-      input.environment,
-    );
+    // Permission prerequisites and the native process must observe the same environment.
+    const environment = input.environment
+      ? { ...this.#environment, ...input.environment }
+      : undefined;
+    const bypassPermissionsAvailable = this.#dependencies.bypassPermissionsAvailable(environment);
     if (!bypassPermissionsAvailable && requestedPermissionModeId === "bypassPermissions") {
       // Claude Code exits at startup for this request. An explicit create fails visibly, while a
       // restored mode falls back to the native default so the existing Thread stays usable.
@@ -3502,7 +3515,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       () => this.#sessions.delete(session),
       (planLimit) => this.#recordPlanLimit(session, planLimit),
       {
-        ...(input.environment ? { environment: input.environment } : {}),
+        ...(environment ? { environment } : {}),
         bypassPermissionsAvailable,
         openMode,
         pendingSessions: this.#pendingSessions,
