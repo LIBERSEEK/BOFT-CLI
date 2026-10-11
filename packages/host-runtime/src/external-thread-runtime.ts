@@ -37,6 +37,10 @@ import { DELEGATION_THREAD_ID_ENV } from "./delegation-types.js";
 import { SessionStateObserver } from "./session-state-observer.js";
 import { DesktopRequestQueue } from "./desktop-request-queue.js";
 import { ExternalThreadIdleRelease } from "./external-thread-idle-release.js";
+import {
+  ExternalSessionReleaseError,
+  ExternalThreadLifecycle,
+} from "./external-thread-lifecycle.js";
 import { UsageMeter } from "./usage-metering.js";
 
 export interface TurnProjectionGate {
@@ -197,6 +201,12 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function recoveryError(error: unknown): ExternalThreadRpcError {
+  if (error instanceof ExternalThreadOpenError) return error.rpcError;
+  if (error instanceof ExternalSessionReleaseError) return { code: -32075, message: error.message };
+  return { code: -32076, message: "External Thread recovery failed; retry the request" };
+}
+
 export class ExternalThreadRuntime {
   readonly idleRelease: ExternalThreadIdleRelease;
   readonly #adapters: Map<ExternalHarnessId, HarnessAdapter>;
@@ -204,8 +214,7 @@ export class ExternalThreadRuntime {
   readonly #diagnose: (error: unknown) => void;
   readonly #environment: NodeJS.ProcessEnv;
   readonly #repository: ExternalThreadRepository;
-  readonly #restores = new Map<string, Promise<ExternalThread>>();
-  readonly #revivals = new Map<string, Promise<ExternalThreadRpcError | null>>();
+  readonly #lifecycle = new ExternalThreadLifecycle();
   readonly #hasRunningDescendants: (threadId: string) => boolean;
   readonly #subagentRunning: (threadId: string) => boolean;
   readonly #threads = new Map<string, ExternalThread>();
@@ -236,7 +245,10 @@ export class ExternalThreadRuntime {
       get: (id) => this.get(id),
       remove: (id) => this.remove(id),
       queue: input.idleRelease?.queue ?? new DesktopRequestQueue(),
-      canRelease: input.idleRelease?.canRelease ?? (() => false),
+      canRelease: (thread) =>
+        !thread.sessionUnavailable &&
+        !this.#lifecycle.busy(thread.id) &&
+        (input.idleRelease?.canRelease(thread) ?? false),
       ...(input.idleRelease?.onClosed ? { onClosed: input.idleRelease.onClosed } : {}),
       diagnose: input.diagnose,
     });
@@ -256,8 +268,18 @@ export class ExternalThreadRuntime {
 
   clear(): void {
     this.#threads.clear();
-    this.#restores.clear();
-    this.#revivals.clear();
+  }
+
+  drain(): Promise<void> {
+    return this.#lifecycle.drain();
+  }
+
+  #withLifecycle<T>(threadId: string, operation: () => Promise<T>): Promise<T> {
+    return this.#lifecycle.run(threadId, async () => {
+      // Idle release may already own the Session. New idle releases are excluded by busy().
+      await this.idleRelease.waitForClose(threadId);
+      return operation();
+    });
   }
 
   markSessionUnavailable(thread: ExternalThread): void {
@@ -273,20 +295,32 @@ export class ExternalThreadRuntime {
 
   async #dropIdleSession(thread: ExternalThread): Promise<void> {
     if (this.#threads.get(thread.id) !== thread) return;
-    this.#threads.delete(thread.id);
-    try {
-      await thread.session.close();
-      await thread.outputTask;
-    } catch (error) {
-      this.#diagnose(error);
-    }
-    await this.#retireSubagents(thread.id);
+    thread.sessionUnavailable = true;
+    await this.#lifecycle.release(thread.id, thread.session, thread.outputTask);
+    if (this.#threads.get(thread.id) !== thread) return;
+    await this.#retireSubagents(thread);
+    if (this.#threads.get(thread.id) === thread) this.#threads.delete(thread.id);
   }
 
-  /** Drop a faulted idle Session so the next resolve restores from disk. */
+  /** Called without awaiting from the output consumer: release itself drains that consumer. */
   async discardUnavailableIdle(thread: ExternalThread): Promise<void> {
-    if (!thread.sessionUnavailable || !this.#idleForRestore(thread)) return;
-    await this.#dropIdleSession(thread);
+    const session = thread.session;
+    try {
+      await this.#withLifecycle(thread.id, async () => {
+        // A queued discard must not close a Session revived in place by an earlier operation.
+        if (
+          this.#threads.get(thread.id) !== thread ||
+          thread.session !== session ||
+          !thread.sessionUnavailable ||
+          !this.#idleForRestore(thread)
+        )
+          return;
+        await this.#dropIdleSession(thread);
+      });
+    } catch (error) {
+      // Preserve the owner and the release blocker; the next request can retry confirmation.
+      this.#diagnose(error);
+    }
   }
 
   register(input: {
@@ -395,18 +429,21 @@ export class ExternalThreadRuntime {
     ) {
       throw new Error("External Thread runtime cannot replace an active or stale Session");
     }
+    // Rollback callers have already committed input.record and own the replacement.
+    // Preserve their existing best-effort close semantics; this is not fault recovery.
     try {
       await current.session.close();
       await current.outputTask;
     } catch (error) {
       this.#diagnose(error);
     }
-    await this.#retireSubagents(current.id);
+    await this.#retireSubagents(current, true);
     this.#threads.delete(current.id);
     return this.register(input);
   }
 
-  async #retireSubagents(parentId: string): Promise<void> {
+  async #retireSubagents(parent: ExternalThread, bestEffort = false): Promise<void> {
+    const parentId = parent.id;
     const ancestors = new Map<string, Promise<StoredThreadRecordV1 | null>>();
     const descendant = async (record: StoredThreadRecordV1 | null): Promise<boolean> => {
       const visited = new Set<string>();
@@ -425,25 +462,37 @@ export class ExternalThreadRuntime {
     };
     // A descendant may be open without its intermediate parent loaded. Follow
     // stored ancestry, including in-flight restores, not just loaded children.
-    for (const [id, restoring] of [...this.#restores]) {
-      if (await descendant(await this.#repository.find(id))) {
-        await restoring.catch(this.#diagnose);
-      }
+    for (const [id, pending] of this.#lifecycle.pending()) {
+      if (id !== parentId && (await descendant(await this.#repository.find(id)))) await pending;
     }
-    for (const child of this.#threads.values()) {
+    for (const child of [...this.#threads.values()]) {
       if (!(await descendant(child.record))) continue;
-      this.#threads.delete(child.id);
-      try {
-        await child.session.close();
-        await child.outputTask;
-      } catch (error) {
-        this.#diagnose(error);
-      }
+      const retire = async () => {
+        if (this.#threads.get(parentId) !== parent || this.#threads.get(child.id) !== child) return;
+        if (bestEffort) {
+          this.#threads.delete(child.id);
+          await child.session.close();
+          await child.outputTask;
+        } else {
+          child.sessionUnavailable = true;
+          await this.#lifecycle.release(child.id, child.session, child.outputTask);
+          if (this.#threads.get(child.id) === child) this.#threads.delete(child.id);
+        }
+      };
+      if (bestEffort) await retire().catch(this.#diagnose);
+      else await this.#withLifecycle(child.id, retire);
     }
   }
 
   async locate(threadId: string): Promise<ExternalThreadLocation> {
-    await this.idleRelease.waitForClose(threadId);
+    try {
+      return await this.#withLifecycle(threadId, () => this.#locate(threadId));
+    } catch (error) {
+      return { kind: "error", error: recoveryError(error) };
+    }
+  }
+
+  async #locate(threadId: string): Promise<ExternalThreadLocation> {
     const loaded = this.#threads.get(threadId);
     if (loaded) {
       const failure = this.idleRelease.failure(loaded);
@@ -470,61 +519,55 @@ export class ExternalThreadRuntime {
   }
 
   async resolve(threadId: string): Promise<ExternalThreadResolution> {
-    const location = await this.locate(threadId);
-    if (location.kind !== "external") return location;
-    if (location.thread) {
-      if (location.thread.sessionUnavailable && this.#idleForRestore(location.thread)) {
-        const record = location.thread.record;
-        await this.#dropIdleSession(location.thread);
-        let restoring = this.#restores.get(threadId);
-        if (!restoring) {
-          restoring = this.#restore(record).finally(() => {
-            this.#restores.delete(threadId);
-          });
-          this.#restores.set(threadId, restoring);
-        }
-        try {
-          return { kind: "external", thread: await restoring, historyFresh: true };
-        } catch (error) {
-          return {
-            kind: "error",
-            error:
-              error instanceof ExternalThreadOpenError
-                ? error.rpcError
-                : { code: -32076, message: "External Thread recovery failed" },
-          };
-        }
-      }
-      this.idleRelease.touch(location.thread);
-      return { kind: "external", thread: location.thread, historyFresh: false };
-    }
-    const { record } = location;
-    let restoring = this.#restores.get(threadId);
-    if (!restoring) {
-      const restored = this.#threads.get(threadId);
-      if (restored) {
-        this.idleRelease.touch(restored);
-        return { kind: "external", thread: restored, historyFresh: false };
-      }
-      restoring = this.#restore(record).finally(() => {
-        this.#restores.delete(threadId);
-      });
-      this.#restores.set(threadId, restoring);
-    }
     try {
-      return { kind: "external", thread: await restoring, historyFresh: true };
+      return await this.#withLifecycle(threadId, async () => {
+        // Read after admission, never act on a location captured before another recovery.
+        const location = await this.#locate(threadId);
+        if (location.kind !== "external") return location;
+        if (location.thread) {
+          if (location.thread.sessionUnavailable && this.#idleForRestore(location.thread)) {
+            await this.#dropIdleSession(location.thread);
+            // register/remove can be used by other Host lifecycle owners. A late close must
+            // neither remove their replacement nor open a second owner over it.
+            const current = this.#threads.get(threadId);
+            if (current) return { kind: "external", thread: current, historyFresh: false };
+          } else {
+            this.idleRelease.touch(location.thread);
+            return { kind: "external", thread: location.thread, historyFresh: false };
+          }
+        }
+        return {
+          kind: "external",
+          thread: await this.#restore(location.record),
+          historyFresh: true,
+        };
+      });
     } catch (error) {
-      return {
-        kind: "error",
-        error:
-          error instanceof ExternalThreadOpenError
-            ? error.rpcError
-            : { code: -32076, message: "External Thread recovery failed" },
-      };
+      return { kind: "error", error: recoveryError(error) };
     }
   }
 
   async refresh(thread: ExternalThread): Promise<ExternalThreadRpcError | null> {
+    try {
+      return await this.#withLifecycle(thread.id, () => this.#refresh(thread));
+    } catch (error) {
+      return recoveryError(error);
+    }
+  }
+
+  async #refresh(thread: ExternalThread): Promise<ExternalThreadRpcError | null> {
+    if (this.#threads.get(thread.id) !== thread) {
+      return {
+        code: -32076,
+        message: "External Session changed during recovery; retry the request",
+      };
+    }
+    const failure = this.idleRelease.failure(thread);
+    if (failure) return { code: -32075, message: failure };
+    if (thread.sessionUnavailable && this.#idleForRestore(thread)) {
+      const revived = await this.#reviveIdleSession(thread);
+      if (revived) return revived;
+    }
     let snapshot = await thread.session.readSnapshot();
     if (!snapshot.ok) {
       // A faulted/closed Session stays registered until we drop it; revive in place so
@@ -534,7 +577,7 @@ export class ExternalThreadRuntime {
         this.#idleForRestore(thread) &&
         this.#threads.get(thread.id) === thread
       ) {
-        const revived = await this.#reviveIdleSessionSerialized(thread);
+        const revived = await this.#reviveIdleSession(thread);
         if (revived) return revived;
         snapshot = await thread.session.readSnapshot();
         if (!snapshot.ok) return mapExternalThreadHarnessError(snapshot.error, "read");
@@ -559,20 +602,6 @@ export class ExternalThreadRuntime {
     }
   }
 
-  async #reviveIdleSessionSerialized(
-    thread: ExternalThread,
-  ): Promise<ExternalThreadRpcError | null> {
-    const id = thread.id;
-    let pending = this.#revivals.get(id);
-    if (!pending) {
-      pending = this.#reviveIdleSession(thread).finally(() => {
-        this.#revivals.delete(id);
-      });
-      this.#revivals.set(id, pending);
-    }
-    return pending;
-  }
-
   async #reviveIdleSession(thread: ExternalThread): Promise<ExternalThreadRpcError | null> {
     thread.sessionUnavailable = true;
     const harnessId = thread.record.harnessId as ExternalHarnessId;
@@ -581,12 +610,8 @@ export class ExternalThreadRuntime {
       await this.#dropIdleSession(thread);
       return { code: -32077, message: "External Harness is unavailable" };
     }
-    try {
-      await thread.session.close();
-      await thread.outputTask;
-    } catch (error) {
-      this.#diagnose(error);
-    }
+    await this.#lifecycle.release(thread.id, thread.session, thread.outputTask);
+    await this.#retireSubagents(thread);
     if (this.#threads.get(thread.id) !== thread) {
       return { code: -32076, message: "External Thread recovery failed" };
     }
@@ -614,19 +639,19 @@ export class ExternalThreadRuntime {
     }
     const session = opened.value;
     if (this.#threads.get(thread.id) !== thread) {
-      await session.close().catch(() => undefined);
+      await this.#lifecycle.release(thread.id, session, Promise.resolve());
       return { code: -32076, message: "External Thread recovery failed" };
     }
-    const snapshot = await session.readSnapshot();
-    if (!snapshot.ok) {
-      await session.close().catch(() => undefined);
-      await this.#dropIdleSession(thread);
-      return mapExternalThreadHarnessError(snapshot.error, "read");
-    }
     try {
+      const snapshot = await session.readSnapshot();
+      if (!snapshot.ok) {
+        await this.#lifecycle.release(thread.id, session, Promise.resolve());
+        await this.#dropIdleSession(thread);
+        return mapExternalThreadHarnessError(snapshot.error, "read");
+      }
       let aligned = await this.#repository.alignSnapshot(thread.record, snapshot.value);
       if (this.#threads.get(thread.id) !== thread) {
-        await session.close().catch(() => undefined);
+        await this.#lifecycle.release(thread.id, session, Promise.resolve());
         return { code: -32076, message: "External Thread recovery failed" };
       }
       const restoredState = snapshot.value.state;
@@ -663,7 +688,7 @@ export class ExternalThreadRuntime {
         }
       }
       if (this.#threads.get(thread.id) !== thread) {
-        await session.close().catch(() => undefined);
+        await this.#lifecycle.release(thread.id, session, Promise.resolve());
         return { code: -32076, message: "External Thread recovery failed" };
       }
       const initialState = restoredState ?? session.initialState;
@@ -697,7 +722,8 @@ export class ExternalThreadRuntime {
       this.idleRelease.clearOutputFailed(thread);
       return null;
     } catch (error) {
-      await session.close().catch(() => undefined);
+      if (error instanceof ExternalSessionReleaseError) throw error;
+      await this.#lifecycle.release(thread.id, session, Promise.resolve());
       this.#diagnose(error);
       await this.#dropIdleSession(thread);
       return { code: -32081, message: "External Thread history could not be persisted" };
@@ -868,7 +894,8 @@ export class ExternalThreadRuntime {
         transportModelId,
       });
     } catch (error) {
-      await session.close().catch(() => undefined);
+      if (error instanceof ExternalSessionReleaseError) throw error;
+      await this.#lifecycle.release(record.hostThreadId, session, Promise.resolve());
       throw error;
     }
   }

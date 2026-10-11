@@ -1046,6 +1046,7 @@ export class AppServerHost {
       await Promise.allSettled(threads.map(({ session }) => session.close()));
       await Promise.allSettled(threads.map(({ outputTask }) => outputTask));
       await this.#closeAdapters();
+      await this.#externalRuntime.drain();
       for (const pending of [...this.#pendingDesktopApprovals.values()]) {
         await this.#resolveDesktopApproval(pending.interaction.interactionId).catch(
           () => undefined,
@@ -5294,7 +5295,8 @@ export class AppServerHost {
         !this.#hasRunningSubagents(thread.id) &&
         !thread.session.hasBackgroundWork?.()
       ) {
-        // Do not await: discard waits on outputTask, and this handler runs inside it.
+        // Do not await: discard drains this outputTask. Runtime synchronously admits the
+        // cleanup to its Thread lifecycle barrier so resolve/refresh cannot bypass it.
         void this.#externalRuntime.discardUnavailableIdle(thread);
       }
       return;
