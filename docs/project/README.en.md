@@ -62,7 +62,7 @@ No app switching required: **Pi, Claude Code, OpenCode, OMP, Grok Build, and Dee
 
 **Download the installer** (macOS, Windows)
 
-Go to the [latest release](https://github.com/LiberSeek/BOFT-CLI/releases/latest) and download the installer matching your OS and CPU architecture: DMG for macOS, EXE for Windows. [x64/ARM64 Linux](linux.md) is also supported.
+Go to the [latest release](https://github.com/LIBERSEEK/BOFT-CLI/releases/latest) and download the installer matching your OS and CPU architecture: DMG for macOS, EXE for Windows. [x64/ARM64 Linux](linux.md) is also supported.
 
 Or install with npm:
 

@@ -63,7 +63,7 @@
 
 **下载安装包**（macOS、Windows）
 
-前往 [最新版本](https://github.com/LiberSeek/BOFT-CLI/releases/latest) 下载与系统和 CPU 架构匹配的安装包：macOS 选择 DMG，Windows 选择 EXE。也支持 [x64/ARM64 Linux](docs/platforms/linux/linux.zh-CN.md)。
+前往 [最新版本](https://github.com/LIBERSEEK/BOFT-CLI/releases/latest) 下载与系统和 CPU 架构匹配的安装包：macOS 选择 DMG，Windows 选择 EXE。也支持 [x64/ARM64 Linux](docs/platforms/linux/linux.zh-CN.md)。
 
 或使用 npm：
 
@@ -291,7 +291,7 @@ BOFT CLI 尽量不走这条路：
 环境要求：官方 Codex Desktop、Node.js 22.19+ 或 24、Rust。
 
 ```bash
-git clone https://github.com/LiberSeek/BOFT-CLI
+git clone https://github.com/LIBERSEEK/BOFT-CLI
 cd BOFT-CLI
 npm ci
 npm start

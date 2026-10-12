@@ -290,12 +290,12 @@ export function createNpmPackageManifest({ version, target }) {
     keywords: ["codex", "codexhost", "pi", "claude-code", "agent", "harness"],
     repository: {
       type: "git",
-      url: "git+https://github.com/LiberSeek/BOFT-CLI.git",
+      url: "git+https://github.com/LIBERSEEK/BOFT-CLI.git",
     },
     bugs: {
-      url: "https://github.com/LiberSeek/BOFT-CLI/issues",
+      url: "https://github.com/LIBERSEEK/BOFT-CLI/issues",
     },
-    homepage: "https://github.com/LiberSeek/BOFT-CLI#readme",
+    homepage: "https://github.com/LIBERSEEK/BOFT-CLI#readme",
     publishConfig: {
       access: "public",
     },

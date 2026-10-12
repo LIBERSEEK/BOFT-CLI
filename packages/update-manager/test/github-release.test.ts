@@ -199,7 +199,7 @@ describe("GitHub Release update discovery", () => {
         "Accept: application/vnd.github+json",
         "--header",
         "X-GitHub-Api-Version: 2022-11-28",
-        "repos/BytePioneer-AI/codex-host/releases/latest",
+        "repos/LIBERSEEK/BOFT-CLI/releases/latest",
       ],
       { environment: { PATH: "/usr/bin:/bin" } },
     );

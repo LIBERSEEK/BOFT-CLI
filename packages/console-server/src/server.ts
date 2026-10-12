@@ -27,7 +27,7 @@ import { ConsoleUpdateError, type ConsoleUpdates } from "./updates.js";
 
 export const CONSOLE_SERVICE = "codexhost-console";
 /** Overview “提交 Issue” opens the issues list. */
-const ISSUE_LIST_URL = "https://github.com/LiberSeek/BOFT-CLI/issues";
+const ISSUE_LIST_URL = "https://github.com/LIBERSEEK/BOFT-CLI/issues";
 const MAX_BODY_BYTES = 16 * 1024;
 const INSPECT_CACHE_MS = 2_000;
 

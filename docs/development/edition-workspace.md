@@ -11,7 +11,7 @@ Boft/
   BOFT-CLI/
 ```
 
-The archived Legacy checkout is preserved on GitHub at `LiberSeek/BOFT-CLI-Legacy`.
+The archived Legacy checkout is preserved on GitHub at `LIBERSEEK/BOFT-CLI-Legacy`.
 It is not part of active development.
 
 ## Git Remotes
@@ -20,8 +20,8 @@ The checkout uses three remotes with separate responsibilities:
 
 | Remote     | URL                                                | Responsibility     | Push                                                              |
 | ---------- | -------------------------------------------------- | ------------------ | ----------------------------------------------------------------- |
-| `origin`   | `git@github.com:LiberSeek/BOFT-CLI-EE.git`         | EE repository      | allowed from `ee` or `ee/*`                                      |
-| `public`   | `git@github.com:LiberSeek/BOFT-CLI.git`            | CE repository/fork | allowed from `ce`, `ce/*`, or `upstream/*`                       |
+| `origin`   | `git@github.com:LIBERSEEK/BOFT-CLI-EE.git`         | EE repository      | allowed from `ee` or `ee/*`                                      |
+| `public`   | `git@github.com:LIBERSEEK/BOFT-CLI.git`            | CE repository/fork | allowed from `ce`, `ce/*`, or `upstream/*`                       |
 | `upstream` | `https://github.com/BytePioneer-AI/codex-host.git` | CodexHost upstream | fetch-only                                                        |
 
 `origin` is the default push remote for EE work. The `public` and `upstream`
@@ -56,7 +56,7 @@ git switch -c ce/<topic>
 git push public HEAD
 ```
 
-Open or update a pull request against `LiberSeek/BOFT-CLI`. After the CE
+Open or update a pull request against `LIBERSEEK/BOFT-CLI`. After the CE
 change is integrated into `public/main`, update the local CE branch:
 
 ```bash
@@ -84,7 +84,7 @@ git switch -c ee/<topic>
 git push origin HEAD
 ```
 
-EE-only changes are developed and reviewed in `LiberSeek/BOFT-CLI-EE`. They
+EE-only changes are developed and reviewed in `LIBERSEEK/BOFT-CLI-EE`. They
 must never be merged back into `public/main` or `upstream/main`.
 
 When CE moves forward, merge `public/main` into `ee`, resolve conflicts in the
@@ -114,7 +114,7 @@ git switch -c upstream/<topic>
 git push public HEAD
 ```
 
-Open the PR from `LiberSeek/BOFT-CLI:upstream/<topic>` to
+Open the PR from `LIBERSEEK/BOFT-CLI:upstream/<topic>` to
 `BytePioneer-AI/codex-host:main`. Do not push to the `upstream` remote. After
 an upstream change is accepted, refresh `main`, then bring the desired result
 into `ce` through a reviewed CE change. EE receives it only through the normal

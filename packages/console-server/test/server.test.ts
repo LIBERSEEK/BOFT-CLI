@@ -166,7 +166,7 @@ describe("console server", () => {
     expect(overview).toHaveProperty("console", { version: "1.0.0", distribution: null });
     expect(overview.summary.state).toBe("stopped");
     expect(overview.inspect.desktop?.version).toBe("26.924.20706");
-    expect(overview.issueUrl).toBe("https://github.com/LiberSeek/BOFT-CLI/issues");
+    expect(overview.issueUrl).toBe("https://github.com/LIBERSEEK/BOFT-CLI/issues");
   });
 
   it("reports a live Launcher startup, then failure without leaving a stale starting state", async () => {

@@ -34,7 +34,7 @@ env:
 jobs:
   prepare:
     name: Resolve release metadata
-    if: github.repository == 'LiberSeek/BOFT-CLI'
+    if: github.repository == 'LIBERSEEK/BOFT-CLI'
     runs-on: ubuntu-latest
     timeout-minutes: 35
     permissions:

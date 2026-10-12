@@ -2,7 +2,7 @@ import type { ArtifactSource } from "./artifact.js";
 import { requireSemanticVersion } from "./status.js";
 
 export const CODEXHOST_LATEST_RELEASE_URL =
-  "https://api.github.com/repos/LiberSeek/BOFT-CLI/releases/latest";
+  "https://api.github.com/repos/LIBERSEEK/BOFT-CLI/releases/latest";
 
 const SHA256_DIGEST_PATTERN = /^sha256:([0-9a-f]{64})$/u;
 // The organization login may be shown as LiberSeek or LIBERSEEK. Both identify this repository.

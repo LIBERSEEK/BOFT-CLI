@@ -30,7 +30,7 @@
 </p>
 <br />
 
-<p align="center"><a href="https://github.com/LiberSeek/BOFT-CLI/releases"><strong>下载</strong></a> · <a href="#跨-agent-协作">跨 Agent 协作</a> · <a href="#远程连接-harness">远程连接</a> · <a href="#加入交流群">微信交流群</a> · <a href="README.en.md">English</a> · <a href="README.ko.md">한국어</a></p>
+<p align="center"><a href="https://github.com/LIBERSEEK/BOFT-CLI/releases"><strong>下载</strong></a> · <a href="#跨-agent-协作">跨 Agent 协作</a> · <a href="#远程连接-harness">远程连接</a> · <a href="#加入交流群">微信交流群</a> · <a href="README.en.md">English</a> · <a href="README.ko.md">한국어</a></p>
 
 <br />
 
@@ -94,7 +94,7 @@ boft
 
 **方式二：安装包**（macOS / Windows）
 
-从 [Releases](https://github.com/LiberSeek/BOFT-CLI/releases) 下载对应平台的安装包。
+从 [Releases](https://github.com/LIBERSEEK/BOFT-CLI/releases) 下载对应平台的安装包。
 
 > Linux 支持 x64 / ARM64，详见 [Linux 说明](../platforms/linux/linux.zh-CN.md)。
 
@@ -312,7 +312,7 @@ CodexHost 的做法不同：
 环境要求：官方 Codex Desktop、Node.js 22.19+ 或 24、Rust。
 
 ```bash
-git clone https://github.com/LiberSeek/BOFT-CLI
+git clone https://github.com/LIBERSEEK/BOFT-CLI
 cd BOFT-CLI
 npm ci
 npm start

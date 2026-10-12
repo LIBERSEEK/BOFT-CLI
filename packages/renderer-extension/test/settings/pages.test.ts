@@ -1733,14 +1733,14 @@ describe("Renderer Connections page", () => {
     expect(report).toContain("stderr:\ncheck ~/.pi/agent/settings.json");
     const issueLink = descendants(content).find(
       ({ tagName, href }) =>
-        tagName === "a" && href === "https://github.com/LiberSeek/BOFT-CLI/issues/new",
+        tagName === "a" && href === "https://github.com/LIBERSEEK/BOFT-CLI/issues/new",
     );
     if (!issueLink) throw new Error("GitHub Issue link is not rendered");
     const preventDefault = vi.fn();
     issueLink.dispatch("click", { preventDefault });
     expect(preventDefault).toHaveBeenCalledOnce();
     expect(openExternalUrl).toHaveBeenCalledWith(
-      "https://github.com/LiberSeek/BOFT-CLI/issues/new",
+      "https://github.com/LIBERSEEK/BOFT-CLI/issues/new",
     );
     const copyButton = descendants(
       elementWithClass(content, "settings-connection-error-log-header"),
@@ -3022,7 +3022,7 @@ describe("Renderer Updates page", () => {
         ({ tagName, href }) =>
           tagName === "a" &&
           href ===
-            "https://github.com/LiberSeek/BOFT-CLI/releases/download/v1.2.3/boft-cli-1.2.3-windows-x64.exe",
+            "https://github.com/LIBERSEEK/BOFT-CLI/releases/download/v1.2.3/boft-cli-1.2.3-windows-x64.exe",
       );
       expect(link).toMatchObject({ target: "_blank", rel: "noopener noreferrer" });
     }
@@ -3079,7 +3079,7 @@ describe("Renderer Updates page", () => {
     expect(visibleText(panels[0] as FakeElement)).not.toContain("LIBERSEEK");
     expect(visibleText(panels[1] as FakeElement)).not.toContain("LIBERSEEK");
     const repository = descendants(content).find(
-      ({ tagName, href }) => tagName === "a" && href === "https://github.com/LiberSeek/BOFT-CLI",
+      ({ tagName, href }) => tagName === "a" && href === "https://github.com/LIBERSEEK/BOFT-CLI",
     );
     expect(repository).toMatchObject({
       className: "settings-about-repository-link",
@@ -3211,7 +3211,7 @@ describe("Renderer Updates page", () => {
     expect(visibleText(starBanner)).toContain("如果 BOFT CLI 帮到了你，请在 GitHub 点个 Star");
     const starLink = descendants(starBanner).find(({ tagName }) => tagName === "a");
     expect(starLink).toMatchObject({
-      href: "https://github.com/LiberSeek/BOFT-CLI",
+      href: "https://github.com/LIBERSEEK/BOFT-CLI",
       target: "_blank",
       rel: "noopener noreferrer",
     });

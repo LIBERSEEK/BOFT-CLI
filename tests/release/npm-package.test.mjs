@@ -458,6 +458,7 @@ describe("npm package release", () => {
     expect(manifest.cpu).toEqual(npmPackageCpu(target));
     expect(manifest.engines.node).toBe(">=22");
     expect(manifest.publishConfig.access).toBe("public");
+    expect(manifest.repository.url).toBe("git+https://github.com/LIBERSEEK/BOFT-CLI.git");
     expect(manifest.files).toEqual([
       "bin/**",
       "libexec/**",
@@ -471,6 +472,7 @@ describe("npm package release", () => {
   it("publishes one meta package with exact optional platform dependencies", () => {
     const manifest = createNpmMetaPackageManifest({ version: "0.1.0" });
     expect(manifest.name).toBe(NPM_PACKAGE_NAME);
+    expect(manifest.repository.url).toBe("git+https://github.com/LIBERSEEK/BOFT-CLI.git");
     expect(manifest.bin.boft).toBe("bin/boft.js");
     expect(manifest.bin.codexhost).toBe("bin/codexhost.js");
     expect(manifest.os).toBeUndefined();

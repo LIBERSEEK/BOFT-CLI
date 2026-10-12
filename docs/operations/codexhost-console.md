@@ -134,7 +134,7 @@ codexhost 未运行时，“连接”页列出已安装的插件（读取 `manif
 ## 诊断包与 Issue
 
 - “导出诊断包”下载 JSON：状态、Codex 与 codexhost 版本、最近 5 次启动记录、注入状态，以及最新两个 Host Runtime 日志的末尾 32 KiB。用户主目录替换为 `~`，其他内容（如日志中的项目路径）不做处理，分享前请检查。
-- “提交 Issue”打开 https://github.com/LiberSeek/BOFT-CLI/issues。
+- “提交 Issue”打开 https://github.com/LIBERSEEK/BOFT-CLI/issues。
 
 ## 其他命令
 

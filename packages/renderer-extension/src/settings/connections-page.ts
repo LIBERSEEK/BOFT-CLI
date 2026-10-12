@@ -26,7 +26,7 @@ import { createHarnessVersionPanel } from "./harness-version-panel.js";
 import type { RendererSettingsMessages } from "./localization.js";
 import { keepPageStillDuringTextSelection } from "./selection-scroll.js";
 
-export const CODEXHOST_GITHUB_ISSUES_NEW_URL = "https://github.com/LiberSeek/BOFT-CLI/issues/new";
+export const CODEXHOST_GITHUB_ISSUES_NEW_URL = "https://github.com/LIBERSEEK/BOFT-CLI/issues/new";
 
 export interface RendererConnectionAgentSnapshot {
   readonly agent: ExternalRendererAgent;

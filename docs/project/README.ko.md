@@ -61,7 +61,7 @@
 
 **설치 프로그램 다운로드** (macOS, Windows)
 
-[최신 릴리스](https://github.com/LiberSeek/BOFT-CLI/releases/latest)에서 운영체제와 CPU 아키텍처에 맞는 설치 프로그램을 다운로드하세요. macOS는 DMG, Windows는 EXE를 선택합니다. [x64/ARM64 Linux](../platforms/linux/linux.md)도 지원합니다.
+[최신 릴리스](https://github.com/LIBERSEEK/BOFT-CLI/releases/latest)에서 운영체제와 CPU 아키텍처에 맞는 설치 프로그램을 다운로드하세요. macOS는 DMG, Windows는 EXE를 선택합니다. [x64/ARM64 Linux](../platforms/linux/linux.md)도 지원합니다.
 
 또는 npm으로 설치하세요:
 
@@ -295,7 +295,7 @@ BOFT CLI는 다른 방식을 사용합니다.
 환경 요구 사항: 공식 Codex Desktop, Node.js 22.19+ 또는 24, Rust.
 
 ```bash
-git clone https://github.com/LiberSeek/BOFT-CLI
+git clone https://github.com/LIBERSEEK/BOFT-CLI
 cd BOFT-CLI
 npm ci
 npm start
