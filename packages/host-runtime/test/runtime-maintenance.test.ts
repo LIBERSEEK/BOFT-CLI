@@ -273,7 +273,9 @@ describe("runtime maintenance", () => {
           settled = true;
         },
       );
-      for (let i = 0; i < 300 && !settled; i += 1) {
+      // Real filesystem work can outlast a fixed number of fake-clock advances.
+      // Keep driving timers until startup settles; the test timeout bounds real time.
+      while (!settled) {
         await new Promise<void>((resolve) => setImmediate(resolve));
         await vi.advanceTimersByTimeAsync(50);
       }
