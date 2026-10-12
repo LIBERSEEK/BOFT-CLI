@@ -60,6 +60,7 @@ it("keeps the real Claude Adapter's same-native transports disjoint through Host
     deleteSession: async () => undefined,
     forkSession: async () => ({ sessionId: "unused-fork" }),
     getSessionInfo: async () => ({ cwd: "/synthetic" }),
+    listSessions: async () => [],
     readSessionMessages: async () => structuredClone(history),
     readSubagentMessages: async () => [],
     createTransport: vi.fn((input) => {
@@ -221,6 +222,7 @@ it("waits for the real ZCode Adapter to release exclusive native ownership befor
     cwd,
     title: "Recovery",
     archived: false,
+    isPinned: false,
     transportModelId: "codexhost/zcode-native",
     ephemeral: false,
     historyMode: "legacy",
