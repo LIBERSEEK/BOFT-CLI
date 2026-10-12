@@ -11,6 +11,7 @@ import { installRendererExternalQueue } from "./renderer-external-queue.js";
 import { installRendererExternalSteering } from "./renderer-external-steering.js";
 import { createRemoteAttachmentSender } from "./renderer-remote-attachments.js";
 import { restoreThreadReferenceCapability } from "./renderer-thread-reference-capability.js";
+import { createThreadReferenceContext } from "./renderer-thread-reference-context.js";
 import {
   installRendererManualCompaction,
   type RendererMessageTarget,
@@ -83,7 +84,6 @@ export function createRendererHostClients(
                   const message = event.data;
                   if (
                     disposed ||
-                    readRouting()?.forHost(route.hostId) !== route ||
                     !message ||
                     typeof message !== "object" ||
                     !("type" in message) ||
@@ -91,7 +91,8 @@ export function createRendererHostClients(
                     !("hostId" in message) ||
                     message.hostId !== route.hostId ||
                     !("method" in message) ||
-                    message.method !== THREAD_USAGE_UPDATED_METHOD
+                    message.method !== THREAD_USAGE_UPDATED_METHOD ||
+                    readRouting()?.forHost(route.hostId) !== route
                   )
                     return;
                   listener(message);
@@ -125,6 +126,11 @@ export function createRendererHostClients(
           installRendererExternalSteering(
             target,
             createRemoteAttachmentSender(
+              target,
+              route.hostId,
+              () => !disposed && readRouting()?.forHost(route.hostId) === route,
+            ),
+            createThreadReferenceContext(
               target,
               route.hostId,
               () => !disposed && readRouting()?.forHost(route.hostId) === route,

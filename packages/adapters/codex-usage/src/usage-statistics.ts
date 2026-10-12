@@ -10,8 +10,10 @@ import type {
   HarnessUsageStatisticsCapability,
 } from "@codexhost/harness-adapter";
 import {
+  jsonlRecords,
   nativeTimeMs,
   parseHarnessUsageEntry,
+  usageSessionTitle,
   withUsageSession,
 } from "@codexhost/harness-adapter/usage-statistics";
 import { CodexCounters, object, usage } from "./counters.js";
@@ -24,13 +26,82 @@ interface SourceFile {
   fingerprint: string;
 }
 const text = (value: unknown): string => (typeof value === "string" ? value : "");
+const ROW_KINDS = new Set([
+  "session_meta",
+  "turn_context",
+  "token_usage_record",
+  "compacted",
+  "event_msg",
+  "response_item",
+]);
+const HEAD_TYPE = /"type"\s*:\s*"([^"]+)"/u;
+const TAIL_TYPE = /"type"\s*:\s*"([^"]+)"\s*\}\s*$/u;
+
+/**
+ * Cheap top-level row type guess, confirmed by JSON.parse later. Most rows lead with `type`,
+ * but Codex also writes `session_meta` with sorted keys (`ordinal`, `payload`, `timestamp`,
+ * `type`); its head then holds nested types such as `base_instructions.provenance.type`.
+ */
+function rowKind(line: string): string | undefined {
+  const head = HEAD_TYPE.exec(line.slice(0, 1024))?.[1];
+  if (head && ROW_KINDS.has(head)) return head;
+  return TAIL_TYPE.exec(line.slice(-1024))?.[1] ?? head;
+}
 async function stamp(file: string): Promise<string> {
   const s = await lstat(file, { bigint: true });
   if (!s.isFile()) throw new Error("Codex rollout is not a regular file");
   return `${s.dev}:${s.ino}:${s.size}:${s.mtimeNs}:${s.ctimeNs}`;
 }
-function fingerprint(files: readonly SourceFile[]): string {
-  return createHash("sha256").update(JSON.stringify(files)).digest("hex");
+function fingerprint(files: readonly SourceFile[], extra = ""): string {
+  return createHash("sha256").update(JSON.stringify(files)).update(extra).digest("hex");
+}
+
+/** Words the user typed, skipping Codex's own environment / AGENTS.md / instruction dumps. */
+function typedPrompt(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const text = value.trim();
+  if (!text || text.startsWith("<") || text.startsWith("# AGENTS.md") || text.startsWith("<!--")) {
+    return undefined;
+  }
+  return usageSessionTitle(text);
+}
+
+function userItemPrompt(payload: Record<string, unknown> | null): string | undefined {
+  if (!payload || payload.type !== "message" || payload.role !== "user") return undefined;
+  if (!Array.isArray(payload.content)) return typedPrompt(payload.content);
+  for (const part of payload.content) {
+    if (typeof part !== "object" || part === null) continue;
+    const block = part as Record<string, unknown>;
+    if (block.type === "input_text" || block.type === "text") {
+      const prompt = typedPrompt(block.text);
+      if (prompt) return prompt;
+    }
+  }
+  return undefined;
+}
+
+async function readThreadNames(home: string, signal: AbortSignal): Promise<Map<string, string>> {
+  const names = new Map<string, string>();
+  try {
+    for await (const line of jsonlRecords(
+      path.join(home, "session_index.jsonl"),
+      '"thread_name"',
+      signal,
+    )) {
+      const id = text(line.id);
+      const name = usageSessionTitle(line.thread_name);
+      if (id && name) names.set(id, name);
+    }
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  return names;
+}
+
+export interface SessionReadOptions {
+  sessionId?: string;
+  onTokenCount?: (info: unknown) => void;
+  onIncomplete?: () => void;
 }
 
 /** Shared by the plugin and fixture tests; a thread can continue across several rollout files. */
@@ -38,6 +109,7 @@ export async function readCodexRollouts(
   files: readonly string[],
   thread: string,
   signal: AbortSignal,
+  options: SessionReadOptions = {},
 ): Promise<HarnessUsageEntry[]> {
   const counters = new CodexCounters();
   let model = "",
@@ -47,24 +119,15 @@ export async function readCodexRollouts(
     ownFrom: number | null = null,
     firstMeta = false,
     forkAt = 0,
-    seen = 0;
+    seen = 0,
+    firstPrompt: string | undefined;
   for (const file of files) {
     for await (const line of rolloutLines(file, signal)) {
       signal.throwIfAborted();
       if (++seen % 128 === 0) await yieldToEventLoop(undefined, { signal });
-      const kind = /"type"\s*:\s*"([^"]+)"/u.exec(line.slice(0, 1024))?.[1];
-      if (
-        !kind ||
-        ![
-          "session_meta",
-          "turn_context",
-          "token_usage_record",
-          "compacted",
-          "event_msg",
-          "response_item",
-        ].includes(kind)
-      )
-        continue;
+      const kind = rowKind(line);
+      if (!kind && line.trim()) options.onIncomplete?.();
+      if (!kind || !ROW_KINDS.has(kind)) continue;
       // Avoid decoding large tool outputs or conversation bodies which cannot contain usage.
       if (kind === "response_item" && !/"role"\s*:\s*"user"/u.test(line.slice(0, 1024))) continue;
       if (
@@ -78,18 +141,26 @@ export async function readCodexRollouts(
       try {
         row = object(JSON.parse(line));
       } catch {
+        options.onIncomplete?.();
         continue;
       } // a writer may leave a partial tail
       const p = object(row?.payload);
       const at = nativeTimeMs(row?.timestamp);
-      if (!row || !p || at === null) continue;
+      if (!row || !p || at === null) {
+        options.onIncomplete?.();
+        continue;
+      }
       switch (row.type) {
         case "session_meta": {
           if (!firstMeta) {
             if (text(p.id) !== thread)
               throw new Error("Codex rollout identity does not match its source");
-            if (p.forked_from_id || p.parent_thread_id || p.subagent_history_start_ordinal)
+            if (p.forked_from_id || p.parent_thread_id || p.subagent_history_start_ordinal) {
               forkAt = nativeTimeMs(p.timestamp) ?? at;
+              // Global attribution excludes inherited requests. Until a complete session-view
+              // replay exists, do not advertise these own-only records as the whole session.
+              options.onIncomplete?.();
+            }
             cwd = text(p.cwd);
             firstMeta = true;
           }
@@ -103,29 +174,42 @@ export async function readCodexRollouts(
           counters.context("", text(p.turn_id), model);
           break;
         case "token_usage_record":
+          if (!usage(p.usage) || !text(p.response_id)) options.onIncomplete?.();
           counters.record(at, model, p);
           break;
         case "compacted": {
           const record = object(p.latest_token_usage_record);
-          if (record && p.compaction_response_id && record.response_id === p.compaction_response_id)
+          if (
+            record &&
+            p.compaction_response_id &&
+            record.response_id === p.compaction_response_id
+          ) {
+            if (!usage(record.usage)) options.onIncomplete?.();
             counters.record(at, model, record, true);
+          }
           break;
         }
         case "response_item":
           counters.boundary();
+          firstPrompt ??= userItemPrompt(p);
           break;
         case "event_msg":
           if (p.type === "task_started") {
             counters.context("", text(p.turn_id), "");
             counters.boundary();
           }
-          if (p.type === "user_message") counters.boundary();
+          if (p.type === "user_message") {
+            counters.boundary();
+            firstPrompt ??= typedPrompt(p.message);
+          }
           if (p.type === "thread_settings_applied") {
             model = text(object(p.thread_settings)?.model) || model;
             counters.context("", "", model);
           }
           if (p.type === "token_count") {
             const info = object(p.info);
+            options.onTokenCount?.(info);
+            if (info && !usage(info.total_token_usage)) options.onIncomplete?.();
             if (info)
               counters.count(
                 at,
@@ -163,18 +247,28 @@ export async function readCodexRollouts(
       ...(v.usage.known & 8 ? { cacheWriteInputTokens: written } : {}),
       ...(v.usage.known & 16 ? { reasoningOutputTokens: reasoning } : {}),
     });
-    return entry ? [withUsageSession(entry, { sessionId: thread, cwd })] : [];
+    return entry ? [withUsageSession(entry, { sessionId: thread, cwd, title: firstPrompt })] : [];
   });
 }
 
 export function createCodexUsageStatistics(
   environment: NodeJS.ProcessEnv,
+  options: SessionReadOptions = {},
 ): HarnessUsageStatisticsCapability {
   const home = path.resolve(
     environment.CODEX_HOME ||
       path.join(environment.HOME || environment.USERPROFILE || os.homedir(), ".codex"),
   );
   const groups = new Map<string, { thread: string; files: SourceFile[] }>();
+  let names = new Map<string, string>();
+  let namesStamp = "";
+  async function threadNames(signal: AbortSignal): Promise<Map<string, string>> {
+    const current = await stamp(path.join(home, "session_index.jsonl")).catch(() => "-");
+    if (namesStamp === current) return names;
+    names = await readThreadNames(home, signal);
+    namesStamp = current;
+    return names;
+  }
   return {
     async listSources(signal): Promise<HarnessUsageSource[]> {
       const found = new Map<string, SourceFile[]>();
@@ -192,7 +286,7 @@ export function createCodexUsageStatistics(
           if (entry.isDirectory() && depth < 4) await visit(file, depth + 1);
           if (!entry.isFile()) continue;
           const thread = ROLLOUT.exec(entry.name)?.[1];
-          if (!thread) continue;
+          if (!thread || (options.sessionId && thread !== options.sessionId)) continue;
           const list = found.get(thread) ?? [];
           list.push({ file, fingerprint: await stamp(file) });
           found.set(thread, list);
@@ -200,6 +294,9 @@ export function createCodexUsageStatistics(
       }
       await visit(path.join(home, "sessions"), 0);
       await visit(path.join(home, "archived_sessions"), 0);
+      const indexStamp = options.sessionId
+        ? ""
+        : await stamp(path.join(home, "session_index.jsonl")).catch(() => "-");
       const result: HarnessUsageSource[] = [];
       groups.clear();
       for (const [thread, files] of found) {
@@ -210,7 +307,7 @@ export function createCodexUsageStatistics(
         );
         const id = path.join(home, `usage-thread-${thread}`);
         groups.set(id, { thread, files });
-        result.push({ id, fingerprint: fingerprint(files) });
+        result.push({ id, fingerprint: fingerprint(files, indexStamp) });
       }
       return result;
     },
@@ -241,12 +338,22 @@ export function createCodexUsageStatistics(
         kept.map(({ file }) => file),
         group.thread,
         signal,
+        options,
       );
       // Do not cache a parse or prefix proof spanning an append/replacement.
       for (const file of group.files)
         if ((await stamp(file.file)) !== file.fingerprint)
           throw new Error("Codex rollout changed while reading; refresh to retry");
-      return entries;
+      const named = options.sessionId ? undefined : (await threadNames(signal)).get(group.thread);
+      return named
+        ? entries.map((entry) =>
+            withUsageSession(entry, {
+              sessionId: entry.sessionId,
+              cwd: entry.cwd,
+              title: named,
+            }),
+          )
+        : entries;
     },
   };
 }

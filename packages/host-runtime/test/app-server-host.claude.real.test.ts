@@ -161,6 +161,7 @@ describe("AppServerHost hermetic Claude projection", () => {
           setIdleLive: () => undefined,
           hasBackgroundTasks: () => false,
           stopBackgroundTask: async () => undefined,
+          stopTasks: async () => undefined,
           start: async () => undefined,
           getContextUsage: async () => ({
             usedTokens: 30,
@@ -192,6 +193,7 @@ describe("AppServerHost hermetic Claude projection", () => {
           },
           respondToInteraction: async () => undefined,
           abort: async () => undefined,
+          abortContinuation: async () => undefined,
           close: async () => undefined,
         };
       },

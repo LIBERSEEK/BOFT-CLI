@@ -1650,7 +1650,9 @@ class PiHarnessSession implements HarnessSession {
       type: "question",
       interactionId,
       turnId: active.command.turnId,
-      ...(associatedTool ? { itemId: associatedTool.item.itemId } : {}),
+      ...(associatedTool?.item.type === "toolExecution"
+        ? { itemId: associatedTool.item.itemId }
+        : {}),
       title: "Pi",
       questions: [question],
       ...(request.timeoutMs !== undefined

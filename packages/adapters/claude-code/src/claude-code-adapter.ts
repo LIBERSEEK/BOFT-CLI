@@ -77,6 +77,7 @@ import {
 } from "@codexhost/shared-contracts";
 
 import { ClaudeBackgroundOccupancy } from "./background-occupancy.js";
+import { ClaudeUltracodeUnavailableError, claudeUltracodeFailure } from "./ultracode.js";
 import { SessionImportScope } from "@codexhost/harness-adapter/session-import";
 import { ClaudeCodeExecutableError, resolveClaudeCodeExecutable } from "./command.js";
 import { ClaudePendingSessions, isPendingClaudeSession } from "./pending-session.js";
@@ -113,6 +114,7 @@ import {
 import { claudeDynamicCommandPrompt, claudeLiveCommandCatalog } from "./slash-commands.js";
 import { claudePlanReviewResponse, createClaudePlanReview } from "./plan-review.js";
 import { ClaudeSubagentLifecycle } from "./subagent-lifecycle.js";
+import { ClaudeWorkflowLifecycle } from "./workflow-lifecycle.js";
 import { ClaudeTaskTracker } from "./task-tracker.js";
 import { ClaudeBackgroundCommandItems } from "./background-command-items.js";
 import { ClaudeToolLifecycle } from "./tool-lifecycle.js";
@@ -177,6 +179,20 @@ interface RequestUsageRefreshRequest {
   generation: number;
 }
 
+/**
+ * A cancelled Turn that owned background tasks ends only after Claude Code confirms they
+ * stopped and stays quiet: Claude answers a stopped Subagent's notification on its own.
+ */
+interface TurnCancellation {
+  /** Native stops not yet confirmed. */
+  stopping: boolean;
+  /** A Root Segment Claude started during the cancellation is being interrupted. */
+  interrupting: boolean;
+  quiet: ReturnType<typeof setTimeout> | null;
+  /** A Segment Result that did not prove its interruption; the Turn fails once stops end. */
+  failure: HarnessError | null;
+}
+
 interface ActiveTurn {
   command: TurnStartCommand;
   compactionItem: HostContextCompactionItem | null;
@@ -187,10 +203,15 @@ interface ActiveTurn {
   reasoningOrdinal: number;
   pendingSubagentTranscriptCalls: Set<string>;
   subagents: ClaudeSubagentLifecycle;
+  workflows: ClaudeWorkflowLifecycle;
   tools: ClaudeToolLifecycle;
   interactions: Map<HostInteractionId, ActiveInteraction>;
   interactionByRequestId: Map<string, HostInteractionId>;
+  /** Native requests raised by agents; they stay open while a held Turn waits for them. */
+  agentScopedRequestIds: Set<string>;
   checkpointId: string | null;
+  /** Submitted or observed native User UUID, independent of the opaque Turn identity. */
+  userMessageId: string | null;
   nativeTurnKey: string;
   nativeTurnRef: NativeTurnRef | null;
   cancellationRequested: boolean;
@@ -210,6 +231,8 @@ interface ActiveTurn {
   /** Replay observation time of each in-flight reasoning Item's first delta, by messageId. */
   reasoningStartedAtMs: Map<string, number>;
   held: boolean;
+  /** Set while a cancelled Turn waits for its background work to stop. */
+  cancellation: TurnCancellation | null;
   /** True while Claude can still produce a native result for the current Root Segment. */
   rootSegmentActive: boolean;
   completion: Promise<void>;
@@ -404,6 +427,7 @@ function startupFailure(error: unknown): HarnessError {
   if (error instanceof ClaudeCodeExecutableError) {
     return { code: "notInstalled", message: error.message, retryable: false };
   }
+  if (error instanceof ClaudeUltracodeUnavailableError) return claudeUltracodeFailure(error);
   const text = error instanceof Error ? error.message.toLowerCase() : "";
   if (
     text.includes("not logged in") ||
@@ -933,6 +957,10 @@ class ClaudeHarnessSession implements HarnessSession {
         newItemId: () => hostItemIdSchema.parse(this.#randomUUID()),
         emit: (event) => this.#event(event),
       }),
+      workflows: new ClaudeWorkflowLifecycle({
+        newItemId: () => hostItemIdSchema.parse(this.#randomUUID()),
+        emit: (event) => this.#event(event),
+      }),
       tools: new ClaudeToolLifecycle({
         cwd: this.#cwd,
         outputLimit: this.#toolOutputLimit,
@@ -944,7 +972,9 @@ class ClaudeHarnessSession implements HarnessSession {
       }),
       interactions: new Map(),
       interactionByRequestId: new Map(),
+      agentScopedRequestIds: new Set(),
       checkpointId: null,
+      userMessageId: null,
       nativeTurnKey,
       nativeTurnRef: null,
       cancellationRequested: false,
@@ -960,6 +990,7 @@ class ClaudeHarnessSession implements HarnessSession {
       agentMessageStartedAtMs: null,
       reasoningStartedAtMs: new Map(),
       held: false,
+      cancellation: null,
       rootSegmentActive: true,
       completion,
       resolveCompletion,
@@ -979,6 +1010,7 @@ class ClaudeHarnessSession implements HarnessSession {
         this.#handleTurnEvent(active, event);
       });
       // Claude preserves caller-assigned User Message UUIDs in native history.
+      active.userMessageId = nativeTurnRef.nativeTurnKey;
       active.nativeTurnRef = nativeTurnRef;
       void running.then(
         (result) => this.#finishResult(active, result),
@@ -1080,6 +1112,10 @@ class ClaudeHarnessSession implements HarnessSession {
         newItemId: () => hostItemIdSchema.parse(this.#randomUUID()),
         emit: (event) => this.#event(event),
       }),
+      workflows: new ClaudeWorkflowLifecycle({
+        newItemId: () => hostItemIdSchema.parse(this.#randomUUID()),
+        emit: (event) => this.#event(event),
+      }),
       tools: new ClaudeToolLifecycle({
         cwd: this.#cwd,
         outputLimit: this.#toolOutputLimit,
@@ -1091,7 +1127,9 @@ class ClaudeHarnessSession implements HarnessSession {
       }),
       interactions: new Map(),
       interactionByRequestId: new Map(),
+      agentScopedRequestIds: new Set(),
       checkpointId: null,
+      userMessageId: null,
       nativeTurnKey,
       nativeTurnRef: null,
       cancellationRequested: false,
@@ -1107,6 +1145,7 @@ class ClaudeHarnessSession implements HarnessSession {
       agentMessageStartedAtMs: null,
       reasoningStartedAtMs: new Map(),
       held: false,
+      cancellation: null,
       rootSegmentActive: true,
       completion,
       resolveCompletion,
@@ -1257,14 +1296,17 @@ class ClaudeHarnessSession implements HarnessSession {
           const sessionModel = claudeSessionModel(model, await this.#longContextEnabled());
           await transport.setModel(sessionModel);
           this.#sdkModel = sessionModel;
-        } catch {
+        } catch (error) {
           return {
             ok: false,
-            error: {
-              code: "nativeFailure",
-              message: "Claude Code rejected the Model selection",
-              retryable: true,
-            },
+            error:
+              error instanceof ClaudeUltracodeUnavailableError
+                ? claudeUltracodeFailure(error)
+                : {
+                    code: "nativeFailure",
+                    message: "Claude Code rejected the Model selection",
+                    retryable: true,
+                  },
           };
         }
       }
@@ -1317,14 +1359,17 @@ class ClaudeHarnessSession implements HarnessSession {
       if (transport) {
         try {
           await transport.setThinkingOption(thinkingOptionId);
-        } catch {
+        } catch (error) {
           return {
             ok: false,
-            error: {
-              code: "nativeFailure",
-              message: "Claude Code rejected the Thinking selection",
-              retryable: true,
-            },
+            error:
+              error instanceof ClaudeUltracodeUnavailableError
+                ? claudeUltracodeFailure(error)
+                : {
+                    code: "nativeFailure",
+                    message: "Claude Code rejected the Thinking selection",
+                    retryable: true,
+                  },
           };
         }
       }
@@ -1524,6 +1569,16 @@ class ClaudeHarnessSession implements HarnessSession {
       return { ok: true, value: { cancellationRequested: true } };
     }
     active.cancellationRequested = true;
+    const transport = this.#transport;
+    const taskIds = this.#backgroundTaskIds(active);
+    if (
+      transport &&
+      (taskIds.length > 0 ||
+        (active.held && (active.rootSegmentActive || this.#occupancy.awaitingContinuation)))
+    ) {
+      await this.#cancelBackgroundWork(active, transport, taskIds);
+      return { ok: true, value: { cancellationRequested: true } };
+    }
     if (active.held) {
       this.#finish(active, { status: "cancelled", reason: "Cancelled by user" });
       return { ok: true, value: { cancellationRequested: true } };
@@ -1539,6 +1594,88 @@ class ClaudeHarnessSession implements HarnessSession {
     }
     if (this.#active === active) this.#armCancelEscalation(active);
     return { ok: true, value: { cancellationRequested: true } };
+  }
+
+  /** Background Subagents and Workflow runs of this Turn that Claude Code still runs. */
+  #backgroundTaskIds(active: ActiveTurn): string[] {
+    return [...new Set([...active.workflows.taskIds(), ...this.#occupancy.runningTaskIds()])];
+  }
+
+  /**
+   * Stops the Turn's background tasks and interrupts its Root Segment, if one runs. The Turn
+   * ends once Claude Code confirms the stops and stays quiet; a stop or interrupt it does not
+   * confirm closes the native process, which ends every task it runs.
+   */
+  async #cancelBackgroundWork(
+    active: ActiveTurn,
+    transport: ClaudeTurnTransport,
+    taskIds: readonly string[],
+  ): Promise<void> {
+    const cancellation: TurnCancellation = {
+      stopping: taskIds.length > 0,
+      interrupting: false,
+      quiet: null,
+      failure: null,
+    };
+    active.cancellation = cancellation;
+    this.#clearContinuationQuiescence();
+    const timeout = rejectAfter(this.#cancelTimeoutMs, "Claude Code cancellation timed out");
+    try {
+      await Promise.race([
+        Promise.all([
+          taskIds.length > 0 ? transport.stopTasks(taskIds) : undefined,
+          active.rootSegmentActive ? this.#interruptCancelledSegment(active) : undefined,
+        ]),
+        timeout.promise,
+      ]);
+    } catch {
+      this.#hardCancel(active);
+      return;
+    } finally {
+      timeout.cancel();
+    }
+    cancellation.stopping = false;
+    this.#settleCancellation(active);
+  }
+
+  /** Claude answers stopped work on its own; a cancelled Turn interrupts that answer too. */
+  async #interruptCancelledSegment(active: ActiveTurn): Promise<void> {
+    const cancellation = active.cancellation;
+    const transport = this.#transport;
+    if (!cancellation || cancellation.interrupting || !transport) return;
+    cancellation.interrupting = true;
+    this.#clearCancellationQuiet(cancellation);
+    await transport.abortContinuation();
+    // The interrupted Segment still owes its native terminal.
+    if (this.#active === active && cancellation.interrupting) this.#armCancelEscalation(active);
+  }
+
+  #settleCancellation(active: ActiveTurn): void {
+    const cancellation = active.cancellation;
+    if (this.#active !== active || !cancellation || this.#hardCancelTask) return;
+    if (cancellation.stopping || cancellation.interrupting || active.rootSegmentActive) return;
+    this.#clearCancellationQuiet(cancellation);
+    const quiet = setTimeout(() => {
+      cancellation.quiet = null;
+      if (
+        this.#active !== active ||
+        active.cancellation !== cancellation ||
+        cancellation.interrupting ||
+        active.rootSegmentActive
+      ) {
+        return;
+      }
+      if (cancellation.failure) this.#finishFailed(active, cancellation.failure);
+      else this.#finish(active, { status: "cancelled", reason: "Cancelled by user" });
+    }, this.#continuationQuiescenceMs);
+    quiet.unref();
+    cancellation.quiet = quiet;
+  }
+
+  #clearCancellationQuiet(cancellation: TurnCancellation): void {
+    if (!cancellation.quiet) return;
+    clearTimeout(cancellation.quiet);
+    cancellation.quiet = null;
   }
 
   async #close(): Promise<void> {
@@ -1634,8 +1771,8 @@ class ClaudeHarnessSession implements HarnessSession {
       });
       this.#transport = transport;
       transport.setAutonomousTurnHandler({
-        start: (nativeTurnKey) => {
-          this.#autonomousTarget = this.#startAutonomousTurn(nativeTurnKey);
+        start: (nativeTurnKey, userMessageId) => {
+          this.#autonomousTarget = this.#startAutonomousTurn(nativeTurnKey, userMessageId);
         },
         onEvent: (event) => this.#deliverLiveEvent(this.#autonomousTarget, event),
         onTerminal: (result) => {
@@ -1739,6 +1876,9 @@ class ClaudeHarnessSession implements HarnessSession {
     switch (event.type) {
       case "segment.started":
         this.#observeRootOutput(active);
+        if (active.cancellation && !active.cancellation.interrupting) {
+          this.#interruptCancelledSegment(active).catch(() => this.#hardCancel(active));
+        }
         return;
       case "subagents.live":
         this.#occupancy.observeLive(event.nativeSubagentIds);
@@ -1779,7 +1919,8 @@ class ClaudeHarnessSession implements HarnessSession {
         if (
           active.tools.size > 0 ||
           active.subagents.size > 0 ||
-          active.interactions.size > 0 ||
+          active.workflows.pendingCount > 0 ||
+          this.#hasRootInteractions(active) ||
           active.compactionItem
         ) {
           return;
@@ -1853,6 +1994,30 @@ class ClaudeHarnessSession implements HarnessSession {
         this.#occupancy.release(event.callId, subagent.nativeSubagentId);
         return;
       }
+      case "workflow.started":
+        this.#observeRootOutput(active);
+        for (const messageId of [...active.reasoningItems.keys()]) {
+          this.#completeReasoning(active, messageId, { status: "succeeded" });
+        }
+        this.#completeAgentItem(active, { status: "succeeded" }, false);
+        active.workflows.start(event);
+        return;
+      case "workflow.updated":
+        this.#refreshSubagentTranscripts(active.workflows.update(active.command.turnId, event));
+        return;
+      case "workflow.activity":
+        this.#refreshSubagentTranscripts(active.workflows.activity(event.callId));
+        return;
+      case "workflow.launched": {
+        const launched = active.workflows.launched(
+          active.command.turnId,
+          event,
+          active.cancellationRequested,
+        );
+        // A launched run owes the Root a continuation, like a background Subagent.
+        if (launched) this.#occupancy.occupySpawn(launched.callId, launched.taskId);
+        return;
+      }
       case "subagent.settled":
         this.#settleNativeTask(event);
         return;
@@ -1866,7 +2031,11 @@ class ClaudeHarnessSession implements HarnessSession {
         return;
       }
       case "interaction.requested":
-        this.#observeRootOutput(active);
+        if (event.agentScoped) {
+          active.agentScopedRequestIds.add(event.request.requestId);
+        } else {
+          this.#observeRootOutput(active);
+        }
         this.#startInteraction(active, event.request);
         return;
       case "interaction.closed":
@@ -2002,6 +2171,7 @@ class ClaudeHarnessSession implements HarnessSession {
     if (!interactionId)
       throw new Error("Claude Code Interaction close references an unknown request");
     active.interactionByRequestId.delete(requestId);
+    active.agentScopedRequestIds.delete(requestId);
     active.interactions.delete(interactionId);
     this.#event({
       type: "interaction.closed",
@@ -2011,16 +2181,35 @@ class ClaudeHarnessSession implements HarnessSession {
     });
   }
 
-  #closeActiveInteractions(active: ActiveTurn, reason: "cancelled" | "superseded"): void {
+  #closeActiveInteractions(
+    active: ActiveTurn,
+    reason: "cancelled" | "superseded",
+    keepAgentScoped = false,
+  ): void {
     for (const [interactionId, pending] of active.interactions) {
+      if (keepAgentScoped && active.agentScopedRequestIds.has(pending.request.requestId)) continue;
       active.interactions.delete(interactionId);
       active.interactionByRequestId.delete(pending.request.requestId);
+      active.agentScopedRequestIds.delete(pending.request.requestId);
       this.#event({
         type: "interaction.closed",
         interactionId,
         turnId: active.command.turnId,
         reason,
       });
+    }
+  }
+
+  #hasRootInteractions(active: ActiveTurn): boolean {
+    for (const requestId of active.interactionByRequestId.keys()) {
+      if (!active.agentScopedRequestIds.has(requestId)) return true;
+    }
+    return false;
+  }
+
+  #refreshSubagentTranscripts(nativeSubagentIds: readonly string[]): void {
+    for (const nativeSubagentId of new Set(nativeSubagentIds)) {
+      this.#event({ type: "subagent.transcript.changed", nativeSubagentId });
     }
   }
 
@@ -2128,7 +2317,7 @@ class ClaudeHarnessSession implements HarnessSession {
    * it; otherwise it becomes a live autonomous Turn, so the Thread shows it running and a new
    * request waits instead of absorbing it.
    */
-  #startAutonomousTurn(segmentKey: string): ActiveTurn | null {
+  #startAutonomousTurn(segmentKey: string, userMessageId: string | null): ActiveTurn | null {
     if (this.#phase !== "open") return null;
     const current = this.#active;
     if (current?.held) return current;
@@ -2159,6 +2348,10 @@ class ClaudeHarnessSession implements HarnessSession {
         newItemId: () => hostItemIdSchema.parse(this.#randomUUID()),
         emit: (event) => this.#event(event),
       }),
+      workflows: new ClaudeWorkflowLifecycle({
+        newItemId: () => hostItemIdSchema.parse(this.#randomUUID()),
+        emit: (event) => this.#event(event),
+      }),
       tools: new ClaudeToolLifecycle({
         cwd: this.#cwd,
         outputLimit: this.#toolOutputLimit,
@@ -2170,7 +2363,9 @@ class ClaudeHarnessSession implements HarnessSession {
       }),
       interactions: new Map(),
       interactionByRequestId: new Map(),
+      agentScopedRequestIds: new Set(),
       checkpointId: null,
+      userMessageId,
       nativeTurnKey,
       nativeTurnRef: nativeTurnRefSchema.parse({
         harnessId: this.harnessId,
@@ -2191,6 +2386,7 @@ class ClaudeHarnessSession implements HarnessSession {
       agentMessageStartedAtMs: null,
       reasoningStartedAtMs: new Map(),
       held: false,
+      cancellation: null,
       rootSegmentActive: true,
       completion,
       resolveCompletion,
@@ -2227,6 +2423,15 @@ class ClaudeHarnessSession implements HarnessSession {
    */
   #settleNativeTask(event: Extract<ClaudeTurnEvent, { type: "subagent.settled" }>): void {
     if (this.#backgroundCommands.settle(event)) return;
+    const active = this.#active;
+    const workflow = active?.workflows.settle(active.command.turnId, event);
+    if (workflow) {
+      this.#refreshSubagentTranscripts(workflow.nativeSubagentIds);
+      // The run stopped, but its Root continuation runs in a later Segment.
+      this.#occupancy.notify(workflow.callId, workflow.taskId);
+      if (active?.held) this.#armContinuationQuiescence(active);
+      return;
+    }
     this.#settleBackgroundSubagent(
       event.status,
       event.nativeSubagentId,
@@ -2264,7 +2469,25 @@ class ClaudeHarnessSession implements HarnessSession {
     // A late native terminal cannot substitute for the process shutdown already in progress.
     if (this.#active !== active || this.#hardCancelTask) return;
     active.rootSegmentActive = false;
-    if (result.status === "succeeded" && (active.tools.size > 0 || active.subagents.size > 0)) {
+    if (active.cancellation) {
+      // The Turn ends only once its background work is confirmed stopped; later Segments
+      // still reach it through the idle handler. An unproven interruption still fails it.
+      if (result.status === "failed") {
+        active.cancellation.failure ??= transportFailure(result.kind);
+      }
+      active.cancellation.interrupting = false;
+      this.#clearCancelEscalation();
+      if (!active.held) {
+        active.held = true;
+        this.#transport?.setIdleLive(true);
+      }
+      this.#settleCancellation(active);
+      return;
+    }
+    if (
+      result.status === "succeeded" &&
+      (active.tools.size > 0 || active.subagents.size > 0 || active.workflows.pendingCount > 0)
+    ) {
       this.#finishFailed(active, transportFailure("protocol"));
     } else if (result.status === "succeeded") {
       this.#finish(active, { status: "succeeded" });
@@ -2603,6 +2826,7 @@ class ClaudeHarnessSession implements HarnessSession {
     if (
       this.#active !== active ||
       !active.held ||
+      active.cancellation ||
       active.rootSegmentActive ||
       this.#phase !== "open" ||
       !this.#occupancy.awaitingContinuation
@@ -2643,17 +2867,24 @@ class ClaudeHarnessSession implements HarnessSession {
     if (this.#active !== active) return;
     this.#requestUsageBoundary += 1;
     this.#clearCancelEscalation();
+    if (active.cancellation) {
+      this.#clearCancellationQuiet(active.cancellation);
+      active.cancellation = null;
+    }
     this.#clearContinuationQuiescence();
     const hold =
       outcome.status === "succeeded" && !active.cancellationRequested && this.#occupancy.unsettled;
     this.#closeActiveInteractions(
       active,
       outcome.status === "succeeded" ? "superseded" : "cancelled",
+      hold,
     );
     const itemOutcome: HostItemOutcome = outcome;
     if (active.compactionItem) this.#completeCompactionItem(active, itemOutcome);
     active.tools.finalize(active.command.turnId, itemOutcome);
     active.subagents.finalize(active.command.turnId, itemOutcome);
+    // Launched Workflow runs stay open on a held Turn; their agents report while it waits.
+    if (!hold) active.workflows.finalize(active.command.turnId, itemOutcome);
     for (const messageId of [...active.reasoningItems.keys()]) {
       this.#completeReasoning(active, messageId, itemOutcome);
     }
@@ -2677,12 +2908,17 @@ class ClaudeHarnessSession implements HarnessSession {
           formatVersion: 1,
         })
       : null;
-    this.#unpersistedMessageIds = [
-      ...new Set([
-        ...(active.nativeTurnRef ? [active.nativeTurnRef.nativeTurnKey] : []),
-        ...(active.checkpointId ? [active.checkpointId] : []),
-      ]),
-    ];
+    // New Segments cannot confirm that earlier Turns have reached the transcript.
+    // Only readSnapshot clears IDs after observing them all in native history.
+    if (active.userMessageId || active.checkpointId) {
+      this.#unpersistedMessageIds = [
+        ...new Set([
+          ...this.#unpersistedMessageIds,
+          ...(active.userMessageId ? [active.userMessageId] : []),
+          ...(active.checkpointId ? [active.checkpointId] : []),
+        ]),
+      ];
+    }
     this.#event({
       type: "turn.completed",
       turnId: active.command.turnId,
@@ -2836,6 +3072,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   readonly #cancelTimeoutMs: number;
   readonly #closeTimeoutMs: number;
   readonly #dependencies: ClaudeAdapterDependencies;
+  readonly #environment: NodeJS.ProcessEnv;
   readonly #importIndex: ClaudeSessionImportIndex;
   readonly #importScope = new SessionImportScope({
     closedMessage: "Claude Code Adapter is closed",
@@ -2850,7 +3087,6 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   readonly #inspectionInFlight = new Map<string, Promise<HarnessInspection>>();
   readonly #inspectors = new Set<ClaudeModelInspector>();
   readonly #sessions = new Set<ClaudeHarnessSession>();
-  readonly #environment: NodeJS.ProcessEnv;
   #closePromise: Promise<void> | null = null;
   #latestPlanLimit: ClaudePlanLimitEvent | null = null;
   #accountInspection: Promise<HarnessAccountSnapshot | null> | null = null;
@@ -3154,9 +3390,11 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         },
       };
     }
-    const bypassPermissionsAvailable = this.#dependencies.bypassPermissionsAvailable(
-      input.environment,
-    );
+    // Permission prerequisites and the native process must observe the same environment.
+    const environment = input.environment
+      ? { ...this.#environment, ...input.environment }
+      : undefined;
+    const bypassPermissionsAvailable = this.#dependencies.bypassPermissionsAvailable(environment);
     if (!bypassPermissionsAvailable && requestedPermissionModeId === "bypassPermissions") {
       // Claude Code exits at startup for this request. An explicit create fails visibly, while a
       // restored mode falls back to the native default so the existing Thread stays usable.
@@ -3277,7 +3515,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       () => this.#sessions.delete(session),
       (planLimit) => this.#recordPlanLimit(session, planLimit),
       {
-        ...(input.environment ? { environment: input.environment } : {}),
+        ...(environment ? { environment } : {}),
         bypassPermissionsAvailable,
         openMode,
         pendingSessions: this.#pendingSessions,

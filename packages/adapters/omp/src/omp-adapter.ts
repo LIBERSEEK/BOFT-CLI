@@ -1692,11 +1692,10 @@ class OmpHarnessSession implements HarnessSession {
             state = await transport.selectThinkingOption(this.#requestedThinkingOptionId);
             thinkingLevels = await transport.getAvailableThinkingLevels();
           }
-        } else {
-          const reconciled = await reconcileThinkingLevel(transport, state, thinkingLevels);
-          state = reconciled.state;
-          thinkingLevels = reconciled.thinkingLevels;
         }
+        const reconciled = await reconcileThinkingLevel(transport, state, thinkingLevels);
+        state = reconciled.state;
+        thinkingLevels = reconciled.thinkingLevels;
         this.#transport = transport;
         this.#publishTransportState(state, thinkingLevels);
         return transport;

@@ -1,7 +1,7 @@
 import type { RuntimeMaintenance } from "../src/runtime-maintenance.js";
 import type { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -159,14 +159,17 @@ export function writeRequest(stream: PassThrough, value: JsonObject): void {
 
 export const jsonLineBuffers = new WeakMap<PassThrough, string>();
 
-export async function readJsonLine(stream: PassThrough): Promise<JsonObject> {
+export async function readJsonLine(stream: PassThrough, timeoutMs = 1000): Promise<JsonObject> {
   let buffer = jsonLineBuffers.get(stream) ?? "";
   if (!buffer.includes("\n")) {
-    await vi.waitFor(() => {
-      const chunk = stream.read() as Buffer | string | null;
-      if (chunk !== null) buffer += String(chunk);
-      expect(buffer).toContain("\n");
-    });
+    await vi.waitFor(
+      () => {
+        const chunk = stream.read() as Buffer | string | null;
+        if (chunk !== null) buffer += String(chunk);
+        expect(buffer).toContain("\n");
+      },
+      { timeout: timeoutMs },
+    );
   }
   const newline = buffer.indexOf("\n");
   const line = buffer.slice(0, newline);
@@ -268,6 +271,7 @@ export function createFixture(
     sharedThreads?: SharedThreadBridge;
     environment?: NodeJS.ProcessEnv;
     pluginDirectory?: string;
+    codexUsage?: boolean;
     externalAdapters?: ReadonlyMap<ExternalHarnessId, FakeHarnessAdapter>;
     mappingStore?: MappingStore;
     mappingStoreDirectory?: string;
@@ -291,6 +295,20 @@ export function createFixture(
     options.externalAdapters?.get("pi") ?? new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
   const mappingStoreDirectory =
     options.mappingStoreDirectory ?? mkdtempSync(path.join(tmpdir(), "codexhost-host-test-"));
+  let pluginDirectory = options.pluginDirectory;
+  if (options.codexUsage) {
+    pluginDirectory = path.join(mappingStoreDirectory, "plugins");
+    mkdirSync(pluginDirectory, { recursive: true });
+    cpSync(
+      path.resolve("packages/host-runtime/dist/plugins/codex-usage"),
+      path.join(pluginDirectory, "codex-usage"),
+      { recursive: true },
+    );
+    writeFileSync(
+      path.join(pluginDirectory, "enabled.json"),
+      JSON.stringify({ version: 1, enabled: ["codex-usage"] }),
+    );
+  }
   const mappingStore =
     options.mappingStore ?? new MappingStore({ directory: mappingStoreDirectory });
   const desktopInput = new PassThrough();
@@ -323,7 +341,7 @@ export function createFixture(
       CODEX_HOME: path.join(mappingStoreDirectory, "codex-home"),
       ...(options.environment ?? {}),
     },
-    ...(options.pluginDirectory ? { pluginRoots: [options.pluginDirectory] } : {}),
+    ...(pluginDirectory ? { pluginRoots: [pluginDirectory] } : {}),
     externalAdapters:
       options.externalAdapters ?? new Map<ExternalHarnessId, HarnessAdapter>([["pi", adapter]]),
     spawnOfficial: spawnOfficial as unknown as typeof spawn,
