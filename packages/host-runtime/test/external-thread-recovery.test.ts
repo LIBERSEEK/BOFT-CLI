@@ -37,6 +37,7 @@ async function fixture() {
     cwd: "/synthetic",
     title: "Recovery",
     archived: false,
+    isPinned: false,
     transportModelId: "codexhost/pi-native",
     ephemeral: false,
     historyMode: "legacy",

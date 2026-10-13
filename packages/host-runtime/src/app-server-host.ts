@@ -86,14 +86,17 @@ import type {
   HostApprovalResponse,
   HostQuestionInteraction,
 } from "@codexhost/harness-adapter";
-import type { HostEvent, HostUsage } from "@codexhost/harness-adapter";
+import {
+  parseHarnessAccountCredits,
+  type HostEvent,
+  type HostUsage,
+} from "@codexhost/harness-adapter";
 import type {
   HarnessPluginContext,
   HarnessUsageStatisticsAdapter,
 } from "@codexhost/harness-adapter/plugin";
 import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
 import {
-  accountCreditsSnapshotSchema,
   harnessAccountInspectParamsSchema,
   harnessAccountInspectResultSchema,
   type HarnessAccountInspectResult,
@@ -399,21 +402,6 @@ function officialThreadBusy(thread: Record<string, unknown> | null): boolean {
   return (
     isRecord(latestTurn) && (latestTurn.status === "inProgress" || latestTurn.status === "running")
   );
-}
-
-function isCreditsAdapter(adapter: HarnessAdapter): adapter is HarnessAdapter & {
-  credits(): unknown;
-  refreshCredits?: () => Promise<unknown>;
-} {
-  return typeof (adapter as { credits?: unknown }).credits === "function";
-}
-
-function projectAccountCredits(value: unknown): AccountCreditsSnapshot | null {
-  if (!isRecord(value)) return null;
-  const rest = { ...value };
-  delete rest.fetchedAt;
-  const parsed = accountCreditsSnapshotSchema.safeParse(rest);
-  return parsed.success ? parsed.data : null;
 }
 
 function errorMessage(error: unknown): string {
@@ -3549,6 +3537,7 @@ export class AppServerHost {
       const result = threadUsageInspectionSchema.parse({
         threadId: params.data.threadId,
         usage: await this.#observedSessionUsage.read(params.data.threadId),
+        accountCreditsSupported: true,
         ...(accountCredits ? { accountCredits } : {}),
       });
       await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
@@ -3556,12 +3545,20 @@ export class AppServerHost {
     }
     if (params.data.refresh === "exact") void resolution.thread.session.refreshUsage?.();
     const adapter = this.#externalAdapters.get(resolution.thread.harnessId);
-    if (adapter && isCreditsAdapter(adapter)) void adapter.refreshCredits?.();
-    const credits =
-      adapter && isCreditsAdapter(adapter) ? projectAccountCredits(adapter.credits()) : null;
+    if (adapter?.credits && adapter.refreshCredits)
+      void Promise.resolve()
+        .then(() => adapter.refreshCredits?.())
+        .catch(() => undefined);
+    let credits: AccountCreditsSnapshot | null = null;
+    try {
+      credits = parseHarnessAccountCredits(adapter?.credits?.());
+    } catch {
+      // Optional account telemetry cannot fail the Thread's usage inspection.
+    }
     const result = threadUsageInspectionSchema.parse({
       threadId: params.data.threadId,
       usage: await this.#threadUsage(resolution.thread),
+      accountCreditsSupported: typeof adapter?.credits === "function",
       ...(credits ? { accountCredits: credits } : {}),
     });
     await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));

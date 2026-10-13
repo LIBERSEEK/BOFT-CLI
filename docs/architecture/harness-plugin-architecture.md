@@ -98,9 +98,9 @@ Codex Desktop 协议、官方 app-server、Renderer 兼容绑定仍是 codexhost
 
 **Session Import：**共享 RPC、Host Importer 和设置页面已通用化，Claude Code、Pi、Hermes 与 DSH 共用同一路径。DSH 已验证 `0.1.7-rc.1`、`0.1.7-rc.2`、`0.2.0-rc.1` 和 `0.2.0-rc.2`，低于 `0.1.7-rc.1` 的版本明确拒绝，其他 SemVer 版本可尝试连接，仍须通过原生协议校验。Adapter 通过 `listCandidates()` 提供元数据，通过 `resolveCandidate(id)` 重新验证完整原生引用；Host 保留去重、并发、忙碌检查与临时记录清理。Renderer 将列表、导入和导航固定到当前 Host，Claude 的直连与 macOS Aqua Broker 承载都已转发该能力。DSH Legacy 协议与 V0/V3 已移除。见[当前导入契约](harness-session-import.md)。
 
-**Credits：**Host 通过结构探测读取 `credits()`、`refreshCredits()`，它们不是正式 Adapter 成员。Renderer 还通过 Codex/Grok/Claude 名单决定是否等待 Credits，而 Antigravity 也有对应方法。这是能力提供与消费的双重接线，不等于本轮已证明具体 UI 故障。
+**Credits：**基线中 Host 结构探测的 `credits()` / `refreshCredits()` 已正式纳入 Adapter 契约，Renderer 按 Host 返回的 `accountCreditsSupported` 等待额度，不再维护 Harness 名单。主窗口与附加窗口携带周期和 scope，客户端不从英文产品名恢复语义。历史 Account/Billing Source 归属及其他远程可选能力仍须后续处理，见[当前展示与额度契约](harness-plugin-runtime.md#插件拥有的展示元数据)。
 
-**本地化：**公共 `permissionModeScope: "atCreate"` 已存在，但相关提示仍写死 Grok；原生权限标签和说明还有公共翻译映射。
+**本地化：**权限与命令的可选 `localizations`、安装更新的可选 `notice` 由插件提供，公共客户端选择语言和回退原文；`atCreate` 提示使用通用文案。BOFT Desktop 对未提供本地化元数据的旧目录保留权限文案和 `/compact` 的显示翻译。独立 Web UI 仍需在其展示入口消费同一公共函数，不能把目录加载视为全部客户端适配完成。
 
 ### 2.5 外围耦合
 

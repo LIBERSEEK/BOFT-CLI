@@ -16,7 +16,7 @@ afterEach(async () => {
   vi.clearAllMocks();
   await Promise.all(directories.splice(0).map((p) => rm(p, { recursive: true, force: true })));
 });
-async function fixture(remote = false) {
+async function fixture(remote = false, updaterStartTimeoutMs?: number) {
   const root = await mkdtemp(path.join(tmpdir(), "codexhost-maintenance-"));
   directories.push(root);
   const pkg = path.join(root, "node_modules/@liberseek/boft-cli-darwin-arm64");
@@ -42,6 +42,7 @@ async function fixture(remote = false) {
       HOME: root,
       CODEXHOST_DATA_DIR: path.join(root, "data"),
     },
+    ...(updaterStartTimeoutMs === undefined ? {} : { updaterStartTimeoutMs }),
   });
   await control.status();
   return { control, root, runtimePath, metadata };
@@ -235,7 +236,9 @@ describe("runtime maintenance", () => {
   it.skipIf(process.platform === "win32")(
     "kills the detached helper when start times out before updaterPid is written",
     async () => {
-      const f = await fixture(true);
+      // A short real deadline instead of a fake clock: start() does real filesystem work before
+      // it arms the deadline, so fake time could run out before the deadline even exists.
+      const f = await fixture(true, 100);
       const statusPath = path.join(f.root, "data/remote-update.json");
       const helperPid = 42_424;
       const kill = vi.spyOn(process, "kill").mockImplementation(((
@@ -260,22 +263,7 @@ describe("runtime maintenance", () => {
         });
         return starter;
       });
-      vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "Date"] });
-      const pending = f.control.start("0.12.0");
-      let settled = false;
-      void pending.then(
-        () => {
-          settled = true;
-        },
-        () => {
-          settled = true;
-        },
-      );
-      for (let i = 0; i < 300 && !settled; i += 1) {
-        await new Promise<void>((resolve) => setImmediate(resolve));
-        await vi.advanceTimersByTimeAsync(50);
-      }
-      await expect(pending).rejects.toThrow("Remote updater did not start");
+      await expect(f.control.start("0.12.0")).rejects.toThrow("Remote updater did not start");
       expect(kill).toHaveBeenCalledWith(helperPid);
       expect(JSON.parse(await readFile(statusPath, "utf8"))).toMatchObject({
         phase: "failed",

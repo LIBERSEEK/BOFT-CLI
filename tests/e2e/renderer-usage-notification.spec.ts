@@ -130,7 +130,7 @@ const { outputFiles } = await build({
   format: "iife",
   platform: "browser",
   target: "es2024",
-  loader: { ".css": "text", ".png": "dataurl" },
+  loader: { ".css": "text", ".png": "dataurl", ".svg": "dataurl", ".mp4": "dataurl" },
   plugins: [tailwindEsbuildPlugin()],
   write: false,
 });

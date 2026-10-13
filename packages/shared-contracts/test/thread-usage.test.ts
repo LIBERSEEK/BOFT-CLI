@@ -112,6 +112,32 @@ describe("Thread Usage contracts", () => {
     ).toBe(false);
   });
 
+  it("carries plugin presentation and capability metadata with API balances", () => {
+    const inspection = {
+      threadId: "thread-usage",
+      usage: null,
+      accountCreditsSupported: true,
+      accountCredits: {
+        remaining: 12.5,
+        unit: "USD",
+        periodType: "unknown",
+        scope: {
+          id: "api",
+          label: "API balance",
+          localizations: { "zh-CN": { label: "API 余额" } },
+        },
+        localizations: { "zh-CN": { label: "剩余额度" } },
+      },
+    };
+    expect(threadUsageInspectionSchema.parse(inspection)).toEqual(inspection);
+    expect(
+      threadUsageInspectionSchema.safeParse({
+        ...inspection,
+        accountCredits: { periodType: "unknown", scope: inspection.accountCredits.scope },
+      }).success,
+    ).toBe(false);
+  });
+
   it("accepts only the fixed exact refresh mode", () => {
     expect(
       threadUsageInspectionParamsSchema.parse({ threadId: "thread-usage", refresh: "exact" }),

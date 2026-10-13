@@ -1556,7 +1556,8 @@ export class AntigravityAdapter implements HarnessAdapter {
     if (!snapshot) return null;
     return {
       credits: {
-        label: snapshot.label,
+        ...(snapshot.label ? { label: snapshot.label } : {}),
+        ...(snapshot.scope ? { scope: snapshot.scope } : {}),
         usedPercent: snapshot.usedPercent,
         periodType: snapshot.periodType,
         ...(snapshot.resetsAt ? { resetsAt: snapshot.resetsAt } : {}),
@@ -1565,7 +1566,7 @@ export class AntigravityAdapter implements HarnessAdapter {
     };
   }
 
-  /** Duck-typed by the Host Runtime to populate the account credits surface. */
+  /** Public account telemetry cache; never attributes quota to historical Thread spend. */
   credits(): AntigravityQuotaSnapshot | null {
     return this.#quota;
   }
