@@ -276,8 +276,12 @@ export function rendererUsageCompactParts(
       : null,
     usage?.outputTokensPerSecond !== undefined
       ? formatRendererTokenRate(usage.outputTokensPerSecond, locale)
+      : usage?.apiOutputTokensPerSecond !== undefined
+        ? `API ${formatRendererTokenRate(usage.apiOutputTokensPerSecond, locale)}`
+        : null,
+    usage?.totalCostUsd !== undefined
+      ? formatUsageCost({ ...usage, totalCostUsd: usage.totalCostUsd })
       : null,
-    usage?.totalCostUsd !== undefined ? formatRendererCost(usage.totalCostUsd) : null,
   ].filter((value): value is string => value !== null);
   if (usage?.contextUsagePercent !== undefined && parts.length === 0) parts.push(messages.usage);
   if (parts.length === 0 && hasContext && usage?.contextWindowTokens !== undefined) {
@@ -344,10 +348,10 @@ export function applyRendererPopoverChrome(popover: HTMLElement): void {
     "light-dark(0 10px 24px rgba(15, 23, 42, 0.12), 0 20px 45px rgba(0, 0, 0, 0.42)), 0 2px 8px light-dark(rgba(15, 23, 42, 0.06), rgba(0, 0, 0, 0.28))";
 }
 
-function addDetailRow(parent: HTMLElement, label: string, value: string, wrap = false): void {
+function addDetailRow(parent: HTMLElement, label: string, value: string): void {
   const row = document.createElement("div");
   row.style.display = "grid";
-  row.style.gridTemplateColumns = wrap ? "auto minmax(0, 1fr)" : "minmax(0, 1fr) auto";
+  row.style.gridTemplateColumns = "minmax(0, 1fr) auto";
   row.style.gap = "20px";
   row.style.padding = "4px 0";
   const labelElement = document.createElement("span");
@@ -357,10 +361,6 @@ function addDetailRow(parent: HTMLElement, label: string, value: string, wrap = 
   valueElement.textContent = value;
   valueElement.style.fontVariantNumeric = "tabular-nums";
   valueElement.style.textAlign = "right";
-  if (wrap) {
-    valueElement.style.overflowWrap = "anywhere";
-    valueElement.title = value;
-  }
   row.append(labelElement, valueElement);
   parent.append(row);
 }
@@ -440,7 +440,7 @@ function renderDetails(
   heading.style.marginBottom = "6px";
   popover.append(heading);
 
-  if (accountName) addDetailRow(popover, messages.account, accountName, true);
+  if (accountName) addDetailRow(popover, messages.account, accountName);
 
   if (usage?.contextUsagePercent !== undefined) {
     addContextRow(
