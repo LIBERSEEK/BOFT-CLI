@@ -7,7 +7,11 @@ import type {
   HarnessThinkingOption,
   HarnessThinkingOptionId,
 } from "@codexhost/harness-adapter";
-import { harnessModelRefSchema, harnessThinkingOptionIdSchema } from "@codexhost/shared-contracts";
+import {
+  HARNESS_MODEL_REF_MAX_LENGTH,
+  harnessModelRefSchema,
+  harnessThinkingOptionIdSchema,
+} from "@codexhost/shared-contracts";
 
 export interface GrokModelState {
   catalog: HarnessModelCatalog;
@@ -27,9 +31,14 @@ function nonBlank(value: unknown): value is string {
 
 const ENCODED_MODEL_REF_PREFIX = "grok-model~";
 
-/** ACP model IDs may contain slashes; Host refs must remain transport-safe. */
+/** Native ACP IDs are opaque text; only Host refs require transport-safe characters. */
 export function encodeGrokModelRef(modelId: string): HarnessModelRef | null {
-  if (modelId.length === 0 || /[^A-Za-z0-9._~/-]/u.test(modelId)) return null;
+  if (
+    !nonBlank(modelId) ||
+    modelId.length > HARNESS_MODEL_REF_MAX_LENGTH ||
+    /\p{Cc}/u.test(modelId)
+  )
+    return null;
   const direct = harnessModelRefSchema.safeParse({ id: modelId });
   if (direct.success && !modelId.startsWith(ENCODED_MODEL_REF_PREFIX)) return direct.data;
   const encoded = harnessModelRefSchema.safeParse({

@@ -311,11 +311,18 @@ async function nextEvent(
 }
 
 describe("Grok Adapter ACP projection", () => {
-  it.each(["create", "resume"] as const)(
-    "round-trips Magpie Model IDs through inspection, %s and configuration",
-    async (kind) => {
+  it.each(
+    (["create", "resume"] as const).flatMap((kind) =>
+      [
+        ["magpie/group/codex-grok", "magpie/group/gpt-6.1-sol"],
+        ["magpie/deepseek/pro", "magpie/openrouter/anthropic/claude-sonnet-4:thinking"],
+        ["magpie/relay/Opus 5.5", "magpie/relay/模型 α"],
+      ].map((ids) => ({ kind, ids })),
+    ),
+  )(
+    "round-trips Magpie Model IDs $ids through inspection, $kind and configuration",
+    async ({ kind, ids }) => {
       const transport = new FakeGrokTransport();
-      const ids = ["magpie/group/codex-grok", "magpie/group/other-grok"];
       transport.initializeResponse = {
         ...initialize,
         _meta: {

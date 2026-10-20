@@ -18,8 +18,15 @@ describe("Grok Model refs", () => {
     expect(decodeGrokModelRef(harnessModelRefSchema.parse({ id: "grok-4.6" }))).toBe("grok-4.6");
   });
 
-  it("round-trips slash IDs without colliding with native IDs that resemble encoded refs", () => {
-    const modelId = "magpie/group/codex-grok";
+  it.each([
+    "magpie/group/codex-grok",
+    "magpie/group/gpt-6.1-sol",
+    "magpie/deepseek/pro",
+    "magpie/openrouter/anthropic/claude-sonnet-4:thinking",
+    "magpie/relay/Opus 5.5",
+    "magpie/relay/模型 α",
+    " magpie/relay/Opus 5.5 ",
+  ])("round-trips %j without colliding with native IDs resembling encoded refs", (modelId) => {
     const ref = encodeGrokModelRef(modelId);
     if (!ref) throw new Error("Missing encoded Model Ref");
     const lookalike = encodeGrokModelRef(ref.id);
@@ -31,7 +38,7 @@ describe("Grok Model refs", () => {
     expect(decodeGrokModelRef(lookalike)).toBe(ref.id);
   });
 
-  it.each(["", " ", "grok invalid", "grok\n", "grok\u0000", "a/".repeat(256)])(
+  it.each(["", " ", "grok\n", "grok\u0000", "a/".repeat(256)])(
     "rejects invalid or unrepresentable native IDs: %j",
     (modelId) => {
       expect(encodeGrokModelRef(modelId)).toBeNull();
@@ -64,7 +71,7 @@ describe("Grok ACP Model catalog", () => {
   const models = {
     currentModelId: modelId,
     availableModels: [
-      { modelId: "invalid model", name: "Invalid" },
+      { modelId: "invalid\u0000model", name: "Invalid" },
       { modelId: "grok-4.6", name: "Grok 4.6" },
       {
         modelId,
