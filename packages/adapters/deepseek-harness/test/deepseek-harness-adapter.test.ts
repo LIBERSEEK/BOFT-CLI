@@ -66,6 +66,7 @@ class FakeAdapter implements HarnessAdapter {
   openCalls = 0;
   closeCalls = 0;
   listCalls = 0;
+  openResult: HarnessResult<HarnessSession> = { ok: true, value: {} as HarnessSession };
 
   constructor(
     readonly inspectResult: (input?: InspectHarnessInput) => Promise<HarnessInspection> = () =>
@@ -80,7 +81,7 @@ class FakeAdapter implements HarnessAdapter {
 
   async open(): Promise<HarnessResult<HarnessSession>> {
     this.openCalls += 1;
-    return { ok: true, value: {} as HarnessSession };
+    return this.openResult;
   }
 
   readonly sessionImport = {
@@ -480,6 +481,41 @@ describe("DeepSeek public generation selector", () => {
     expect(modernDelegate.inspectCalls).toBe(2);
     expect(modernDelegate.openCalls).toBe(1);
     await adapter.close();
+  });
+
+  it("recreates the Modern delegate after a managed Web process exit", async () => {
+    const failedDelegate = new FakeAdapter();
+    failedDelegate.openResult = {
+      ok: false,
+      error: {
+        code: "processExited",
+        message: "DeepSeek Harness Web exited unexpectedly",
+        retryable: true,
+      },
+    };
+    const replacementDelegate = new FakeAdapter();
+    let created = 0;
+    const createModernAdapter = vi.fn(() => {
+      created += 1;
+      return created === 1 ? failedDelegate : replacementDelegate;
+    });
+    const adapter = new DeepSeekHarnessAdapter(
+      {},
+      {
+        probeExecutable: () => Promise.resolve(modernExecutable),
+        createModernAdapter,
+      },
+    );
+
+    await expect(adapter.inspect()).resolves.toBe(readyInspection);
+    const input = { kind: "resume", cwd: "fixture", nativeRef: {} } as never;
+    await expect(adapter.open(input)).resolves.toMatchObject({ ok: true });
+    expect(failedDelegate.openCalls).toBe(1);
+    expect(failedDelegate.closeCalls).toBe(1);
+    expect(replacementDelegate.openCalls).toBe(1);
+    expect(createModernAdapter).toHaveBeenCalledTimes(2);
+    await adapter.close();
+    expect(replacementDelegate.closeCalls).toBe(1);
   });
 
   it("caches a failed selection until an explicit inspect refresh", async () => {

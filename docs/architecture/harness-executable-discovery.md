@@ -118,6 +118,8 @@ http://127.0.0.1:3080/
 
 正常使用无需手动启动 `dsh web`。版本探测结果在 Adapter 首次连接后沿用，升级 DSH 后需重新启动 codexhost，托管 Web 和 checkpoint locator 才会使用新版本。DSH 打开旧 Session 时自行迁移到 V4，历史与 checkpoint 边界见[消息修订与恢复](../harnesses/deepseek/dsh-edit-recovery.md)。
 
+托管 Web 进程意外退出时，Adapter 会使旧 origin、bootstrap token 和 session cookie 失效，并将故障标记为可重试的 `processExited`。下一次检查、打开 Session、导入 Session 或打开 Web UI 请求会等待旧 Adapter 清理完成，再重新探测版本、启动托管 Web 并完成认证；已有外部 Thread 通过现有 `open({ kind: "resume" })` 路径恢复，不复用旧连接对象。进程故障诊断包含 PID、退出码、信号和本地 endpoint，不包含认证凭据。
+
 DeepSeek 的 endpoint 校验、Host 启动、就绪等待和 HTTP/WebSocket 生命周期属于 Adapter 专用语义，应继续留在 `packages/adapters/deepseek-harness`。
 
 但它的 `dsh`/`npx` 可执行文件发现以及 Windows `.cmd` 调用属于通用机制，后续可以接入 `@codexhost/harness-discovery`。
