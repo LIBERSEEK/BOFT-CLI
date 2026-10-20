@@ -25,6 +25,29 @@ function nonBlank(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+const ENCODED_MODEL_REF_PREFIX = "grok-model~";
+
+/** ACP model IDs may contain slashes; Host refs must remain transport-safe. */
+export function encodeGrokModelRef(modelId: string): HarnessModelRef | null {
+  if (modelId.length === 0 || /[^A-Za-z0-9._~/-]/u.test(modelId)) return null;
+  const direct = harnessModelRefSchema.safeParse({ id: modelId });
+  if (direct.success && !modelId.startsWith(ENCODED_MODEL_REF_PREFIX)) return direct.data;
+  const encoded = harnessModelRefSchema.safeParse({
+    id: `${ENCODED_MODEL_REF_PREFIX}${Buffer.from(modelId, "utf8").toString("base64url")}`,
+  });
+  return encoded.success ? encoded.data : null;
+}
+
+export function decodeGrokModelRef(ref: HarnessModelRef): string {
+  const { id } = harnessModelRefSchema.parse(ref);
+  if (!id.startsWith(ENCODED_MODEL_REF_PREFIX)) return id;
+  const modelId = Buffer.from(id.slice(ENCODED_MODEL_REF_PREFIX.length), "base64url").toString(
+    "utf8",
+  );
+  if (encodeGrokModelRef(modelId)?.id !== id) throw new Error("Invalid Grok Model Ref");
+  return modelId;
+}
+
 function thinkingOptions(value: unknown): HarnessThinkingOption[] {
   if (!Array.isArray(value)) return [];
   const seen = new Set<string>();
@@ -47,8 +70,8 @@ export function parseGrokModelState(value: unknown): GrokModelState | null {
   ) {
     return null;
   }
-  const currentModel = harnessModelRefSchema.safeParse({ id: value.currentModelId });
-  if (!currentModel.success) return null;
+  const currentModel = encodeGrokModelRef(value.currentModelId);
+  if (!currentModel) return null;
 
   const allThinking = new Map<string, HarnessThinkingOption>();
   const contextWindowTokensByModel = new Map<string, number>();
@@ -57,19 +80,19 @@ export function parseGrokModelState(value: unknown): GrokModelState | null {
   let currentThinkingOptionId: HarnessThinkingOptionId | undefined;
   for (const candidate of value.availableModels) {
     if (!isRecord(candidate) || !nonBlank(candidate.modelId) || !nonBlank(candidate.name)) continue;
-    const ref = harnessModelRefSchema.safeParse({ id: candidate.modelId });
-    if (!ref.success) continue;
+    const ref = encodeGrokModelRef(candidate.modelId);
+    if (!ref) continue;
     const metadata = isRecord(candidate._meta) ? candidate._meta : {};
     const options = thinkingOptions(metadata.reasoningEfforts);
     if (Array.isArray(metadata.contextWindows) && metadata.contextWindows.includes(500_000)) {
-      defaultContextWindowTokensByModel.set(ref.data.id, 500_000);
+      defaultContextWindowTokensByModel.set(ref.id, 500_000);
     }
     if (
       typeof metadata.totalContextTokens === "number" &&
       Number.isSafeInteger(metadata.totalContextTokens) &&
       metadata.totalContextTokens > 0
     ) {
-      contextWindowTokensByModel.set(ref.data.id, metadata.totalContextTokens);
+      contextWindowTokensByModel.set(ref.id, metadata.totalContextTokens);
     }
     for (const option of options) allThinking.set(option.id, option);
     if (candidate.modelId === value.currentModelId && nonBlank(metadata.reasoningEffort)) {
@@ -79,21 +102,21 @@ export function parseGrokModelState(value: unknown): GrokModelState | null {
       }
     }
     models.push({
-      ref: ref.data,
+      ref,
       label: candidate.name,
       ...(options.length > 0 ? { supportedThinkingOptionIds: options.map(({ id }) => id) } : {}),
     });
   }
-  if (!models.some(({ ref }) => ref.id === currentModel.data.id)) return null;
+  if (!models.some(({ ref }) => ref.id === currentModel.id)) return null;
   const options = [...allThinking.values()];
   return {
-    currentModel: currentModel.data,
+    currentModel,
     contextWindowTokensByModel,
     defaultContextWindowTokensByModel,
     ...(currentThinkingOptionId ? { currentThinkingOptionId } : {}),
     catalog: {
       models,
-      defaultModel: currentModel.data,
+      defaultModel: currentModel,
       thinkingOptions: options,
       ...(currentThinkingOptionId ? { defaultThinkingOptionId: currentThinkingOptionId } : {}),
     },
