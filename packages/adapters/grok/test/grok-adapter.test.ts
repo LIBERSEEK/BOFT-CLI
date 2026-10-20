@@ -97,7 +97,7 @@ class FakeGrokTransport implements GrokAcpTransportLike {
   #compactOnEvent: ((event: GrokTransportEvent) => void) | null = null;
 
   async inspect(): Promise<InitializeResponse> {
-    return initialize;
+    return this.initializeResponse;
   }
 
   async open(input: GrokOpenInput): Promise<GrokOpenResult> {
@@ -311,6 +311,90 @@ async function nextEvent(
 }
 
 describe("Grok Adapter ACP projection", () => {
+  it.each(
+    (["create", "resume"] as const).flatMap((kind) =>
+      [
+        ["magpie/group/codex-grok", "magpie/group/gpt-6.1-sol"],
+        ["magpie/deepseek/pro", "magpie/openrouter/anthropic/claude-sonnet-4:thinking"],
+        ["magpie/relay/Opus 5.5", "magpie/relay/模型 α"],
+      ].map((ids) => ({ kind, ids })),
+    ),
+  )(
+    "round-trips Magpie Model IDs $ids through inspection, $kind and configuration",
+    async ({ kind, ids }) => {
+      const transport = new FakeGrokTransport();
+      transport.initializeResponse = {
+        ...initialize,
+        _meta: {
+          modelState: {
+            currentModelId: ids[0],
+            availableModels: ids.map((modelId) => ({
+              modelId,
+              name: modelId,
+              _meta: {
+                reasoningEffort: "high",
+                reasoningEfforts: [
+                  { id: "high", label: "High" },
+                  { id: "low", label: "Low" },
+                ],
+                totalContextTokens: 256000,
+                contextWindows: [256000, 500000],
+              },
+            })),
+          },
+        },
+      };
+      const adapter = new GrokAdapter(
+        {},
+        {
+          randomUUID: () => "magpie-session",
+          createTransport: () => transport,
+          fetchCredits: async () => null,
+        },
+      );
+      try {
+        const inspection = await adapter.inspect({ cwd: "/synthetic" });
+        if (inspection.status !== "ready") throw new Error(inspection.error.message);
+        const refs = inspection.catalog.models.map(({ ref }) => ref);
+        const selected = kind === "create" ? 1 : 0;
+        const selectedRef = refs[selected];
+        const otherRef = refs[1];
+        if (!selectedRef || !otherRef) throw new Error("Missing Magpie Models");
+        const opened = await adapter.open(
+          kind === "create"
+            ? { kind, cwd: "/synthetic", model: selectedRef }
+            : {
+                kind,
+                cwd: "/synthetic",
+                nativeRef: nativeSessionRefSchema.parse({
+                  harnessId: adapter.harnessId,
+                  nativeSessionId: transport.sessionId,
+                  formatVersion: 1,
+                }),
+              },
+        );
+        if (!opened.ok) throw new Error(opened.error.message);
+        const session = opened.value;
+        if (kind === "create") expect(transport.openCalls[0]).toMatchObject({ modelId: ids[1] });
+        expect(session.initialState.effectiveModel).toEqual(refs[selected]);
+        expect(transport.setModel).toHaveBeenLastCalledWith(ids[selected], "high", 500000);
+        await expect(
+          session.execute({ type: "model.select", model: otherRef }),
+        ).resolves.toMatchObject({ ok: true });
+        expect(transport.setModel).toHaveBeenLastCalledWith(ids[1], "high", 500000);
+        await expect(
+          session.execute({
+            type: "thinking.select",
+            thinkingOptionId: harnessThinkingOptionIdSchema.parse("low"),
+          }),
+        ).resolves.toMatchObject({ ok: true });
+        expect(transport.setModel).toHaveBeenLastCalledWith(ids[1], "low", 500000);
+      } finally {
+        await adapter.close();
+      }
+    },
+  );
+
   it("passes per-Session delegation environment to the ACP transport", async () => {
     const transport = new FakeGrokTransport();
     const createTransport = vi.fn(() => transport);
