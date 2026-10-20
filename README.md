@@ -177,6 +177,22 @@ xattr -d com.apple.quarantine /Applications/BOFT.app
       </div>
     </td>
   </tr>
+  <tr>
+    <td>
+      <strong>微信交流群</strong><br />
+      <sub>Scan the QR code to join our WeChat group and chat about CodexHost.</sub>
+      <ul>
+        <li><sub>Get help with installation</sub></li>
+        <li><sub>Share feature ideas and feedback</sub></li>
+        <li><sub>Talk about development</sub></li>
+        <li><sub>For bugs, please open an <strong>issue</strong></sub></li>
+      </ul>
+      <sub><strong>Contributions are welcome.</strong></sub>
+    </td>
+    <td align="center">
+      <img width="230" alt="WeChat group QR code" src="docs/imgs/wechat-group-4-qrcode-2026-10-17.jpg" />
+    </td>
+  </tr>
 </table>
 
 ## 功能状态

@@ -65,8 +65,8 @@ const { outputFiles } = await build({
             periodType: "weekly",
             resetsAt: "2026-08-31T16:00:00.000Z",
             productUsage: [
-              { product: "GrokBuild", usagePercent: 82, resetsAt: "2027-03-15T10:00:00.000Z" },
-              { product: "GrokChat", usagePercent: 45 },
+              { product: "GrokBuild", localizations: { en: { label: "Build" } }, usagePercent: 82, resetsAt: "2027-03-15T10:00:00.000Z" },
+              { product: "GrokChat", localizations: { en: { label: "Chat" } }, usagePercent: 45 },
             ],
           });
         };
@@ -83,7 +83,7 @@ const { outputFiles } = await build({
             periodType: "five_hour",
             resetsAt: "2026-08-31T16:00:00.000Z",
             productUsage: [
-              { product: "7-day window", usagePercent: 73, resetsAt: "2026-09-05T18:00:00.000Z" },
+              { product: "7-day window", periodType: "seven_day", usagePercent: 73, resetsAt: "2026-09-05T18:00:00.000Z" },
             ],
           }, "zh-CN");
         };

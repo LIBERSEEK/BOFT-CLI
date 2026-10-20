@@ -83,6 +83,7 @@ import { ClaudeCodeExecutableError, resolveClaudeCodeExecutable } from "./comman
 import { ClaudePendingSessions, isPendingClaudeSession } from "./pending-session.js";
 import { forkClaudeSession } from "./claude-fork.js";
 import { ClaudeSessionImportIndex } from "./claude-session-import.js";
+import { remapForkedSessionReferences } from "./claude-fork-references.js";
 import { mapClaudeSnapshot, mapClaudeSubagentSnapshot } from "./claude-history.js";
 import { claudeTranscriptItemId } from "./item-identity.js";
 import { readClaudeSubagentTranscript, readClaudeTranscript } from "./claude-transcript.js";
@@ -245,6 +246,7 @@ export const claudeCommandCatalog = harnessCommandCatalogSchema.parse({
     {
       id: "claude.compact",
       invocation: "/compact",
+      localizations: { "zh-CN": { label: "压缩上下文", description: "压缩当前对话上下文" } },
       label: "Compact context",
       description: "Compact the current conversation context",
       argumentMode: "text",
@@ -562,6 +564,7 @@ export function projectClaudePlanLimitToCredits(
           productUsage: [
             {
               product: "7-day window",
+              periodType: "seven_day",
               usagePercent: other.utilizationPercent,
               ...(other.resetsAtUnix !== undefined
                 ? { resetsAt: isoFromUnix(other.resetsAtUnix) }
@@ -3139,8 +3142,20 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
           abortTimeoutMs: this.#cancelTimeoutMs,
         }),
       deleteSession: ({ cwd, sessionId }) => deleteClaudeSession(sessionId, { dir: cwd }),
-      forkSession: ({ checkpointId, cwd, sourceSessionId }) =>
-        forkClaudeNativeSession(sourceSessionId, { dir: cwd, upToMessageId: checkpointId }),
+      forkSession: async ({ checkpointId, cwd, sourceSessionId }) => {
+        const forked = await forkClaudeNativeSession(sourceSessionId, {
+          dir: cwd,
+          upToMessageId: checkpointId,
+        });
+        // An unresolved reference costs only prompt cache, never history, so a failure here
+        // must not fail the Fork.
+        await remapForkedSessionReferences({
+          cwd,
+          environment: options.environment ?? process.env,
+          sessionId: forked.sessionId,
+        }).catch(() => undefined);
+        return forked;
+      },
       getSessionInfo: async ({ sessionId }) => {
         const info = await getClaudeSessionInfo(sessionId);
         return info;

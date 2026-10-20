@@ -536,6 +536,7 @@ describe("projectClaudePlanLimitToCredits", () => {
       productUsage: [
         {
           product: "7-day window",
+          periodType: "seven_day",
           usagePercent: 18,
           resetsAt: new Date(1_756_648_800 * 1000).toISOString(),
         },
@@ -5594,6 +5595,7 @@ describe("Claude Code HarnessAdapter", () => {
       productUsage: [
         {
           product: "7-day window",
+          periodType: "seven_day",
           usagePercent: 18,
           resetsAt: new Date(1_756_648_800 * 1000).toISOString(),
         },

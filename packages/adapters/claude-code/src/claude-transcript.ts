@@ -42,6 +42,14 @@ async function findTranscriptFile(
   return null;
 }
 
+export function findClaudeTranscript(input: {
+  cwd: string;
+  environment: NodeJS.ProcessEnv;
+  sessionId: string;
+}): Promise<string | null> {
+  return findTranscriptFile(input.environment, input.cwd, `${input.sessionId}.jsonl`);
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -90,11 +98,7 @@ export async function readClaudeTranscript(input: {
   environment: NodeJS.ProcessEnv;
   sessionId: string;
 }): Promise<unknown[] | null> {
-  const transcript = await findTranscriptFile(
-    input.environment,
-    input.cwd,
-    `${input.sessionId}.jsonl`,
-  );
+  const transcript = await findClaudeTranscript(input);
   if (!transcript) return null;
   return parseTranscriptRecords(await readFile(transcript, "utf8"), input.sessionId);
 }

@@ -102,7 +102,7 @@ Windows 当前覆盖常见的：
 
 ## DeepSeek Harness 的特殊性
 
-DeepSeek Adapter 只对接写 Session Format V4 的 DSH，已在 `0.1.7-rc.1`、`0.1.7-rc.2`、`0.2.0-rc.1` 和 `0.2.0-rc.2` 验证。低于最低版本 `0.1.7-rc.1` 的 CLI 在启动托管 Web 前被拒绝；不低于门槛的其他 SemVer 版本不会只因版本不同被拒绝，但不代表已验证兼容。Legacy 协议及外部 Host attach/fallback 已移除。默认诊断端点为：
+DeepSeek Adapter 只对接写 Session Format V4 的 DSH，已在 `0.1.7-rc.1`、`0.1.7-rc.2`、`0.2.0-rc.1`、`0.2.0-rc.2`、`0.2.1-rc.1` 和 `0.2.1-rc.2` 验证。低于最低版本 `0.1.7-rc.1` 的 CLI 在启动托管 Web 前被拒绝；不低于门槛的其他 SemVer 版本不会只因版本不同被拒绝，但不代表已验证兼容。Legacy 协议及外部 Host attach/fallback 已移除。默认诊断端点为：
 
 ```text
 http://127.0.0.1:3080/
@@ -118,6 +118,8 @@ http://127.0.0.1:3080/
 
 正常使用无需手动启动 `dsh web`。版本探测结果在 Adapter 首次连接后沿用，升级 DSH 后需重新启动 codexhost，托管 Web 和 checkpoint locator 才会使用新版本。DSH 打开旧 Session 时自行迁移到 V4，历史与 checkpoint 边界见[消息修订与恢复](../harnesses/deepseek/dsh-edit-recovery.md)。
 
+托管 Web 进程意外退出时，Adapter 会使旧 origin、bootstrap token 和 session cookie 失效，并将故障标记为可重试的 `processExited`。下一次检查、打开 Session、导入 Session 或打开 Web UI 请求会等待旧 Adapter 清理完成，再重新探测版本、启动托管 Web 并完成认证；已有外部 Thread 通过现有 `open({ kind: "resume" })` 路径恢复，不复用旧连接对象。进程故障诊断包含 PID、退出码、信号和本地 endpoint，不包含认证凭据。
+
 DeepSeek 的 endpoint 校验、Host 启动、就绪等待和 HTTP/WebSocket 生命周期属于 Adapter 专用语义，应继续留在 `packages/adapters/deepseek-harness`。
 
 但它的 `dsh`/`npx` 可执行文件发现以及 Windows `.cmd` 调用属于通用机制，后续可以接入 `@codexhost/harness-discovery`。
@@ -130,7 +132,7 @@ DeepSeek 的 endpoint 校验、Host 启动、就绪等待和 HTTP/WebSocket 生�
 
 - 命令明确区分 macOS/Linux 终端与 Windows PowerShell；npm 安装提示 Node.js 前置依赖。页面列出系统选项，不根据本机系统推断远程 Host 的系统。
 - 远程 Host 必须在目标机器操作；Windows 原生 Host 不会自动使用 WSL 中的安装。
-- DeepSeek 安装指引固定已通过真实 Gate 的 `@deepseek-ai/dsh@0.2.0-rc.2`，不追随 npm latest；这不是连接白名单。更新验证结果时应同步维护设置页的支持版本说明、安装指引，以及 Adapter `generation-selector.ts` 中的已验证版本列表（低版本提示和升级命令由它生成），参见[版本验证记录](../harnesses/deepseek/dsh-version-validation.md)。通常无需手动运行 `dsh web`。`dsh --version` 成功不代表 Web 插件可启动；诊断报插件加载错误时应核对实际依赖树，放开版本范围不能修复 DSH CLI 自身的启动故障。
+- DeepSeek 安装指引与连接页的“更新 CLI”跟随 npm `latest`；已验证版本列表不是连接白名单。更新验证结果时应同步维护设置页的支持版本说明、插件 notice，以及 Adapter `generation-selector.ts` 中的已验证版本列表（低版本提示使用此列表，升级命令跟随 npm `latest`），参见[版本验证记录](../harnesses/deepseek/dsh-version-validation.md)。通常无需手动运行 `dsh web`。`dsh --version` 成功不代表 Web 插件可启动；诊断报插件加载错误时应核对实际依赖树，放开版本范围不能修复 DSH CLI 自身的启动故障。
 - WorkBuddy 提供 macOS/Windows 官方下载与安装指南，不冒充 CLI npm 包、不提供未经确认的 Linux 安装命令。桌面登录态与内置 CLI 认证不能混为一谈。
 - Qoder 与 Qoder CN 使用各自安装源和启动命令。
 - 完成安装及原生认证/配置后，用户手动重新检测。复制失败显示反馈；诊断失败仍沿用现有连接错误详情。自定义 WorkBuddy 路径和环境变量变更可能需要重启 codexhost。

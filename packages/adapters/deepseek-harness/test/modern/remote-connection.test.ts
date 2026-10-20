@@ -1114,10 +1114,15 @@ describe("DeepSeek Harness Modern Web Remote connection", () => {
     const faulted = vi.fn();
     setup.connection.onFault(faulted);
 
-    Object.assign(child, { exitCode: 1 });
+    Object.assign(child, { exitCode: 1, pid: 4242 });
     child.emit("exit", 1, null);
 
-    expect(faulted).toHaveBeenCalledWith(expect.objectContaining({ code: "processExited" }));
+    expect(faulted).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: "processExited",
+        message: expect.stringContaining("pid=4242, exitCode=1, signal=none"),
+      }),
+    );
     expect(setup.killProcessTree).toHaveBeenCalledOnce();
     await expect(setup.connection.close()).resolves.toBeUndefined();
     expect(setup.killProcessTree).toHaveBeenCalledOnce();

@@ -150,7 +150,21 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
 
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
     if (this.#closed) return { status: "unavailable", error: closedError() };
-    if (this.#delegate) return this.#delegate.adapter.inspect(input);
+    if (this.#delegate) {
+      const selected = this.#delegate;
+      const inspection = await selected.adapter.inspect(input);
+      if (!shouldRecoverDelegate(inspection)) return inspection;
+      await this.#retireFaultedDelegate(selected);
+      try {
+        return (await this.#select(true)).inspection;
+      } catch (error) {
+        const failure = this.#selectionError(error);
+        return {
+          status: failure.code === "notInstalled" ? "notInstalled" : "unavailable",
+          error: failure,
+        };
+      }
+    }
     try {
       return (await this.#select(input.refresh === true)).inspection;
     } catch (error) {
@@ -166,7 +180,11 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
     try {
       const selected = await this.#select(false);
       if (this.#closed) return { ok: false, error: closedError() };
-      return selected.adapter.open(input);
+      const opened = await selected.adapter.open(input);
+      if (opened.ok || !shouldRecoverDelegate(opened)) return opened;
+      await this.#retireFaultedDelegate(selected);
+      const replacement = await this.#select(true);
+      return replacement.adapter.open(input);
     } catch (error) {
       return { ok: false, error: this.#selectionError(error) };
     }
@@ -183,25 +201,48 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
     try {
       const selected = await this.#select(false);
       if (this.#closed) return { ok: false, error: closedError() };
-      return selected.adapter.sessionImport.listCandidates();
+      const listed = await selected.adapter.sessionImport.listCandidates();
+      if (listed.ok || !shouldRecoverDelegate(listed)) return listed;
+      await this.#retireFaultedDelegate(selected);
+      const replacement = await this.#select(true);
+      return replacement.adapter.sessionImport.listCandidates();
     } catch (error) {
       return { ok: false, error: this.#selectionError(error) };
     }
   }
 
-  #openWebUi(): Promise<HarnessResult<void>> {
-    if (this.#closed) return Promise.resolve({ ok: false, error: closedError() });
-    const webUi = this.#delegate?.adapter.webUi;
-    return webUi
-      ? webUi.open()
-      : Promise.resolve({
+  async #openWebUi(): Promise<HarnessResult<void>> {
+    if (this.#closed) return { ok: false, error: closedError() };
+    try {
+      const selected = this.#delegate;
+      const webUi = selected?.adapter.webUi;
+      if (!selected || !webUi) {
+        return {
           ok: false,
           error: {
             code: "unsupported",
             message: "DeepSeek Harness Web is not managed by this codexhost instance",
             retryable: false,
           },
-        });
+        };
+      }
+      const opened = await webUi.open();
+      if (opened.ok || !shouldRecoverDelegate(opened)) return opened;
+      await this.#retireFaultedDelegate(selected);
+      const replacement = await this.#select(true);
+      return replacement.adapter.webUi
+        ? replacement.adapter.webUi.open()
+        : {
+            ok: false,
+            error: {
+              code: "unsupported",
+              message: "DeepSeek Harness Web is not managed by this codexhost instance",
+              retryable: false,
+            },
+          };
+    } catch (error) {
+      return { ok: false, error: this.#selectionError(error) };
+    }
   }
 
   #select(refresh: boolean): Promise<DelegateOwner> {
@@ -376,6 +417,15 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
     return owner.closePromise;
   }
 
+  async #retireFaultedDelegate(owner: DelegateOwner): Promise<void> {
+    if (this.#delegate !== owner) return;
+    await this.#closeOwner(owner);
+    if (this.#delegate === owner) {
+      this.#delegate = undefined;
+      this.#failure = undefined;
+    }
+  }
+
   async #closeFailedCandidate(owner: DelegateOwner): Promise<void> {
     try {
       await this.#closeOwner(owner);
@@ -511,4 +561,16 @@ function closedError(): HarnessError {
     message: "DeepSeek Harness Adapter is closing",
     retryable: false,
   };
+}
+
+function shouldRecoverDelegate(result: HarnessInspection | HarnessResult<unknown>): boolean {
+  const error =
+    "ok" in result
+      ? result.ok
+        ? undefined
+        : result.error
+      : result.status === "ready"
+        ? undefined
+        : result.error;
+  return error?.code === "processExited" && error.retryable;
 }

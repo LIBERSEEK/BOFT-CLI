@@ -1,4 +1,8 @@
-import type { HarnessCommandDescriptor, HarnessPermissionMode } from "@codexhost/shared-contracts";
+import {
+  localizeHarnessPresentation,
+  type HarnessCommandDescriptor,
+  type HarnessPermissionMode,
+} from "@codexhost/shared-contracts";
 
 import type { RendererSettingsLocale } from "./settings/localization.js";
 
@@ -33,7 +37,7 @@ const ENGLISH_HARNESS_MESSAGES: RendererHarnessMessages = Object.freeze({
   selecting: "Selecting...",
   permissionsUnavailable: "Permissions unavailable",
   permissionModeFixedAtCreate:
-    "Grok fixes its Permission Mode when the Session is created. Start a new Thread to change it.",
+    "This Permission Mode is fixed when the Session is created. Start a new Thread to change it.",
   codexUsageGateUnavailable:
     "Could not separate this Harness from the Codex usage limit in this Desktop version. Codex usage limits still apply to sending.",
   modelSelectionRejected: "Couldn't switch Model",
@@ -52,7 +56,7 @@ const CHINESE_HARNESS_MESSAGES: RendererHarnessMessages = Object.freeze({
   loadingPermissions: "正在加载权限...",
   selecting: "正在选择...",
   permissionsUnavailable: "权限不可用",
-  permissionModeFixedAtCreate: "Grok 的权限模式在会话创建时确定，如需更改请新建会话",
+  permissionModeFixedAtCreate: "此权限模式在会话创建时确定，如需更改请新建会话",
   codexUsageGateUnavailable:
     "当前 Desktop 版本无法将此 Harness 与 Codex 额度限制分离，发送仍受 Codex 额度限制",
   modelSelectionRejected: "无法切换模型",
@@ -172,39 +176,36 @@ export function rendererHarnessCommandPresentation(
   command: HarnessCommandDescriptor,
   locale: RendererSettingsLocale,
 ): { label: string; description: string } {
-  if (locale === "zh-CN" && command.invocation === "/compact") {
+  if (!command.localizations && locale === "zh-CN" && command.invocation === "/compact") {
     return { label: "压缩上下文", description: "压缩当前对话上下文" };
   }
-  return {
-    label: command.label,
-    description: command.description ?? command.label,
-  };
+  const presentation = localizeHarnessPresentation(command, locale);
+  return { ...presentation, description: presentation.description ?? presentation.label };
 }
 
 export function rendererPermissionModePresentation(
   mode: HarnessPermissionMode,
   locale: RendererSettingsLocale,
 ): { label: string; description: string | undefined } {
-  const label = ENGLISH_PERMISSION_MODE_LABELS.get(mode.label) ?? mode.label;
-  if (locale !== "zh-CN") return { label, description: mode.description };
+  const presentation = localizeHarnessPresentation(mode, locale);
+  if (mode.localizations) return presentation;
+  const label = ENGLISH_PERMISSION_MODE_LABELS.get(presentation.label) ?? presentation.label;
+  if (locale !== "zh-CN") return { label, description: presentation.description };
   return {
     label: CHINESE_PERMISSION_MODE_LABELS.get(label) ?? label,
     description:
-      mode.description === undefined
+      presentation.description === undefined
         ? undefined
-        : (CHINESE_PERMISSION_MODE_DESCRIPTIONS.get(mode.description) ?? mode.description),
+        : (CHINESE_PERMISSION_MODE_DESCRIPTIONS.get(presentation.description) ??
+          presentation.description),
   };
 }
 
-/**
- * `#` menu hint while a draft shows only a Harness's built-in commands: its
- * project commands and skills load once a message starts the native Session.
- */
+/** Workspace commands and skills can require a running native Session. */
 export function rendererLiveCommandsPendingNotice(
   locale: RendererSettingsLocale,
   harnessLabel: string,
 ): string {
-  // Drop qualifiers such as "(Experimental)" from the display label.
   const harness = harnessLabel.replace(/\s*[(（][^)）]*[)）]\s*$/u, "").trim() || harnessLabel;
   return locale === "zh-CN"
     ? `发送一条消息后，会加载 ${harness} 在当前项目的全部命令和技能`

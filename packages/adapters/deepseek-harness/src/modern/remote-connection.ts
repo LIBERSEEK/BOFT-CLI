@@ -914,15 +914,24 @@ export class ModernRemoteConnection {
     }
   }
 
-  readonly #managedExit = (): void => {
+  readonly #managedExit = (exitCode: number | null, signal: NodeJS.Signals | null): void => {
     if (this.#closing || this.#stoppingChild) return;
     const child = this.#child;
     if (child) {
       // Start tree cleanup in the exit callback, before a stale PID can be reused.
       void this.#stopManagedProcess(child).catch(() => undefined);
     }
+    const details = [
+      child?.pid === undefined ? undefined : `pid=${String(child.pid)}`,
+      `exitCode=${String(exitCode)}`,
+      `signal=${signal ?? "none"}`,
+      this.#origin ? `endpoint=${this.#origin.origin}` : undefined,
+    ].filter((value): value is string => value !== undefined);
     this.#publishFault(
-      new ModernRemoteConnectionError("processExited", "DeepSeek Harness Web exited unexpectedly"),
+      new ModernRemoteConnectionError(
+        "processExited",
+        `DeepSeek Harness Web exited unexpectedly (${details.join(", ")})`,
+      ),
     );
   };
 
