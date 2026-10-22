@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 
 import type { HarnessAdapter } from "@codexhost/harness-adapter";
 import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
@@ -19,12 +20,16 @@ import {
   HarnessDelegationCoordinator,
   sanitizeDelegationTitle,
 } from "../src/harness-delegation-coordinator.js";
+import { runDelegationCli } from "../src/delegation-cli.js";
+import { startDelegationControlServer } from "../src/delegation-control-server.js";
 import { ExternalThreadRepository } from "../src/external-thread-repository.js";
 import { ExternalThreadRuntime, type ExternalThread } from "../src/external-thread-runtime.js";
 
 async function fixture(
   adapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi")),
-  officialThreadCwd: (threadId: string) => Promise<string | undefined> = async () => undefined,
+  officialThreadCwd: (
+    threadId: string,
+  ) => Promise<string | undefined | { cwd?: string; title?: string }> = async () => undefined,
   environment: NodeJS.ProcessEnv = {},
   externalThreadBusy: (thread: ExternalThread) => boolean = (thread) => thread.running,
 ) {
@@ -37,6 +42,7 @@ async function fixture(
   ]);
   const registered: ReturnType<ExternalThreadRuntime["register"]>[] = [];
   const notifications: unknown[] = [];
+  const delivered: string[] = [];
   const runtime = new ExternalThreadRuntime({
     adapters,
     environment,
@@ -55,6 +61,7 @@ async function fixture(
       return thread;
     },
     startExternalTurn: async (thread, text, turnId) => {
+      delivered.push(text);
       thread.running = true;
       thread.activeTurnId = hostTurnIdSchema.parse(turnId);
       const result = await thread.session.execute({
@@ -73,7 +80,10 @@ async function fixture(
     cancelOfficial: vi.fn(),
     startOfficial: vi.fn(),
     listOfficial: vi.fn(async () => ({ threads: [], nextCursor: null })),
-    officialThreadCwd,
+    officialThreadMetadata: async (threadId) => {
+      const metadata = await officialThreadCwd(threadId);
+      return typeof metadata === "string" ? { cwd: metadata } : (metadata ?? {});
+    },
     activeOfficialParents: () => [],
     externalThreadBusy,
   });
@@ -81,6 +91,7 @@ async function fixture(
     adapter,
     coordinator,
     directory,
+    delivered,
     notifications,
     registered,
     repository,
@@ -119,6 +130,134 @@ class FailingTurnAdapter extends FakeHarnessAdapter {
 }
 
 describe("HarnessDelegationCoordinator", () => {
+  it("carries the display name through the real CLI HTTP endpoint and persists it separately from the task", async () => {
+    const value = await fixture(undefined, async () => ({ title: "Main project" }));
+    const server = await startDelegationControlServer({
+      token: "test-token",
+      api: value.coordinator,
+    });
+    try {
+      const output = new PassThrough();
+      const chunks: Buffer[] = [];
+      output.on("data", (chunk: Buffer) => chunks.push(chunk));
+      expect(
+        await runDelegationCli({
+          arguments: [
+            "delegate",
+            "start",
+            "--harness",
+            "pi",
+            "--task-name",
+            "Protocol review",
+            "--task",
+            "Full instructions\nwith details",
+            "--parent-thread",
+            "parent-thread",
+          ],
+          environment: {
+            CODEXHOST_RUNTIME_ENDPOINT: server.endpoint,
+            CODEXHOST_RUNTIME_TOKEN: "test-token",
+          },
+          output,
+        }),
+      ).toBe(0);
+      const result = JSON.parse(Buffer.concat(chunks).toString()) as { threadId: string };
+      expect(await value.repository.find(result.threadId)).toMatchObject({
+        title: "Protocol review · Main project",
+      });
+      expect(value.delivered).toEqual(["Full instructions\nwith details"]);
+      expect(value.notifications[0]).toMatchObject({ name: "Protocol review · Main project" });
+    } finally {
+      await server.close();
+      await value.close();
+    }
+  });
+
+  it("snapshots the parent title and subtask name without changing task delivery or retry identity", async () => {
+    const value = await fixture();
+    try {
+      const parent = await value.repository.createProvisional({
+        hostThreadId: hostThreadIdSchema.parse("named-parent"),
+        createRequestId: "named-parent",
+        harnessId: harnessIdSchema.parse("pi"),
+        cwd: "/synthetic",
+        title: "Project review",
+        transportModelId: "codexhost/pi-native",
+        ephemeral: false,
+        historyMode: "paginated",
+      });
+      const input = {
+        harnessId: "pi" as const,
+        task: "Full task instructions\nKeep all details",
+        taskName: "Protocol review",
+        parentThreadId: parent.hostThreadId,
+        requestId: "named-child",
+      };
+      const result = await value.coordinator.start(input);
+      expect(await value.repository.find(result.threadId)).toMatchObject({
+        title: "Protocol review · Project review",
+      });
+      expect(value.notifications[0]).toMatchObject({ name: "Protocol review · Project review" });
+      await value.repository.setTitle(parent.hostThreadId, "Renamed parent");
+      expect(
+        await value.coordinator.start({ ...input, taskName: "Changed display name" }),
+      ).toMatchObject({ threadId: result.threadId });
+      expect(value.adapter.sessions).toHaveLength(1);
+      expect(await value.repository.find(result.threadId)).toMatchObject({
+        title: "Protocol review · Project review",
+      });
+      const next = await value.coordinator.start({
+        harnessId: input.harnessId,
+        parentThreadId: input.parentThreadId,
+        task: "Next task\nDetails excluded from title",
+        requestId: "next-child",
+      });
+      expect(await value.repository.find(next.threadId)).toMatchObject({
+        title: "Next task · Renamed parent",
+      });
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("uses native parent metadata and keeps the subtask name first for long Unicode titles", async () => {
+    const value = await fixture(undefined, async () => ({ title: "🐙".repeat(150) }));
+    try {
+      const result = await value.coordinator.start({
+        harnessId: "pi",
+        task: "Detailed instructions",
+        taskName: "Tool test",
+        parentThreadId: "native-parent",
+      });
+      const record = await value.repository.find(result.threadId);
+      expect(record?.title).toMatch(/^Tool test · /u);
+      expect(record?.title?.length).toBeLessThanOrEqual(200);
+      expect(record?.title).not.toMatch(/[\uD800-\uDBFF]$/u);
+      expect(record?.title).toBe("Tool test · " + "🐙".repeat(94));
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("rejects invalid task names before opening a session", async () => {
+    const value = await fixture();
+    try {
+      for (const taskName of ["", "  ", "x".repeat(121), 123]) {
+        await expect(
+          value.coordinator.start({
+            harnessId: "pi",
+            task: "Task",
+            taskName: taskName as string,
+            parentThreadId: "parent",
+          }),
+        ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+      }
+      expect(value.adapter.sessions).toHaveLength(0);
+    } finally {
+      await value.close();
+    }
+  });
+
   it("creates a normal writable child Thread and publishes it only after initial delivery", async () => {
     const adapter = new RecordingAdapter(harnessIdSchema.parse("pi"));
     const inspect = vi.spyOn(adapter, "inspect");
@@ -563,12 +702,11 @@ describe("HarnessDelegationCoordinator", () => {
       expect(title).not.toContain("\u001B");
       expect(title).not.toContain("32m");
       expect(title).not.toContain("0m");
-      expect(title.startsWith("deploy coordinator ")).toBe(true);
-      expect(title.length).toBeLessThanOrEqual(120);
-      expect(title.endsWith("...")).toBe(true);
-      expect(title).toBe(
+      expect(title).toBe("deploy · Untitled Thread");
+      expect(title.length).toBeLessThanOrEqual(200);
+      expect(
         sanitizeDelegationTitle(`\u001B[32mdeploy\u001B[0m\n\tcoordinator\r\n${longSuffix}`),
-      );
+      ).toHaveLength(120);
     } finally {
       await value.close();
     }

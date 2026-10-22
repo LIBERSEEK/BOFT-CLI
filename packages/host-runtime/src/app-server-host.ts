@@ -15,13 +15,16 @@ import { requestDesktopRemoteConnections } from "@codexhost/desktop-control";
 import type { RuntimeMaintenance } from "./runtime-maintenance.js";
 import { ExternalThreadPrewarms } from "./external-thread-prewarms.js";
 import { HarnessLaunchSettingsStore } from "@codexhost/harness-plugin-files";
+import type { SharedThreadBridge } from "./shared-thread-bridge.js";
 import {
   HARNESS_INSTALLATION_METHOD,
+  HARNESS_INSTALLATION_START_METHOD,
+  HARNESS_INSTALLATION_STATUS_METHOD,
   HARNESS_LONG_CONTEXT_GET_METHOD,
   HARNESS_LONG_CONTEXT_SET_METHOD,
 } from "@codexhost/shared-contracts";
-import type { SharedThreadBridge } from "./shared-thread-bridge.js";
 import { handleHarnessInstallation, HarnessInstallationError } from "./harness-installation.js";
+import { HarnessInstallationTasks } from "./harness-installation-tasks.js";
 import { handleHarnessLongContext, HarnessLongContextError } from "./harness-long-context.js";
 import {
   isConsoleHostMethod,
@@ -634,6 +637,7 @@ export class AppServerHost {
   #plugins: HarnessPluginRegistry | undefined;
   readonly #launchSettings: HarnessLaunchSettingsStore;
   readonly #accountInspections = new HarnessAccountInspectionCache();
+  readonly #installationTasks = new HarnessInstallationTasks();
   #externalRuntime: ExternalThreadRuntime;
   readonly #executionHosts = new WeakMap<ExternalThread, string>();
   readonly #externalPrewarms = new ExternalThreadPrewarms();
@@ -835,7 +839,7 @@ export class AppServerHost {
       cancelOfficial: (input) => this.#cancelOfficialDelegationThread(input),
       startOfficial: (input) => this.#startOfficialDelegation(input),
       listOfficial: (input) => this.#listDelegationThreads(input),
-      officialThreadCwd: (threadId) => this.#readOfficialThreadCwd(threadId),
+      officialThreadMetadata: (threadId) => this.#readOfficialThreadMetadata(threadId),
       activeOfficialParents: () => [...this.#activeOfficialTurns.keys()],
       externalThreadBusy: (thread) => this.#externalThreadBusy(thread),
     });
@@ -1603,11 +1607,20 @@ export class AppServerHost {
       this.#dispatchDesktopReply(request, () => this.#inspectHarness(request));
       return;
     }
-    if (request.method === HARNESS_INSTALLATION_METHOD) {
+    if (
+      request.method === HARNESS_INSTALLATION_METHOD ||
+      request.method === HARNESS_INSTALLATION_START_METHOD ||
+      request.method === HARNESS_INSTALLATION_STATUS_METHOD
+    ) {
       this.#dispatchDesktopReply(request, async () => {
-        await this.#waitForPlugins();
         try {
-          const result = await handleHarnessInstallation(request.params, this.#externalAdapters);
+          if (request.method !== HARNESS_INSTALLATION_STATUS_METHOD) await this.#waitForPlugins();
+          const result =
+            request.method === HARNESS_INSTALLATION_START_METHOD
+              ? this.#installationTasks.start(request.params, this.#externalAdapters)
+              : request.method === HARNESS_INSTALLATION_STATUS_METHOD
+                ? this.#installationTasks.status(request.params)
+                : await handleHarnessInstallation(request.params, this.#externalAdapters);
           await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
         } catch (error) {
           await this.#writer.json(
@@ -2481,12 +2494,18 @@ export class AppServerHost {
     return thread !== null || childDelegation !== null || delegation !== null;
   }
 
-  async #readOfficialThreadCwd(threadId: string): Promise<string | undefined> {
-    const response = await this.#requestOfficial("thread/read", { threadId });
-    if (isRecord(response.error)) return undefined;
+  async #readOfficialThreadMetadata(threadId: string): Promise<{ cwd?: string; title?: string }> {
+    const response = await this.#requestOfficial("thread/read", { threadId, includeTurns: false });
+    if (isRecord(response.error)) return {};
     const result = isRecord(response.result) ? response.result : null;
     const thread = result && isRecord(result.thread) ? result.thread : null;
-    return thread && typeof thread.cwd === "string" && thread.cwd.trim() ? thread.cwd : undefined;
+    if (!thread) return {};
+    const title =
+      typeof thread.name === "string" && thread.name.trim() ? thread.name : thread.preview;
+    return {
+      ...(typeof thread.cwd === "string" && thread.cwd.trim() ? { cwd: thread.cwd } : {}),
+      ...(typeof title === "string" && title.trim() ? { title } : {}),
+    };
   }
 
   async #inspectOfficialDelegationTarget(
@@ -2569,7 +2588,7 @@ export class AppServerHost {
   }
 
   async #startOfficialDelegation(
-    input: DelegationStartInput & { parentThreadId: string; cwd: string },
+    input: DelegationStartInput & { parentThreadId: string; cwd: string; title: string },
   ): Promise<DelegationStartResult> {
     let requestedModel: HarnessModelRef | undefined;
     try {
@@ -2674,6 +2693,10 @@ export class AppServerHost {
     this.#pendingOfficialDelegationThreads.add(threadId);
     let turnId: string;
     try {
+      // The title is presentation only: a failure keeps the default title and still delivers the task.
+      await this.#requestOfficial("thread/name/set", { threadId, name: input.title }).catch(
+        () => undefined,
+      );
       const turn = await this.#requestOfficial("turn/start", {
         threadId,
         input: [{ type: "text", text: input.task }],
@@ -3387,6 +3410,7 @@ export class AppServerHost {
       inspection = await adapter.inspect({
         ...(params.data.cwd ? { cwd: params.data.cwd } : {}),
         ...(params.data.refresh !== undefined ? { refresh: params.data.refresh } : {}),
+        ...(params.data.purpose ? { purpose: params.data.purpose } : {}),
       });
     } catch (error) {
       await this.#writer.json(
@@ -3902,6 +3926,27 @@ export class AppServerHost {
       if (!projected.effectiveModel) {
         throw new Error("Harness Session did not report an effective Model");
       }
+      // Resume and Fork read the saved selection, so keep it on the confirmed Model.
+      const transportModelId = encodeExternalTransportSelection(thread.harnessId, {
+        ...(decodeExternalTransportSelection(thread.harnessId, thread.transportModelId) ?? {}),
+        model: projected.effectiveModel,
+      });
+      thread.transportModelId = transportModelId;
+      thread.requestedModel = projected.effectiveModel;
+      try {
+        thread.record = await this.#repository.setTransportModelId(
+          thread.record.hostThreadId,
+          transportModelId,
+        );
+      } catch (error) {
+        this.#diagnose(error);
+      }
+      thread.thread = externalThreadValue({
+        record: { ...thread.record, transportModelId },
+        turns: thread.turns,
+        sessionId: thread.sessionId,
+        running: thread.running,
+      });
       await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(projected) }));
     } catch (error) {
       await this.#writer.json(

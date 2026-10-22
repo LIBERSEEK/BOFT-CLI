@@ -87,6 +87,7 @@ plugins/
 - `links.website/documentation/installation` 只接受不带用户凭据的 HTTPS 地址。
 - `installation` 提供展示用命令、下载链接和前后提示；`notice` 提供插件兼容性说明。文本以 `en` 为必需回退、`zh-CN` 为可选翻译。Renderer 仅展示/复制这些数据，绝不从元数据执行命令，自动安装仍走 Adapter 的公共原生能力。
 - 能力继续由 `HarnessAdapter.inspect()`、Session 能力和公共可选接口提供，不在 Manifest 复制第二份运行时能力真相。
+- `codexhost/harness/inspect` 可带 `purpose: "availability"`，表示调用方只使用状态和错误。Renderer 启动时对所有已注册 Harness 的后台可用性检测使用该标记；用户选中 Harness 后加载 Model 目录仍做完整 inspection。Adapter 可据此不启动原生 Session 回答，避免用户未选用的 Harness 执行 Session 启动副作用；这种结果可以缺少原生默认 Model 和 Thinking 选项，不得写入完整 inspection 的缓存。未处理该标记的 Adapter 照常做完整 inspection。旧版 Host 按未知参数以 -32602 拒绝时，Renderer 去掉该标记重试一次。目前 OMP 用 `omp models --json` 回答（不创建 Session，因此不触发 OMP 的 Provider 连接预热）；命令不可用、输出无法识别或列表为空时回到 Session inspection，由原生启动报告原因。
 - 命令目录由可选的静态 `HarnessAdapter.commandCatalog` 声明，通过 `codexhost/harness/commands/inspect` 查询；读取目录不检查原生运行时、不连接原生服务、不创建或恢复 Session。未声明时返回空目录，不通过启动会话回退发现。执行仍走 `session.commands`。
 
 入口导出 [`HarnessPluginModule`](../../packages/harness-adapter/src/plugin.ts) 定义的工厂，不通过模块全局副作用注册：
@@ -142,9 +143,15 @@ Codex 的会话用量解析已从公共协议层迁入 `codex-usage`，账户配
 
 ## Harness CLI 版本与更新
 
-设置 → 连接，在已安装 Harness 的展开详情中展示「Harness CLI 版本」、当前版本、最新版本与更新按钮。首次展开详情时自动检查一次，不提供手动检查更新按钮；后台诊断刷新和切换列表不会丢弃该页按 Host/Harness 保存的检查结果或重复启动更新。重新打开连接页后再次自动检查。未安装时，行上的下载图标只展开该行：详情保留官方安装命令、复制 Prompt、官方安装页链接和「重新检测」。本地 Host 上除 WorkBuddy 外，同一详情还提供一键安装按钮，显式调用 `install`；远程 Host 不提供一键安装。WorkBuddy 仍通过官网手动下载安装桌面应用。未支持版本管理能力的插件、旧 Host 和 Broker 路径显示不可用，不回退更新本机的另一份安装。
+设置 → 连接在已安装 Harness 的列表中自动检查版本；进入连接页、切换 Host 或完成诊断后，对当前 Host 上符合条件的 Harness 检查一次。有新版本时在列表操作区显示提示，支持自动更新的项目可直接启动更新；单项与批量任务均由目标 Host 执行，详情显示版本与更新状态，不提供手动检查按钮，也不回退更新本机的另一份安装。未安装时，本地 Host 通过行内下载入口启动支持的自动安装；详情仍提供官方安装命令、复制 Prompt、官方安装页链接和重新检测。远程 Host 不提供一键安装。WorkBuddy 继续通过官网手动下载安装桌面应用。BOFT 的 Claude Code 详情还保留长上下文设置；未支持版本管理能力的插件、旧 Host 和 Broker 路径显示不可用。
 
-可选 `HarnessAdapter.installation(action)` 接受 `check` / `update`，由所属 Adapter 决定版本来源、安装渠道和原生更新命令。公共 `codexhost/harness/installation` 只接受 `{ harnessId, action }`，返回 `{ currentVersion, latestVersion, updateAvailable, canUpdate, message?, messageCode?, notice?, latestVersionKind? }`。`message` 保留为 Adapter 诊断文本，不在界面原样拼接；专属更新限制与渠道说明由插件通过 `notice: { en, "zh-CN"?, ... }` 提供，Renderer 按当前语言选择，缺少翻译回退到英文。`messageCode` 仅保留通用 `original-installer` 的旧客户端文案路径，不再维护 Harness 专属提示码翻译表。`latestVersionKind` 可标识 `unknown` / `tracking-branch`，避免将非版本状态当成英文版本号展示；真实版本号及提交标识保持原样。旧插件的 `Unknown` / `Tracking branch (new commits)` 仍按当前语言展示，缺少或无法识别提示码时仅显示通用本地化说明，不展示未翻译的诊断文本。Renderer 按连接页选中的 Host 发送请求，Host 等待插件加载后通过公共能力路由；不接受命令、路径、包名或下载地址，不直接依赖具体 Adapter。非法请求返回 `-32602`；单插件未支持返回 `-32078`，不使用会让浏览器缓存整个方法缺失的 `-32601`。原生失败及非法结果统一返回脱敏错误。
+Host 切换栏右侧提供「全部更新（数量）」，仅统计当前 Host 中检查结果已确认有新版本且支持自动更新的 Harness，包含「更多」分组；不安装缺失的 CLI，不纳入仅支持手动更新的安装。点击时固定本批次的 Host 与条目，同时调用各条目的同一更新入口，不设置并发上限，显示已完成数/总数，每项独立结算，失败不影响其他更新。单项与批量请求复用同一条目的进行中任务；存在单项更新时仍可启动批量更新。批量操作期间禁用该 Host 的重复批量操作，完成后按 Host 显示成功/失败数量，具体失败信息保留在各条目详情。切换 Host 不改变已开始批次的目标；关闭连接页停止页面反馈，Host 已接受的更新继续运行。
+
+Desktop 的检查、更新与安装通过 `codexhost/harness/installation/start` 提交 `{ harnessId, action }`，立即取得 `{ taskId, status }`；再以 `codexhost/harness/installation/status` 和 `{ taskId }` 读取 `running`、`succeeded`（含版本结果）或 `failed`（含脱敏错误）的任务状态。任务由目标 Host 持有，同一 Harness/action 的进行中提交复用任务，不设置跨 Harness 并发上限，完成结果保留 15 分钟。Renderer 每 500ms 读取一次状态，提交与状态请求采用 background 优先级及 15 秒传输超时；原生安装器的完整运行时间不占用 Desktop 的在途请求名额，给配置读取和消息提交保留通路。任务继续运行不依赖设置页保持打开。原 `codexhost/harness/installation` 保留给旧客户端及控制台；新版 Desktop 不向缺少任务接口的旧 Host 回退到长请求，需先升级目标 Host。
+
+可选 `HarnessAdapter.installation(action)` 接受 `check` / `update`，由所属 Adapter 决定版本来源、安装渠道和原生更新命令。公共 `codexhost/harness/installation` 只接受 `{ harnessId, action }`，返回 `{ currentVersion, latestVersion, updateAvailable, canUpdate, message?, messageCode?, notice?, latestVersionKind?, manualUpdateUrl?, versionKind? }`。`message` 保留为 Adapter 诊断文本，不在界面原样拼接；专属更新限制与渠道说明由插件通过 `notice: { en, "zh-CN"?, ... }` 提供，Renderer 按当前语言选择，缺少翻译回退到英文。`messageCode` 仅保留通用 `original-installer` 的旧客户端文案路径，不再维护 Harness 专属提示码翻译表。`latestVersionKind` 可标识 `unknown` / `tracking-branch`，避免将非版本状态当成英文版本号展示；真实版本号及提交标识保持原样。旧插件的 `Unknown` / `Tracking branch (new commits)` 仍按当前语言展示，缺少或无法识别提示码时仅显示通用本地化说明，不展示未翻译的诊断文本。Renderer 按连接页选中的 Host 发送请求，Host 等待插件加载后通过公共能力路由；不接受命令、路径、包名或下载地址，不直接依赖具体 Adapter。非法请求返回 `-32602`；单插件未支持返回 `-32078`，不使用会让浏览器缓存整个方法缺失的 `-32601`。原生失败及非法结果统一返回脱敏错误。
+
+`versionKind` 默认为 CLI，设为 `application` 时详情页标题为「应用版本」。插件可通过 `manualUpdateUrl` 提供有新版本时的官方安装包链接，限定为不含凭据的 HTTPS URL。详情页将自动更新按钮替换为「下载更新」，只打开下载，不提交更新任务或报告安装成功；`canUpdate: false` 的条目仍不参与「全部更新」。WorkBuddy 使用此入口查询桌面应用版本和官方安装包，内置 CLI 随应用更新，详见 [WorkBuddy 应用版本与手动更新](../harnesses/workbuddy/workbuddy-harness-integration.md#应用版本与手动更新)。
 
 DSH 的 npx 更新只在显式点击更新时执行 `npx --yes --prefer-online @deepseek-ai/dsh --version`，保留与普通离线启动相同的无版本包规格及 Host 环境（包括 npm 缓存配置），避免 `@latest` 或固定版本规格创建另一份缓存。先确认在线命令返回目标版本，再用原来的 `--offline --no-install @deepseek-ai/dsh --version` 回读，任一步失败或版本不匹配均不报告成功。版本查询失败不执行更新；普通诊断和启动仍保持离线，不改变现有会话或自动重启已运行的 Web 进程。npm 原生管理缓存，不直接编辑缓存目录，也不新增 Host 持久状态。
 
@@ -191,6 +198,8 @@ RPC 的 `action: "install"` 调用可选 `HarnessAdapter.install()`，不会把 
 每个 Host 连接有独立 Registry/Runtime；没有进程单例，也不将将来的进程级服务重复实例化到每个连接。只有 Harness 桥接层在本次接入；通知、诊断等插件尚未迁移。Host 先排空请求并关闭 Session/输出消费，再释放插件作用域。关闭幂等，失败收集为 Registry 清理错误。发现、显式信任、超时、迟到资源清理仍由加载器负责，Cordis 不是安全沙箱或包管理器。安装和升级需要重启，不热替换活动 Session。
 
 恢复时，Host 将旧映射解码为 Model、Thinking、Permission Mode 提示并传给 `open({ kind: "resume" })`。Adapter 决定恢复提示还是保留权威原生配置；Host 不再按 Harness ID 补发配置命令。OMP、DSH 在各自 Adapter 内恢复权限；OpenCode 保留原生确认的权限状态。成功读到原生配置后，Host 用共享载体保存确认值，旧映射仍可读取。
+
+Mapping Store 允许 Thread 主记录及独立元数据文件出现未知的顶层字段：当前版本不使用它们，更新文件时原样保留，不因新增字段隔离会话。已知字段的类型、必填要求及身份和映射约束仍照常校验；已知元数据字段的清除不影响同文件中的未知字段。
 
 ## 加载与关闭行为
 

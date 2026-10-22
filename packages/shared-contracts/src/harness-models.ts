@@ -292,6 +292,8 @@ export const harnessInspectParamsSchema = z
     harnessId: harnessIdSchema,
     cwd: nonBlankTextSchema.max(16_384).optional(),
     refresh: z.boolean().optional(),
+    /** `availability` asks only whether the Harness can run; see `InspectHarnessInput.purpose`. */
+    purpose: z.literal("availability").optional(),
   })
   .strict();
 

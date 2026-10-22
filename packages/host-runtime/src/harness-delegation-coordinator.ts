@@ -58,16 +58,33 @@ const ANSI_CSI_PATTERN = /\u001B\[[0-9;]*[a-zA-Z]/gu;
 const C0_AND_DEL_CONTROL_CHARACTERS = /[\u0000-\u001F\u007F]/gu;
 const CONSECUTIVE_WHITESPACE = /\s+/gu;
 
-export function sanitizeDelegationTitle(task: string): string {
-  const withoutAnsi = task.replace(ANSI_CSI_PATTERN, "");
+function cleanDelegationTitle(value: string): string {
+  const withoutAnsi = value.replace(ANSI_CSI_PATTERN, "");
   const withoutControls = withoutAnsi.replace(C0_AND_DEL_CONTROL_CHARACTERS, " ");
-  const collapsed = withoutControls.replace(CONSECUTIVE_WHITESPACE, " ");
-  const trimmed = collapsed.trim();
+  return withoutControls.replace(CONSECUTIVE_WHITESPACE, " ").trim();
+}
+
+export function sanitizeDelegationTitle(task: string): string {
+  const trimmed = cleanDelegationTitle(task);
   if (trimmed.length <= DELEGATION_TITLE_MAX_LENGTH) {
     return trimmed;
   }
   const cutLength = Math.max(0, DELEGATION_TITLE_MAX_LENGTH - DELEGATION_TITLE_ELLIPSIS.length);
   return `${trimmed.slice(0, cutLength)}${DELEGATION_TITLE_ELLIPSIS}`;
+}
+
+type ParentMetadata = { cwd?: string; title?: string };
+
+function truncateTitle(value: string, length: number): string {
+  return value.slice(0, length).replace(/[\uD800-\uDBFF]$/u, "");
+}
+
+function delegationTitle(parentTitle: string | undefined, input: DelegationStartInput): string {
+  const taskName = input.taskName ?? input.task.trim().split(/\r?\n/u)[0] ?? input.task;
+  const subtask = sanitizeDelegationTitle(taskName);
+  const parent = cleanDelegationTitle(parentTitle?.trim() || "Untitled Thread");
+  // 子任务名在前：侧边栏从末尾截断，同一父会话的子任务仍能区分；父标题过长时截断父标题。
+  return `${subtask} · ${truncateTitle(parent, 200 - subtask.length - 3)}`;
 }
 
 function delay(milliseconds: number): Promise<void> {
@@ -107,6 +124,15 @@ function statusFromThread(
 function validateStart(input: DelegationStartInput): void {
   if (typeof input.task !== "string" || !input.task.trim())
     throw new DelegationControlError("INVALID_ARGUMENT", "Task must not be empty");
+  if (
+    input.taskName !== undefined &&
+    (typeof input.taskName !== "string" || !input.taskName.trim() || input.taskName.length > 120)
+  ) {
+    throw new DelegationControlError(
+      "INVALID_ARGUMENT",
+      "Task name must contain 1 to 120 characters",
+    );
+  }
   if (input.cwd !== undefined && (typeof input.cwd !== "string" || !input.cwd.trim()))
     throw new DelegationControlError("INVALID_ARGUMENT", "cwd must not be empty");
   if (
@@ -143,10 +169,10 @@ export class HarnessDelegationCoordinator {
   readonly #sendOfficial: (input: ThreadSendInput) => Promise<ThreadSendResult>;
   readonly #cancelOfficial: (input: ThreadCancelInput) => Promise<ThreadCancelResult>;
   readonly #startOfficial: (
-    input: DelegationStartInput & { parentThreadId: string; cwd: string },
+    input: DelegationStartInput & { parentThreadId: string; cwd: string; title: string },
   ) => Promise<DelegationStartResult>;
   readonly #listOfficial: (input: ThreadListInput) => Promise<DelegationThreadListResult>;
-  readonly #officialThreadCwd: (threadId: string) => Promise<string | undefined>;
+  readonly #officialThreadMetadata: (threadId: string) => Promise<ParentMetadata>;
   readonly #activeOfficialParents: () => string[];
   readonly #externalThreadBusy: (thread: ExternalThread) => boolean;
 
@@ -172,10 +198,10 @@ export class HarnessDelegationCoordinator {
     sendOfficial(input: ThreadSendInput): Promise<ThreadSendResult>;
     cancelOfficial(input: ThreadCancelInput): Promise<ThreadCancelResult>;
     startOfficial(
-      input: DelegationStartInput & { parentThreadId: string; cwd: string },
+      input: DelegationStartInput & { parentThreadId: string; cwd: string; title: string },
     ): Promise<DelegationStartResult>;
     listOfficial(input: ThreadListInput): Promise<DelegationThreadListResult>;
-    officialThreadCwd(threadId: string): Promise<string | undefined>;
+    officialThreadMetadata(threadId: string): Promise<ParentMetadata>;
     activeOfficialParents(): string[];
     externalThreadBusy(thread: ExternalThread): boolean;
   }) {
@@ -192,7 +218,7 @@ export class HarnessDelegationCoordinator {
     this.#cancelOfficial = input.cancelOfficial;
     this.#startOfficial = input.startOfficial;
     this.#listOfficial = input.listOfficial;
-    this.#officialThreadCwd = input.officialThreadCwd;
+    this.#officialThreadMetadata = input.officialThreadMetadata;
     this.#activeOfficialParents = input.activeOfficialParents;
     this.#externalThreadBusy = input.externalThreadBusy;
   }
@@ -225,8 +251,14 @@ export class HarnessDelegationCoordinator {
     const parentThreadId = await this.#resolveParent(input.parentThreadId);
     const parent = await this.#parentMetadata(parentThreadId);
     const selectedCwd = input.cwd ?? parent.cwd ?? process.cwd();
+    const title = delegationTitle(parent.title, input);
     if (input.harnessId === "codex") {
-      const result = await this.#startOfficial({ ...input, parentThreadId, cwd: selectedCwd });
+      const result = await this.#startOfficial({
+        ...input,
+        parentThreadId,
+        cwd: selectedCwd,
+        title,
+      });
       return { ...result, parentThreadId, cwd: result.cwd ?? selectedCwd };
     }
     const startInput = { ...input, parentThreadId, cwd: path.resolve(selectedCwd) };
@@ -286,7 +318,7 @@ export class HarnessDelegationCoordinator {
         createRequestId,
         harnessId: harnessIdSchema.parse(targetHarnessId),
         cwd: startInput.cwd,
-        title: sanitizeDelegationTitle(input.task),
+        title,
         transportModelId:
           input.model || input.thinkingOptionId
             ? encodeExternalTransportSelection(targetHarnessId, {
@@ -692,11 +724,16 @@ export class HarnessDelegationCoordinator {
 
   async #parentMetadata(
     parentThreadId: string,
-  ): Promise<{ harnessId: RoutedHarnessId; cwd?: string }> {
+  ): Promise<ParentMetadata & { harnessId: RoutedHarnessId }> {
     const record = await this.#repository.find(parentThreadId);
-    if (record) return { harnessId: record.harnessId as RoutedHarnessId, cwd: record.cwd };
-    const cwd = await this.#officialThreadCwd(parentThreadId).catch(() => undefined);
-    return { harnessId: "codex", ...(cwd ? { cwd } : {}) };
+    if (record)
+      return {
+        harnessId: record.harnessId as RoutedHarnessId,
+        cwd: record.cwd,
+        title: record.title,
+      };
+    const metadata = await this.#officialThreadMetadata(parentThreadId).catch(() => ({}));
+    return { harnessId: "codex", ...metadata };
   }
 
   async #existingResult(delegation: StoredDelegationRecordV1): Promise<DelegationStartResult> {
