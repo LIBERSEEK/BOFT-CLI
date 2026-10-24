@@ -14,6 +14,18 @@
 
 ## 一、先建立分层模型
 
+### 控制台启动成功但 Codex 界面未加载
+
+Launcher 的 `Host chain ready` 和 Controller 存活不代表 Renderer 集成完成。
+`Renderer Host request manager is unavailable` 表示 Renderer 中的路由/预热策略未找到可用的原生请求管理器；该错误本身说明安装脚本已经执行，不能据此判断 CDP 完全无法注入。
+
+先在主聊天界面只读检查编辑器、所属 Fiber 的 Host 身份、注册表和 manager 数量。
+原生 Host 注册表按 `addManager` 与 `getForHostId` 识别，不要求 `waitForManagerForHostId`；manager 可以只通过注册表暴露，不必同时出现在直接 hook 中。
+注册表存在时，以其当前条目为准；查找抛错不会中止其他注册表的检查。无法为目标 Host 解析唯一有效 manager 时保持路由关闭，不回退到旧 manager。
+
+排查安装包时还要核对其发布标签是否包含对应兼容修复。BOFT CLI `v0.8.3` 不含注册表兼容提交 `4ee7baac`，重新安装同一版本不能获得该修复。
+是否恢复应以 Renderer 状态为 `ready`、`lastInstalledAt` 已填充以及实际请求链路验证为准，不能只看控制台的启动成功状态。
+
 ### 历史原生会话不能拖入引用或通过 `@` 搜索会话
 
 Desktop 可根据 `thread-reference-capability:<threadId>` 决定是否注册原生会话引用接收区。
