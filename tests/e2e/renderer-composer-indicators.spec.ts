@@ -15,7 +15,7 @@ const { outputFiles } = await build({
         showPermissionsModeDropdown: true, permissionsHostId: "local", permissionsCwdOverride: null,
       } } });
       const control = mountComposerAgentControl(composer, "cache", document.querySelector("#send"), ["codex", "pi"], () => {}, () => {}, () => {}, () => {}, () => {}, () => {}, () => {});
-      const usage = { composerIndicators: [{ kind: "countdown", id: "cache", expiresAtUnix: Math.floor(Date.now() / 1000) + 48 * 60, label: { en: "Prompt cache", "zh-CN": "提示词缓存" } }] };
+      const usage = { composerIndicators: [{ kind: "countdown", id: "cache", expiresAtUnix: Math.floor(Date.now() / 1000) + 51 * 60, label: { en: "Prompt cache", "zh-CN": "提示词缓存" } }] };
       globalThis.renderIndicators = (agent = "pi") => renderComposerAgentControl(control, { agent, phase: "draft" }, "ready", false, {}, { status: "idle" }, { status: "ready", catalog: { modes: [{ id: "default", label: "Default" }], defaultModeId: "default" }, selected: "default" }, usage, null, "zh-CN");
       globalThis.disposeIndicators = () => disposeComposerAgentControl(control);
       globalThis.renderIndicators();
@@ -44,12 +44,16 @@ test("places generic countdowns beside permissions, refreshes locally, yields sp
   await page.addScriptTag({ content: browserBundle });
   const indicator = page.locator("[data-codexhost-composer-indicators]");
   const permission = page.locator("[data-codexhost-permission-mode-control]");
+  await expect(indicator).toBeHidden();
+  await page.clock.runFor(3 * 60_000);
   await expect(indicator).toBeVisible();
   await expect(indicator).toHaveText("48m");
-  await expect(indicator.locator("span[title]")).toHaveAttribute(
-    "title",
-    "提示词缓存 · 剩余 48 分钟",
-  );
+  const chip = indicator.locator("[data-indicator-id=cache]");
+  await expect(chip).toHaveAttribute("aria-label", "提示词缓存 · 剩余 48 分钟");
+  await chip.hover();
+  await expect(page.getByRole("tooltip")).toHaveText("提示词缓存 · 剩余 48 分钟");
+  await page.locator("#send").hover();
+  await expect(page.getByRole("tooltip")).toHaveCount(0);
   expect(await indicator.evaluate((root) => root.previousElementSibling?.id)).toBe("permission");
   await page.clock.runFor(60_000);
   await expect(indicator).toHaveText("47m");

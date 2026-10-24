@@ -5,6 +5,7 @@ import type {
   SessionMessageInfo,
 } from "@opencode/client";
 import {
+  unsupportedSteer,
   HarnessOutputChannel,
   type HarnessSession,
   type HarnessOutput,
@@ -13,6 +14,8 @@ import {
   type HostTextInput,
   type TurnStartCommand,
   type TurnStartAccepted,
+  type TurnSteerCommand,
+  type TurnSteerAccepted,
   type TurnCancelCommand,
   type TurnCancelAccepted,
   type InteractionRespondCommand,
@@ -178,6 +181,7 @@ export class V2Session implements HarnessSession {
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -189,11 +193,17 @@ export class V2Session implements HarnessSession {
     command: HostCommand,
   ): Promise<
     HarnessResult<
-      TurnStartAccepted | TurnCancelAccepted | InteractionRespondAccepted | ModelSelectCompleted
+      | TurnStartAccepted
+      | TurnSteerAccepted
+      | TurnCancelAccepted
+      | InteractionRespondAccepted
+      | ModelSelectCompleted
     >
   > {
     if (this.#closed)
       return { ok: false, error: failure("OpenCode Session is closed", "invalidState") };
+    // Same as v1: this Session does not declare native steer.
+    if (command.type === "turn.steer") return unsupportedSteer("OpenCode");
     if (command.type === "turn.start") return this.#start(command, false);
     if (command.type === "turn.cancel") {
       const active = this.#active;

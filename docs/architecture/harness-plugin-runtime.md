@@ -173,6 +173,7 @@ RPC 的 `action: "install"` 调用可选 `HarnessAdapter.install()`，不会把 
 | --- | --- |
 | Pi | `--version` 和 `pi.dev/api/latest-version`；执行原生 `pi update`。 |
 | Cursor CLI | 原生 `about --format json` / `update`，保留 Windows bundled Node 入口；macOS 受管远程 Broker 尚不转发该能力。 |
+| Copilot | 原生 `--version`；仅识别的 npm 全局安装通过原 prefix 检查并显式更新，其他安装使用原包管理器；不自动下载 SDK runtime。 |
 | Qoder 海外版 / 中国版 | 原生 `--version`、`update --check` / `update`；两版分别解析自己的安装入口，中国版先确认 CLI 支持 `--check`，旧版只显示已安装版本及手动更新说明。 |
 | Grok | 原生 `update --check --json` / `update`；npm 安装保留原生更新路径及所需安装脚本允许项。 |
 | Kimi Code | 原生 `--version` 和区域 CDN 最新版本；仅识别的全局 npm 安装或带手动更新能力的原生二进制允许更新，其他安装使用原安装方式。 |

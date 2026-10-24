@@ -1119,15 +1119,11 @@ describe("Claude native Turn interpretation", () => {
           "claude-opus": {
             inputTokens: 100,
             outputTokens: 40,
-            cacheReadInputTokens: 60,
-            cacheCreationInputTokens: 5,
+            cacheReadInputTokens: 900,
+            cacheCreationInputTokens: 50,
+            contextWindow: 1_000_000,
           },
-          "claude-sonnet": {
-            inputTokens: 20,
-            outputTokens: 5,
-            cacheReadInputTokens: 10,
-            cacheCreationInputTokens: 0,
-          },
+          "claude-sonnet": { inputTokens: 20, outputTokens: 5 },
         },
         usage: {
           input_tokens: 10,
@@ -1143,16 +1139,21 @@ describe("Claude native Turn interpretation", () => {
         totalCostUsd: 1.373,
         modelUsage: [
           {
+            model: "claude-opus",
             inputTokens: 100,
             outputTokens: 40,
-            cacheReadInputTokens: 60,
-            cacheCreationInputTokens: 5,
+            cacheReadInputTokens: 900,
+            cacheCreationInputTokens: 50,
+            promptTokens: 1_050,
+            contextWindowTokens: 1_000_000,
           },
           {
+            model: "claude-sonnet",
             inputTokens: 20,
             outputTokens: 5,
-            cacheReadInputTokens: 10,
+            cacheReadInputTokens: 0,
             cacheCreationInputTokens: 0,
+            promptTokens: 20,
           },
         ],
         lastRequestUsage: {

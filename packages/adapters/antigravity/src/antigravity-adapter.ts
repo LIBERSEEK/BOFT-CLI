@@ -8,6 +8,7 @@ import readline from "node:readline";
 import type { Readable, Writable } from "node:stream";
 
 import {
+  unsupportedSteer,
   HarnessOutputChannel,
   sanitizeDiagnosticTail,
   type HarnessAdapter,
@@ -46,6 +47,8 @@ import {
   type ThinkingSelectCompleted,
   type TurnCancelAccepted,
   type TurnCancelCommand,
+  type TurnSteerAccepted,
+  type TurnSteerCommand,
   type TurnOutcome,
   type TurnStartAccepted,
   type TurnStartCommand,
@@ -593,6 +596,7 @@ class AntigravitySession implements HarnessSession {
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -605,6 +609,7 @@ class AntigravitySession implements HarnessSession {
   ): Promise<
     HarnessResult<
       | TurnStartAccepted
+      | TurnSteerAccepted
       | TurnCancelAccepted
       | InteractionRespondAccepted
       | ModelSelectCompleted
@@ -614,6 +619,8 @@ class AntigravitySession implements HarnessSession {
   > {
     if (this.#closed) return { ok: false, error: invalidState("Antigravity Session is closed") };
     if (command.type === "turn.cancel") return this.#cancel(command);
+    // Headless stream-json runs each stdin message as its own Turn; steering exists only in the TUI.
+    if (command.type === "turn.steer") return unsupportedSteer("Antigravity");
     if (command.type === "model.select") return this.#selectModel(command);
     if (command.type === "permissionMode.select") return this.#selectPermissionMode(command);
     if (command.type === "thinking.select") return this.#selectThinking(command);

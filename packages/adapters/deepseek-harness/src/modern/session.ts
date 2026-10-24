@@ -3,6 +3,7 @@ import { randomUUID as nodeRandomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
 import {
+  unsupportedSteer,
   HarnessOutputChannel,
   validateHostInteractionResponse,
   type HarnessCommandAccepted,
@@ -42,6 +43,8 @@ import {
   type TurnOutcome,
   type TurnStartAccepted,
   type TurnStartCommand,
+  type TurnSteerAccepted,
+  type TurnSteerCommand,
 } from "@codexhost/harness-adapter";
 import {
   harnessIdSchema,
@@ -563,6 +566,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -575,6 +579,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   ): Promise<
     HarnessResult<
       | TurnStartAccepted
+      | TurnSteerAccepted
       | TurnCancelAccepted
       | InteractionRespondAccepted
       | ModelSelectCompleted
@@ -586,6 +591,8 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     switch (command.type) {
       case "turn.start":
         return this.#start(command);
+      case "turn.steer":
+        return Promise.resolve(unsupportedSteer("DeepSeek Harness"));
       case "turn.cancel":
         return this.#cancel(command);
       case "interaction.respond":
