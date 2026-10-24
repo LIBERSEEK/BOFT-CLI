@@ -73,22 +73,24 @@ npm install -g @liberseek/boft-cli
 boft
 ```
 
-macOS 安装包里的应用名称是 **BOFT**。把它拖到「应用程序」后，如果系统提示无法验证，先在终端执行：
+系统显示名称为 **BOFT CLI**；Windows 开始菜单入口为 **BOFT CLI** 和 **BOFT CLI console**，升级时会移除旧的 BOFT 快捷方式。命令仍为 `boft`，应用身份和用户数据目录保持不变。
+
+macOS 的应用元数据显示名称为 **BOFT CLI**；为兼容原位更新和手动覆盖安装，安装包中的文件名仍为 **BOFT.app**，Finder 中也可能显示该文件名。把它拖到「应用程序」替换原应用后，如果系统提示无法验证，先在终端执行：
 
 ```bash
 xattr -d com.apple.quarantine /Applications/BOFT.app
 ```
 
-然后再打开 BOFT。
+然后再打开应用。
 
-运行 `boft update` 可在终端检查最新版本并准备更新。有可用更新时请先退出 Codex Desktop；准备完成后，后台 updater 安装更新并重新启动 BOFT。已是最新版本时直接退出。
+运行 `boft update` 可在终端检查最新版本并准备更新。有可用更新时请先退出 Codex Desktop；准备完成后，后台 updater 安装更新并重新启动 BOFT CLI。已是最新版本时直接退出。
 
 <details>
 <summary>其他安装问题</summary>
 
-**BOFT 无法启动，或 Codex 打开后没有 BOFT CLI 功能**
+**BOFT CLI 无法启动，或 Codex 打开后没有 BOFT CLI 功能**
 
-运行 `boft console`（Windows：开始菜单 → “BOFT console”），打开本地控制台 `http://127.0.0.1:26339/`。可以查看上次启动失败的原因、Codex Desktop 版本、Host Runtime 日志，并在 Codex 未运行时更新 BOFT CLI。安装包正常启动时不打开控制台；启动失败时才在浏览器打开。终端启动时会输出访问地址。
+运行 `boft console`（Windows：开始菜单 → “BOFT CLI console”），打开本地控制台 `http://127.0.0.1:26339/`。可以查看上次启动失败的原因、Codex Desktop 版本、Host Runtime 日志，并在 Codex 未运行时更新 BOFT CLI。安装包正常启动时不打开控制台；启动失败时才在浏览器打开。终端启动时会输出访问地址。
 
 **Windows** - 绿色解压版 Codex Desktop
 

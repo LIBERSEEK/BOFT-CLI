@@ -14,8 +14,8 @@ fn main() {
     let icon = crate_root.join("assets/codexhost.ico");
     let manifest = crate_root.join("windows.manifest");
     winresource::WindowsResource::new()
-        .set("ProductName", "BOFT")
-        .set("FileDescription", "BOFT")
+        .set("ProductName", "BOFT CLI")
+        .set("FileDescription", "BOFT CLI")
         .set_icon(icon.to_str().expect("icon path must be valid UTF-8"))
         .set_manifest_file(
             manifest

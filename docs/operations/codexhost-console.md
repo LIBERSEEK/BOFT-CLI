@@ -52,7 +52,7 @@ Launcher 在打开控制台之前先写入 `starting` 启动记录（`finishedAt
 | 方式 | 说明 |
 |---|---|
 | `boft console` | 安装包与 npm 均可用 |
-| Windows 开始菜单 | “BOFT console” 快捷方式 |
+| Windows 开始菜单 | “BOFT CLI console” 快捷方式 |
 | Codex 设置页 | “关于”页顶部 BOFT CLI 卡片右侧的“打开控制台”，通过本地 Host 的 `codexhost/console/open` 打开；远程 Host 不支持 |
 
 地址为 `http://127.0.0.1:26339/`。命令只复用安装、构建版本和数据目录均一致的控制台；若端口上的控制台属于另一份安装（例如 npm 与安装包并存），或使用不同的 `CODEXHOST_DATA_DIR`，先让旧实例退出再以当前配置启动。控制台不需要登录，直接访问即可。

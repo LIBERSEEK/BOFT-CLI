@@ -77,14 +77,16 @@ boft
 
 > Linux 支持 x64 / ARM64，详见 [Linux 说明](../platforms/linux/linux.zh-CN.md)。
 
-运行 `boft update` 可在终端检查并准备升级到最新版本。有更新时请先退出 Codex Desktop；准备完成后由后台更新器安装并重新启动 BOFT。已是最新版本时直接退出。
+系统显示名称为 **BOFT CLI**；Windows 开始菜单入口为 **BOFT CLI** 和 **BOFT CLI console**，升级时会移除旧的 BOFT 快捷方式。命令仍为 `boft`，应用身份和用户数据目录保持不变。macOS 应用元数据使用 **BOFT CLI**，文件名仍为 **BOFT.app**，兼容原位更新和手动覆盖安装；Finder 中也可能显示该文件名。
+
+运行 `boft update` 可在终端检查并准备升级到最新版本。有更新时请先退出 Codex Desktop；准备完成后由后台更新器安装并重新启动 BOFT CLI。已是最新版本时直接退出。
 
 <details>
 <summary>安装问题排查</summary>
 
-**BOFT 启动失败，或 Codex 打开了但没有 BOFT CLI 功能**
+**BOFT CLI 启动失败，或 Codex 打开了但没有 BOFT CLI 功能**
 
-运行 `boft console`（Windows：开始菜单 →“BOFT console”），打开本地控制台 `http://127.0.0.1:26339/`。可以查看上次启动失败的原因、Codex Desktop 版本、Host Runtime 日志，并在 Codex 未运行时更新。安装包正常启动时不打开控制台；启动失败时才在浏览器打开。终端启动时会输出访问地址。`codexhost console` 仍可作为兼容别名使用。
+运行 `boft console`（Windows：开始菜单 →“BOFT CLI console”），打开本地控制台 `http://127.0.0.1:26339/`。可以查看上次启动失败的原因、Codex Desktop 版本、Host Runtime 日志，并在 Codex 未运行时更新。安装包正常启动时不打开控制台；启动失败时才在浏览器打开。终端启动时会输出访问地址。`codexhost console` 仍可作为兼容别名使用。
 
 **macOS：首次打开提示「应用无法验证」**
 

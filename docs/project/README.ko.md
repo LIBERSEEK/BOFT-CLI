@@ -70,20 +70,22 @@ npm install -g @liberseek/boft-cli
 boft
 ```
 
-macOS DMG의 앱 이름은 **BOFT**입니다. Applications로 드래그한 뒤 확인되지 않는다는 메시지가 나타나면 다음을 실행하세요:
+시스템 표시 이름은 **BOFT CLI**입니다. Windows 시작 메뉴에는 **BOFT CLI**와 **BOFT CLI console**이 표시되며, 업그레이드 시 기존 BOFT 바로가기가 제거됩니다. `boft` 명령, 앱 식별자 및 사용자 데이터 경로는 유지됩니다.
+
+macOS 앱 메타데이터의 이름은 **BOFT CLI**이지만, 기존 앱 업데이트와 수동 덮어쓰기를 위해 DMG의 파일명은 **BOFT.app**으로 유지됩니다. Finder에도 이 파일명이 표시될 수 있습니다. Applications로 드래그하여 기존 앱을 교체한 뒤 확인되지 않는다는 메시지가 나타나면 다음을 실행하세요:
 
 ```bash
 xattr -d com.apple.quarantine /Applications/BOFT.app
 ```
 
-그런 다음 BOFT를 다시 여세요.
+그런 다음 앱을 다시 여세요.
 
 <details>
 <summary>기타 설치 문제</summary>
 
-**BOFT가 시작되지 않거나, Codex는 열렸지만 BOFT CLI 기능이 보이지 않는 경우**
+**BOFT CLI가 시작되지 않거나, Codex는 열렸지만 BOFT CLI 기능이 보이지 않는 경우**
 
-`boft console`(Windows: 시작 메뉴 → "BOFT console")을 실행하면 로컬 콘솔 `http://127.0.0.1:26339/`이 열립니다. 마지막 시작 실패 원인, Codex Desktop 버전, Host Runtime 로그를 확인할 수 있고, Codex가 실행 중이 아닐 때 BOFT CLI를 업데이트할 수 있습니다. 설치 패키지로 정상 실행하면 콘솔을 열지 않으며, 시작에 실패할 때만 브라우저에서 엽니다. 터미널에서 실행하면 주소가 출력됩니다.
+`boft console`(Windows: 시작 메뉴 → "BOFT CLI console")을 실행하면 로컬 콘솔 `http://127.0.0.1:26339/`이 열립니다. 마지막 시작 실패 원인, Codex Desktop 버전, Host Runtime 로그를 확인할 수 있고, Codex가 실행 중이 아닐 때 BOFT CLI를 업데이트할 수 있습니다. 설치 패키지로 정상 실행하면 콘솔을 열지 않으며, 시작에 실패할 때만 브라우저에서 엽니다. 터미널에서 실행하면 주소가 출력됩니다.
 
 **Windows** - 휴대용/압축 해제 Codex Desktop
 
