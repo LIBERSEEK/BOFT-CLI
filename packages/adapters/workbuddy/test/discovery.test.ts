@@ -111,6 +111,7 @@ describe("WorkBuddy app discovery", () => {
     const invocation = workBuddyInvocation({ HOME: "/Users/test" }, false, {
       platform: "darwin",
       isExecutable: (candidate) => [executable, cli].includes(candidate),
+      isFile: () => false,
     });
     expect(invocation.command).toBe(executable);
     expect(invocation.arguments).toEqual(["--eval", expect.any(String), cli, "--acp"]);
