@@ -90,7 +90,7 @@ cat > "$CONTENTS/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
   <key>CFBundleDisplayName</key>
-  <string>BOFT</string>
+  <string>BOFT CLI</string>
   <key>CFBundleExecutable</key>
   <string>boft</string>
   <key>CFBundleIconFile</key>
@@ -100,7 +100,7 @@ cat > "$CONTENTS/Info.plist" <<PLIST
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
-  <string>BOFT</string>
+  <string>BOFT CLI</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
@@ -127,6 +127,7 @@ PLIST
 "$RESOURCES/runtime/node" -e 'if (process.version !== "v24.13.1") process.exit(1)'
 
 mkdir -p "$DMG_STAGE"
+# Keep the installed path stable for in-app updates and manual DMG replacement.
 DMG_APP_NAME="BOFT.app"
 /usr/bin/ditto "$APP_PATH" "$DMG_STAGE/$DMG_APP_NAME"
 /usr/bin/codesign --verify --deep --strict "$DMG_STAGE/$DMG_APP_NAME"
@@ -135,12 +136,12 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # standard DMG: window size, icon positions, Applications drop link, volume
 # icon and background are matched to the official example template.
 create-dmg \
-  --volname "BOFT" \
+  --volname "BOFT CLI" \
   --volicon "$RESOURCES/codexhost.icns" \
   --background "$SCRIPT_DIR/assets/installer-background.png" \
   --window-pos 200 120 \
   --window-size 800 400 \
-  --icon-size 100 \
+  --icon-size 120 \
   --icon "$DMG_APP_NAME" 200 190 \
   --hide-extension "$DMG_APP_NAME" \
   --app-drop-link 600 185 \

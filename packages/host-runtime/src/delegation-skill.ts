@@ -3,7 +3,7 @@ import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-const SKILL_VERSION = 9;
+const SKILL_VERSION = 10;
 export const DELEGATION_SKILL_NAME = "codexhost-delegation";
 const SKILL_RELATIVE_PATH = path.join("skills", DELEGATION_SKILL_NAME, "SKILL.md");
 const PREVIOUS_MANAGED_DIGESTS: readonly string[] = [
@@ -21,6 +21,8 @@ const PREVIOUS_MANAGED_DIGESTS: readonly string[] = [
   "b40666ca01c9c46caeb2c4d672cda628127616679d04dd735231f5fab6583e88",
   // v8, which ran a bare `codexhost` from PATH.
   "ca06be59f0d47c9a54d05ed2d9588c9c737306cc155cb4dff3fe2a2a61891dde",
+  // v9, before the child-session name guidance.
+  "b72a059e139bd5b93b95f7ac02ab80f428d5a721cc67b004210d5263e75baed7",
 ];
 
 export const CODEXHOST_DELEGATION_SKILL = `---
@@ -57,7 +59,8 @@ Use the Harness native defaults. Inspect the target when a Model or Thinking
 selection is needed or the default is unavailable.
 
 For a new delegation, create an independent child session and submit the
-requested task. For an existing external session, resolve the target from the
+requested task. Give it a short task name that tells it apart from sibling
+tasks, using the help's task-name option. For an existing external session, resolve the target from the
 user-provided session link, identifier, or context and operate on that Thread
 directly; it need not have been created by the current assistant. If the target
 is ambiguous, ask the user to identify it. Keep requests to view or summarize a

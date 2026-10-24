@@ -24,8 +24,14 @@ describe("platform packagers", () => {
     expect(source).toContain('DMG_APP_NAME="BOFT.app"');
     expect(source).not.toContain("COMPAT_APP_NAME");
     expect(source).not.toContain("chflags hidden");
-    expect(source).toContain('--volname "BOFT"');
-    expect(source).toContain("<string>BOFT</string>");
+    expect(source).toContain('--volname "BOFT CLI"');
+    expect(source).toMatch(/<key>CFBundleDisplayName<\/key>\s*<string>BOFT CLI<\/string>/);
+    expect(source).toMatch(/<key>CFBundleName<\/key>\s*<string>BOFT CLI<\/string>/);
+    expect(source).toMatch(
+      /<key>CFBundleIdentifier<\/key>\s*<string>com\.codexhost\.app<\/string>/,
+    );
+    expect(source).toMatch(/<key>CFBundleExecutable<\/key>\s*<string>boft<\/string>/);
+    expect(source).toContain("--icon-size 120");
     expect(source).toContain('--icon "$DMG_APP_NAME" 200 190');
     expect(source).toContain('--hide-extension "$DMG_APP_NAME"');
     expect(source).not.toContain('--icon "codexhost.app"');
@@ -119,17 +125,29 @@ describe("platform packagers", () => {
   });
 
   it("builds a standard Inno Setup installer for both Windows architectures", async () => {
-    const [script, installer] = await Promise.all([
+    const [script, installer, resources] = await Promise.all([
       readFile(path.join(root, "scripts/release/windows/package.ps1"), "utf8"),
       readFile(path.join(root, "scripts/release/windows/Installer.iss"), "utf8"),
+      readFile(path.join(root, "crates/launcher/build.rs"), "utf8"),
     ]);
     expect(script).toContain('ValidateSet("x64", "arm64")');
     expect(script).toContain("Inno Setup 6\\ISCC.exe");
     expect(script).toContain("Inno Setup build");
-    expect(installer).toContain("AppName=BOFT");
-    expect(installer).toContain("UninstallDisplayName=BOFT");
-    expect(installer).toContain('Name: "{userprograms}\\BOFT"');
-    expect(installer).not.toContain("AppName=BOFT CLI");
+    expect(installer).toMatch(/^AppName=BOFT CLI$/m);
+    expect(installer).toMatch(/^UninstallDisplayName=BOFT CLI$/m);
+    expect(installer).toMatch(/^DefaultGroupName=BOFT CLI$/m);
+    expect(installer).toContain('Name: "{userprograms}\\BOFT CLI"');
+    expect(installer).toContain('Name: "{userprograms}\\BOFT CLI console"');
+    expect(installer).not.toContain('Name: "{userprograms}\\BOFT";');
+    expect(installer).not.toContain('Name: "{userprograms}\\BOFT console";');
+    expect(installer).toContain("AppId={{8A7B4E80-A650-4D47-9D05-8D4D7F13E67E}");
+    const legacyShortcutCleanup = installer.match(/\[InstallDelete\]([^[]*)/)?.[1].trim();
+    expect(legacyShortcutCleanup?.split(/\r?\n/)).toEqual([
+      'Type: files; Name: "{userprograms}\\BOFT.lnk"',
+      'Type: files; Name: "{userprograms}\\BOFT console.lnk"',
+    ]);
+    expect(resources).toContain('.set("ProductName", "BOFT CLI")');
+    expect(resources).toContain('.set("FileDescription", "BOFT CLI")');
     expect(installer).toContain("DefaultDirName={localappdata}\\Programs\\boft");
     expect(installer).toContain("UsePreviousAppDir=no");
     expect(installer).toContain('Filename: "{app}\\bin\\boft-start.exe"');

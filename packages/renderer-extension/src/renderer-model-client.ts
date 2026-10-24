@@ -13,9 +13,6 @@ import {
   type RuntimeStatus,
 } from "@codexhost/shared-contracts";
 import {
-  HARNESS_INSTALLATION_METHOD,
-  harnessInstallationParamsSchema,
-  harnessInstallationStateSchema,
   type HarnessInstallationParams,
   type HarnessInstallationState,
   HARNESS_DISPLAY_GET_METHOD,
@@ -123,6 +120,7 @@ import {
   type UpdateStartResult,
   type UpdateStatusResult,
 } from "@codexhost/shared-contracts";
+import { runRendererInstallation } from "./renderer-installation-client.js";
 
 import {
   createRendererRequestSender,
@@ -344,7 +342,16 @@ export function createRendererModelClient(
     options?: RendererRequestOptions,
   ): Promise<HarnessInspection> => {
     const params = harnessInspectParamsSchema.parse(input);
-    const result = await manager.sendRequest(HARNESS_INSPECT_METHOD, params, options);
+    let result: unknown;
+    try {
+      result = await manager.sendRequest(HARNESS_INSPECT_METHOD, params, options);
+    } catch (error) {
+      // Hosts that predate `purpose` reject it as an unknown param; they only run full inspection.
+      if (!params.purpose || !isInvalidParams(error)) throw error;
+      const full = { ...params };
+      delete full.purpose;
+      result = await manager.sendRequest(HARNESS_INSPECT_METHOD, full, options);
+    }
     return harnessInspectionSchema.parse(result);
   };
   const inspectHarnessCommands = async (
@@ -399,13 +406,7 @@ export function createRendererModelClient(
 
   return Object.freeze({
     async installation(input: HarnessInstallationParams): Promise<HarnessInstallationState> {
-      return harnessInstallationStateSchema.parse(
-        await manager.sendRequest(
-          HARNESS_INSTALLATION_METHOD,
-          harnessInstallationParamsSchema.parse(input),
-          { priority: "interactive" },
-        ),
-      );
+      return runRendererInstallation(manager.sendRequest, input);
     },
     async getHarnessDisplaySettings() {
       return harnessDisplaySettingsSchema.parse(
@@ -678,4 +679,8 @@ export function createRendererModelClient(
       });
     },
   });
+}
+
+function isInvalidParams(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === -32602;
 }

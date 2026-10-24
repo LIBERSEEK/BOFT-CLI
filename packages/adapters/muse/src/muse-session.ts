@@ -1,5 +1,6 @@
 import {
   HarnessOutputChannel,
+  unsupportedSteer,
   validateHostApprovalResponse,
   validateHostQuestionResponse,
   type HarnessError,
@@ -33,6 +34,8 @@ import {
   type TurnOutcome,
   type TurnStartAccepted,
   type TurnStartCommand,
+  type TurnSteerAccepted,
+  type TurnSteerCommand,
 } from "@codexhost/harness-adapter";
 import {
   harnessIdSchema,
@@ -253,6 +256,7 @@ export class MuseHarnessSession implements HarnessSession {
   }
 
   async execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  async execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   async execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   async execute(
     command: InteractionRespondCommand,
@@ -265,6 +269,7 @@ export class MuseHarnessSession implements HarnessSession {
   async execute(
     command:
       | TurnStartCommand
+      | TurnSteerCommand
       | TurnCancelCommand
       | InteractionRespondCommand
       | ModelSelectCommand
@@ -273,6 +278,7 @@ export class MuseHarnessSession implements HarnessSession {
   ): Promise<
     HarnessResult<
       | TurnStartAccepted
+      | TurnSteerAccepted
       | TurnCancelAccepted
       | InteractionRespondAccepted
       | ModelSelectCompleted
@@ -287,6 +293,7 @@ export class MuseHarnessSession implements HarnessSession {
       };
     }
     try {
+      if (command.type === "turn.steer") return unsupportedSteer("Muse");
       if (command.type === "turn.start") return await this.#startTurn(command);
       if (command.type === "turn.cancel") return await this.#cancelTurn(command);
       if (command.type === "interaction.respond") return await this.#respond(command);

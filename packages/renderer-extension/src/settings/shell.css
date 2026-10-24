@@ -787,6 +787,20 @@
   gap: 16px;
 }
 
+.settings-connections-content {
+  container: settings-connections / inline-size;
+}
+
+@container settings-connections (max-width: 780px) {
+  .settings-connections-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-connection-inspector {
+    position: static;
+  }
+}
+
 .settings-connection-list {
   overflow: hidden;
   background: var(--settings-surface);
@@ -794,14 +808,36 @@
   border-radius: 10px;
 }
 
+.settings-connection-host-header {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  border-bottom: 1px solid var(--settings-divider);
+}
+
+.settings-connection-update-all {
+  flex: none;
+  margin-right: 10px;
+  white-space: nowrap;
+}
+
+.settings-connection-update-result {
+  margin: 0;
+  padding: 7px 10px;
+  color: var(--settings-muted);
+  font-size: 11px;
+  line-height: 18px;
+  border-bottom: 1px solid var(--settings-divider);
+}
+
 .settings-connection-host-strip {
   display: grid;
+  flex: 1;
   grid-template-columns: 28px minmax(0, 1fr) 28px;
   align-items: center;
   min-width: 0;
   gap: 6px;
   padding: 10px 12px;
-  border-bottom: 1px solid var(--settings-divider);
 }
 
 .settings-connection-host-scroll {
@@ -1061,6 +1097,14 @@
   line-height: 18px;
 }
 
+.settings-connection-version-available {
+  flex: none;
+  color: var(--settings-muted);
+  font-size: 10px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
 .settings-connection-row__status::before {
   width: 6px;
   height: 6px;
@@ -1097,6 +1141,7 @@
   justify-content: flex-end;
   min-width: 0;
   gap: 4px;
+  white-space: nowrap;
 }
 
 .settings-connection-row__handle {

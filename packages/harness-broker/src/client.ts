@@ -37,6 +37,8 @@ import {
   type TurnCancelCommand,
   type TurnStartAccepted,
   type TurnStartCommand,
+  type TurnSteerAccepted,
+  type TurnSteerCommand,
 } from "@codexhost/harness-adapter";
 import {
   harnessPluginIdSchema,
@@ -79,6 +81,7 @@ interface SessionMetadata {
   sessionId: string;
   sessionGeneration: number;
   capabilities: HarnessSessionCapabilities;
+  readCapabilities: boolean;
   initialState: HarnessSessionState;
   initialUsage: HostUsage | null;
   commands: boolean;
@@ -156,6 +159,7 @@ function parseSessionMetadata(value: unknown): SessionMetadata {
     sessionId: candidate.sessionId,
     sessionGeneration: candidate.sessionGeneration,
     capabilities: harnessSessionCapabilitiesSchema.parse(candidate.capabilities),
+    readCapabilities: candidate.readCapabilities === true,
     initialState: state,
     initialUsage: candidate.initialUsage === null ? null : parseHostUsage(candidate.initialUsage),
     commands: candidate.commands === true,
@@ -551,6 +555,14 @@ class BrokeredHarnessSession implements HarnessSession {
     });
   }
 
+  async readCapabilities(): Promise<HarnessSessionCapabilities> {
+    // Older brokers cannot revalidate a live steer capability; keep stop-then-start there.
+    if (!this.#metadata.readCapabilities) return { ...this.capabilities, steer: false };
+    return harnessSessionCapabilitiesSchema.parse(
+      await this.#request("session.readCapabilities", {}),
+    );
+  }
+
   async refreshUsage(): Promise<void> {
     await this.#request("session.refreshUsage", {});
   }
@@ -572,6 +584,7 @@ class BrokeredHarnessSession implements HarnessSession {
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -584,6 +597,7 @@ class BrokeredHarnessSession implements HarnessSession {
   ): Promise<
     HarnessResult<
       | TurnStartAccepted
+      | TurnSteerAccepted
       | TurnCancelAccepted
       | InteractionRespondAccepted
       | ModelSelectCompleted
@@ -600,6 +614,8 @@ class BrokeredHarnessSession implements HarnessSession {
     try {
       return parseHarnessResult(await this.#request("session.execute", { command }));
     } catch (error) {
+      // A missing reply does not prove native input was rejected. Do not invite stop-and-resend.
+      if (command.type === "turn.steer") throw error;
       return {
         ok: false,
         error: unavailable(error instanceof Error ? error.message : String(error)),

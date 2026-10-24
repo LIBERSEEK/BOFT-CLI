@@ -71,13 +71,15 @@ npm install -g @liberseek/boft-cli
 boft
 ```
 
-The macOS DMG contains **BOFT**. After dragging it to Applications, if macOS says the app cannot be verified, run:
+The system display name is **BOFT CLI**. Windows Start menu entries are **BOFT CLI** and **BOFT CLI console**; upgrading removes the old BOFT shortcuts. The `boft` command, application identity, and user data directories stay the same.
+
+The macOS app metadata uses **BOFT CLI**, while the DMG retains the filename **BOFT.app** for in-place updates and manual replacement. Finder may also show that filename. Drag it to Applications to replace the existing app. If macOS says the app cannot be verified, run:
 
 ```bash
 xattr -d com.apple.quarantine /Applications/BOFT.app
 ```
 
-Then open BOFT again.
+Then open the app again.
 
 <details>
 <summary>Other installation issues</summary>

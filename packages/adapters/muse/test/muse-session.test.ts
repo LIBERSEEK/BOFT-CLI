@@ -111,6 +111,25 @@ function events(outputs: HarnessOutput[]) {
 }
 
 describe("Muse native Session lifecycle", () => {
+  it.each([false, true])("refuses native steering with active Turn %s", async (active) => {
+    const f = fixture();
+    try {
+      if (active) await f.session.execute(f.command);
+      const before = f.rpc.requests.length;
+      expect(
+        await f.session.execute({
+          type: "turn.steer",
+          turnId: f.command.turnId,
+          input: [{ type: "text", text: "must not be sent" }],
+        }),
+      ).toMatchObject({ ok: false, error: { code: "unsupported", retryable: false } });
+      expect(f.rpc.requests).toHaveLength(before);
+      expect(events(f.outputs).some((event) => event.type === "turn.completed")).toBe(false);
+    } finally {
+      await f.finish();
+    }
+  });
+
   it("projects each streamed character once even when the consumer runs after every native event", async () => {
     const f = fixture();
     expect((await f.session.execute(f.command)).ok).toBe(true);

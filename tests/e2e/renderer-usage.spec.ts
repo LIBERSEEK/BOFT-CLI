@@ -77,6 +77,9 @@ const { outputFiles } = await build({
             periodType: "unknown",
           });
         };
+        globalThis.updateRendererCreditsPercent = (usedPercent) => {
+          renderRendererCreditsControl(credits, { usedPercent, periodType: "unknown" });
+        };
         globalThis.updateRendererCreditsChinese = () => {
           renderRendererCreditsControl(credits, {
             usedPercent: 27,
@@ -116,6 +119,19 @@ const { outputFiles } = await build({
             outputTokens: 7600,
             totalCostUsd: 0.78,
             costSource: "publicPrice",
+          }, "zh-CN");
+        };
+        globalThis.updateRendererCopilotUsage = () => {
+          renderRendererUsageControl(usage, {
+            outputTokensPerSecond: 236 / (5.557 - 3.111924417),
+            apiOutputTokensPerSecond: 236 / 5.557,
+            cacheHitRatePercent: 0,
+            sessionCacheHitRatePercent: 0,
+            totalCredits: 0.173055,
+            inputTokens: 12901,
+            outputTokens: 236,
+            cachedInputTokens: 0,
+            cacheWriteInputTokens: 12898,
           }, "zh-CN");
         };
         globalThis.updateRendererUsagePartialCost = () => {
@@ -252,10 +268,10 @@ test("renders Usage immediately to the left of the model control", async ({ page
     update();
   });
   await expect(usage).toBeVisible();
-  await expect(usage).toHaveText("CH 99.9% · $0.822");
+  await expect(usage).toHaveText("99.9% · $0.822");
   await expect(usage.locator("button")).toHaveAttribute(
     "aria-label",
-    "Thread Usage: CH 99.9% · $0.822",
+    "Thread Usage: 99.9% · $0.822",
   );
   await expect(usage.locator("svg")).toHaveCount(0);
   const [usageBox, modelBox] = await Promise.all([usage.boundingBox(), model.boundingBox()]);
@@ -327,9 +343,10 @@ test("keeps Usage in place and shows credits after the leading composer control"
   const usage = page.locator('[data-codexhost-usage-control="usage-composer"]');
   const credits = page.locator('[data-codexhost-credits-control="usage-composer"]');
   const trigger = usage.locator("button");
-  await expect(usage).toHaveText("CH 99.9% · $0.822");
+  await expect(usage).toHaveText("99.9% · $0.822");
   await expect(credits).toBeHidden();
-  await expect(trigger).toHaveCSS("max-width", "180px");
+  await expect(usage).toHaveCSS("max-width", "240px");
+  await expect(trigger).toHaveCSS("max-width", "100%");
   await expect(usage.locator("xpath=following-sibling::*[1]")).toHaveAttribute(
     "data-codexhost-model-control",
     "usage-composer",
@@ -340,12 +357,13 @@ test("keeps Usage in place and shows credits after the leading composer control"
     if (typeof update !== "function") throw new Error("Credits usage update is unavailable");
     update();
   });
-  await expect(usage).toHaveText("CH 99.3% · $0.822");
+  await expect(usage).toHaveText("99.3% · $0.822");
   await expect(credits).toBeVisible();
   await expect(credits).toHaveText("53%");
   await expect(credits.locator("button")).toHaveAttribute("aria-label", "Weekly limit 53%");
   await expect(credits.locator("[data-codexhost-credits-ring] svg")).toHaveCount(1);
-  await expect(trigger).toHaveCSS("max-width", "180px");
+  await expect(usage).toHaveCSS("max-width", "240px");
+  await expect(trigger).toHaveCSS("max-width", "100%");
   await expect(usage.locator("xpath=following-sibling::*[1]")).toHaveAttribute(
     "data-codexhost-model-control",
     "usage-composer",
@@ -389,6 +407,46 @@ test("hides remaining API credits from the Composer credits chip", async ({ page
   await expect(credits).toBeHidden();
   await expect(credits).not.toContainText("$148.12");
 });
+for (const width of [650, 1024]) {
+  test(`rounds the account button percentage and retains popover precision at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 600 });
+    await page.setContent('<!doctype html><body style="margin:8px;padding-top:300px"></body>');
+    await page.addScriptTag({ content: browserBundle });
+    await page.evaluate(() => {
+      Reflect.get(globalThis, "setupRendererUsage")();
+      Reflect.get(globalThis, "updateRendererUsage")();
+    });
+    const credits = page.locator('[data-codexhost-credits-control="usage-composer"]');
+    const label = credits.locator("[data-codexhost-credits-label]");
+    for (const [usedPercent, remaining] of [
+      [6.4, "94%"],
+      [6.6, "93%"],
+      [0, "100%"],
+      [100, "0%"],
+    ] as const) {
+      await page.evaluate(
+        (value) => Reflect.get(globalThis, "updateRendererCreditsPercent")(value),
+        usedPercent,
+      );
+      await expect(label).toHaveText(remaining);
+      if (usedPercent === 6.4) {
+        await expect(credits.locator("button")).toHaveAttribute("title", "Account limit 93.6%");
+        await credits.hover();
+        await expect(page.getByRole("dialog", { name: "Account limit details" })).toContainText(
+          "Remaining 93.6%",
+        );
+      }
+      expect(await label.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
+        true,
+      );
+      const box = await credits.boundingBox();
+      if (!box) throw new Error("Credits geometry is unavailable");
+      expect(box.x + box.width).toBeLessThanOrEqual(width);
+    }
+  });
+}
 
 test("renders remaining five-hour and seven-day credits clearly in Chinese", async ({ page }) => {
   await page.setContent('<!doctype html><body style="margin:0"></body>');
@@ -431,10 +489,7 @@ test("renders the Usage popover in Chinese when the settings locale is Chinese",
   });
 
   const usage = page.locator('[data-codexhost-usage-control="usage-composer"]');
-  await expect(usage.locator("button")).toHaveAttribute(
-    "aria-label",
-    "对话用量: CH 92.9% · $0.780",
-  );
+  await expect(usage.locator("button")).toHaveAttribute("aria-label", "对话用量: 92.9% · $0.780");
   await usage.hover();
   const popover = page.locator('[role="dialog"][aria-label="对话用量详情"]');
   await expect(popover).toBeVisible();
@@ -465,7 +520,7 @@ test("shows Host-metered usage rows", async ({ page }) => {
   await usage.hover();
   const popover = page.locator('[role="dialog"][aria-label="对话用量详情"]');
   await expect(popover).toBeVisible();
-  await expect(popover).toContainText("最近缓存命中（CH）92.9%");
+  await expect(popover).toContainText("缓存命中率92.9%");
   await expect(popover).toContainText("平均缓存命中81.3%");
   await expect(popover).toContainText("输出速度（TPS）64.2 tok/s");
   await expect(popover).toContainText("首 token（TTFT）1.3 秒");
@@ -490,7 +545,7 @@ test("marks a cost that leaves unpriced Models out as a lower bound", async ({ p
     update();
   });
   const usage = page.locator('[data-codexhost-usage-control="usage-composer"]');
-  await expect(usage).toHaveText("CH 99.6% · ≥$12.23");
+  await expect(usage).toHaveText("99.6% · ≥$12.23");
   await usage.hover();
   const popover = page.locator('[role="dialog"][aria-label="对话用量详情"]');
   await expect(popover).toContainText("费用估算≥$12.23");
@@ -511,7 +566,7 @@ test("omits plan limits from the Usage trigger and popover", async ({ page }) =>
 
   const usage = page.locator('[data-codexhost-usage-control="usage-composer"]');
   await expect(usage).toBeVisible();
-  await expect(usage).toHaveText("CH 99% · $1.37");
+  await expect(usage).toHaveText("99% · $1.37");
   await expect(usage).not.toContainText("5-hour");
   await expect(usage).not.toContainText("45%");
 
@@ -522,4 +577,20 @@ test("omits plan limits from the Usage trigger and popover", async ({ page }) =>
   await expect(popover).not.toContainText("45%");
   await expect(popover).not.toContainText("12%");
   await expect(popover).not.toContainText("7-day limit");
+});
+
+test("shows Copilot generation/API rates and known-zero cache rates", async ({ page }) => {
+  await page.setContent('<!doctype html><body style="margin:0;padding-top:320px"></body>');
+  await page.addScriptTag({ content: browserBundle });
+  await page.evaluate(() => {
+    Reflect.get(globalThis, "setupRendererUsage")();
+    Reflect.get(globalThis, "updateRendererCopilotUsage")();
+  });
+  const usage = page.locator('[data-codexhost-usage-control="usage-composer"]');
+  await usage.hover();
+  const popover = page.locator('[role="dialog"][aria-label="对话用量详情"]');
+  await expect(popover).toContainText("输出速度（TPS）96.5 tok/s");
+  await expect(popover).toContainText("API 平均速度42.5 tok/s");
+  await expect(popover).toContainText("缓存命中率0%");
+  await expect(popover).toContainText("平均缓存命中0%");
 });

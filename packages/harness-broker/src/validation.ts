@@ -135,6 +135,13 @@ const turnStartSchema = z
     input: z.array(textInputSchema),
   })
   .strict();
+const turnSteerSchema = z
+  .object({
+    type: z.literal("turn.steer"),
+    turnId: hostTurnIdSchema,
+    input: z.array(textInputSchema),
+  })
+  .strict();
 const turnCancelSchema = z
   .object({ type: z.literal("turn.cancel"), turnId: hostTurnIdSchema })
   .strict();
@@ -173,6 +180,7 @@ const permissionSelectSchema = z
 
 export const brokerHostCommandSchema = z.discriminatedUnion("type", [
   turnStartSchema,
+  turnSteerSchema,
   turnCancelSchema,
   interactionRespondSchema,
   modelSelectSchema,

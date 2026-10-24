@@ -143,22 +143,21 @@ function finiteNonNegativeNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
-function parseResultModelUsage(value: unknown):
-  | Array<{
-      inputTokens: number;
-      outputTokens: number;
-      cacheReadInputTokens: number;
-      cacheCreationInputTokens: number;
-    }>
-  | undefined {
+export interface ClaudeResultModelUsage {
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  /** Prompt tokens incl. cache reads/writes; used only to pick the main Model. */
+  promptTokens?: number;
+  contextWindowTokens?: number;
+}
+
+function parseResultModelUsage(value: unknown): ClaudeResultModelUsage[] | undefined {
   if (!isRecord(value)) return undefined;
-  const usage: Array<{
-    inputTokens: number;
-    outputTokens: number;
-    cacheReadInputTokens: number;
-    cacheCreationInputTokens: number;
-  }> = [];
-  for (const entry of Object.values(value)) {
+  const usage: ClaudeResultModelUsage[] = [];
+  for (const [model, entry] of Object.entries(value)) {
     if (
       !isRecord(entry) ||
       !safeNonNegativeInteger(entry.inputTokens) ||
@@ -166,17 +165,23 @@ function parseResultModelUsage(value: unknown):
     ) {
       return undefined;
     }
+    const cacheRead = safeNonNegativeInteger(entry.cacheReadInputTokens)
+      ? entry.cacheReadInputTokens
+      : 0;
+    const cacheWrite = safeNonNegativeInteger(entry.cacheCreationInputTokens)
+      ? entry.cacheCreationInputTokens
+      : 0;
+    const promptTokens = entry.inputTokens + cacheRead + cacheWrite;
     usage.push({
+      model,
       inputTokens: entry.inputTokens,
       outputTokens: entry.outputTokens,
-      // Cache totals are optional in older payloads; default to zero so the
-      // session-cumulative cache hit rate can still be derived per entry.
-      cacheReadInputTokens: safeNonNegativeInteger(entry.cacheReadInputTokens)
-        ? entry.cacheReadInputTokens
-        : 0,
-      cacheCreationInputTokens: safeNonNegativeInteger(entry.cacheCreationInputTokens)
-        ? entry.cacheCreationInputTokens
-        : 0,
+      cacheReadInputTokens: cacheRead,
+      cacheCreationInputTokens: cacheWrite,
+      ...(Number.isSafeInteger(promptTokens) ? { promptTokens } : {}),
+      ...(safeNonNegativeInteger(entry.contextWindow) && entry.contextWindow > 0
+        ? { contextWindowTokens: entry.contextWindow }
+        : {}),
     });
   }
   return usage;
@@ -611,6 +616,7 @@ export class ClaudeNativeTurnAccumulator {
     events.push({
       type: "message.completed",
       messageId,
+      localCommand: true,
       ...(checkpointId ? { checkpointId } : {}),
     });
   }

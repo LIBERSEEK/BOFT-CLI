@@ -1,10 +1,10 @@
 [Setup]
 AppId={{8A7B4E80-A650-4D47-9D05-8D4D7F13E67E}
-AppName=BOFT
+AppName=BOFT CLI
 AppVersion={#ProductVersion}
 AppPublisher=LiberSeek
 DefaultDirName={localappdata}\Programs\boft
-DefaultGroupName=BOFT
+DefaultGroupName=BOFT CLI
 DisableProgramGroupPage=yes
 UsePreviousAppDir=no
 PrivilegesRequired=lowest
@@ -13,7 +13,7 @@ OutputBaseFilename={#OutputBaseFilename}
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
-UninstallDisplayName=BOFT
+UninstallDisplayName=BOFT CLI
 SetupIconFile=..\..\..\crates\launcher\assets\codexhost.ico
 UninstallDisplayIcon={app}\bin\boft-start.exe
 
@@ -28,9 +28,13 @@ ArchitecturesInstallIn64BitMode=arm64
 [Files]
 Source: "{#PayloadRoot}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 
+[InstallDelete]
+Type: files; Name: "{userprograms}\BOFT.lnk"
+Type: files; Name: "{userprograms}\BOFT console.lnk"
+
 [Icons]
-Name: "{userprograms}\BOFT"; Filename: "{app}\bin\boft-start.exe"; WorkingDir: "{app}"
-Name: "{userprograms}\BOFT console"; Filename: "{app}\bin\boft-start.exe"; Parameters: "--console"; WorkingDir: "{app}"
+Name: "{userprograms}\BOFT CLI"; Filename: "{app}\bin\boft-start.exe"; WorkingDir: "{app}"
+Name: "{userprograms}\BOFT CLI console"; Filename: "{app}\bin\boft-start.exe"; Parameters: "--console"; WorkingDir: "{app}"
 
 [Dirs]
 Name: "{app}"

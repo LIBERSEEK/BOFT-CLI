@@ -57,6 +57,14 @@ function readyInspection() {
 }
 
 describe("Harness Model runtime contracts", () => {
+  it("preserves image input and native steering capabilities together", () => {
+    const ready = readyInspection();
+    const capabilities = { ...ready.capabilities, input: { image: true }, steer: true };
+    expect(harnessInspectionSchema.parse({ ...ready, capabilities })).toMatchObject({
+      capabilities,
+    });
+  });
+
   it("resolves an advertised Fast ref to the same Model without adding a menu row", () => {
     const fast = { id: "priority" };
     const catalog = harnessModelCatalogSchema.parse({
