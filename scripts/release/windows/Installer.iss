@@ -33,6 +33,7 @@ Type: files; Name: "{userprograms}\BOFT.lnk"
 Type: files; Name: "{userprograms}\BOFT console.lnk"
 
 [Icons]
+Name: "{userdesktop}\BOFT CLI"; Filename: "{app}\bin\boft-start.exe"; WorkingDir: "{app}"
 Name: "{userprograms}\BOFT CLI"; Filename: "{app}\bin\boft-start.exe"; WorkingDir: "{app}"
 Name: "{userprograms}\BOFT CLI console"; Filename: "{app}\bin\boft-start.exe"; Parameters: "--console"; WorkingDir: "{app}"
 

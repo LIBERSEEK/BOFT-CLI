@@ -153,6 +153,9 @@ describe("platform packagers", () => {
     expect(installer).toContain('Filename: "{app}\\bin\\boft-start.exe"');
     expect(installer).toContain("PrivilegesRequired=lowest");
     expect(installer).toContain("DisableProgramGroupPage=yes");
+    expect(installer.split(/\r?\n/)).toContain(
+      'Name: "{userdesktop}\\BOFT CLI"; Filename: "{app}\\bin\\boft-start.exe"; WorkingDir: "{app}"',
+    );
     expect(installer).toContain("ArchitecturesAllowed=x64compatible");
     expect(installer).toContain("ArchitecturesAllowed=arm64");
   });
