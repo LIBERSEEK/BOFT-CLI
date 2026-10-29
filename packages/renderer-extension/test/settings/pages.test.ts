@@ -3351,14 +3351,15 @@ describe("Renderer Updates page", () => {
   });
 
   it.each([
-    ["npm" as const, "Windows 暂不支持自动更新。请退出 BOFT CLI，在终端运行以下命令完成更新。"],
-    [
-      "windows-installer" as const,
-      "Windows 暂不支持自动更新。请下载并运行适用于当前系统的安装包。",
-    ],
-  ])("renders manual Windows updates for %s installations", async (installation, expected) => {
+    ["npm" as const, "如需手动更新", false],
+    ["windows-installer" as const, "如需手动更新，请下载并运行适用于当前系统的安装包。", true],
+  ])("offers the appropriate Windows update for %s installations", async (installation, expected, automatic) => {
     const client = {
-      checkUpdate: vi.fn(async () => ({ ...updateCheck(), installation })),
+      checkUpdate: vi.fn(async () => ({
+        ...updateCheck(),
+        installation,
+        installationAvailable: automatic,
+      })),
       startUpdate: vi.fn(),
       readUpdateStatus: vi.fn(async () => ({ status: null })),
     };
@@ -3380,17 +3381,21 @@ describe("Renderer Updates page", () => {
     await vi.waitFor(() => {
       expect(visibleText(content)).toContain(expected);
       expect(visibleText(elementWithClass(content, "settings-update-panel"))).toContain(
-        "Windows 暂不支持自动更新",
+        "有新版本可用",
       );
     });
-    expect(
-      descendants(elementWithClass(content, "settings-update-panel")).find(
-        ({ tagName }) => tagName === "button",
-      ),
-    ).toBeUndefined();
-    expect(client.startUpdate).not.toHaveBeenCalled();
+    if (installation === "npm") {
+      expect(visibleText(content)).toContain("暂不支持自动更新");
+    } else {
+      expect(visibleText(content)).not.toContain("暂不支持自动更新");
+    }
+    const update = descendants(elementWithClass(content, "settings-update-panel")).find(
+      ({ tagName }) => tagName === "button",
+    );
+    expect(Boolean(update)).toBe(automatic);
     if (installation === "npm") {
       expect(visibleText(content)).toContain("npm install -g @liberseek/boft-cli@latest");
+      expect(client.startUpdate).not.toHaveBeenCalled();
     } else {
       const link = descendants(content).find(
         ({ tagName, href }) =>

@@ -190,7 +190,7 @@ xattr -d com.apple.quarantine /Applications/BOFT.app
   <tr>
     <td>
       <strong>微信交流群</strong><br />
-      <sub>扫码加入微信交流群，交流 BOFT CLI 的使用与开发。</sub>
+      <sub>扫码添加微信（备注“BOFT CLI”），我们会邀请你加入交流群。</sub>
       <ul>
         <li><sub>获取安装帮助</sub></li>
         <li><sub>分享功能建议与反馈</sub></li>
@@ -200,7 +200,7 @@ xattr -d com.apple.quarantine /Applications/BOFT.app
       <sub><strong>欢迎参与贡献。</strong></sub>
     </td>
     <td align="center">
-      <img width="230" alt="微信交流群二维码" src="docs/imgs/wechat-group-4-qrcode-2026-10-17.jpg" />
+      <img width="230" alt="BOFT CLI 微信联系二维码" src="docs/imgs/wechat-contact-qrcode.jpg" />
     </td>
   </tr>
 </table>

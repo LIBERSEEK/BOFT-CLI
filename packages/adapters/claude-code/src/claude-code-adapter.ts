@@ -179,6 +179,7 @@ interface ContextUsageRefreshRequest {
   turnId?: TurnStartCommand["turnId"];
   generation: number;
   retryDelaysMs: readonly number[];
+  detail: "summary" | "full";
 }
 
 interface RequestUsageRefreshRequest {
@@ -659,7 +660,6 @@ class ClaudeHarnessSession implements HarnessSession {
   #lastAssistantResponseAtUnix: number | undefined;
   #accountCreditsSupported: boolean;
   #minimumContextUsedTokens: number | null = null;
-  #latestRequestModel: string | null = null;
   #calibratedInputTokens = 0;
   #calibratedCachedInputTokens = 0;
   #calibratedCacheWriteInputTokens = 0;
@@ -1321,18 +1321,20 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#requestContextUsage(transport, undefined, CONTEXT_USAGE_RETRY_DELAYS_MS);
   }
 
-  refreshUsage(): Promise<void> {
-    if (this.#phase !== "open" || !this.#transport) return Promise.resolve();
+  async refreshUsage(): Promise<void> {
+    // A passive summary must not suppress an explicit full count.
+    await this.#contextRefreshInFlight;
+    if (this.#phase !== "open" || !this.#transport) return;
     const now = Date.now();
     if (now < this.#contextUsageFreshUntilMs || now < this.#contextUsageCooldownUntilMs) {
-      return Promise.resolve();
+      return;
     }
     this.#requestContextUsage(
       this.#transport,
       this.#active?.command.turnId,
       CONTEXT_USAGE_RETRY_DELAYS_MS,
     );
-    return this.#contextRefreshInFlight ?? Promise.resolve();
+    await this.#contextRefreshInFlight;
   }
 
   blocksRollback(sessionId: string): boolean {
@@ -2616,6 +2618,7 @@ class ClaudeHarnessSession implements HarnessSession {
     transport: ClaudeTurnTransport,
     turnId: TurnStartCommand["turnId"] | undefined,
     retryDelaysMs: readonly number[],
+    detail: "summary" | "full" = "full",
   ): void {
     if (this.#phase !== "open" || this.#transport !== transport) return;
     if (this.#contextRefreshInFlight) return;
@@ -2624,6 +2627,7 @@ class ClaudeHarnessSession implements HarnessSession {
       ...(turnId !== undefined ? { turnId } : {}),
       generation: this.#usageGeneration,
       retryDelaysMs,
+      detail,
     };
     this.#contextRefreshInFlight = this.#drainContextUsage();
   }
@@ -2655,7 +2659,7 @@ class ClaudeHarnessSession implements HarnessSession {
         return;
       }
       try {
-        const context = await request.transport.getContextUsage();
+        const context = await request.transport.getContextUsage(request.detail);
         if (
           this.#phase !== "open" ||
           this.#transport !== request.transport ||
@@ -2665,25 +2669,29 @@ class ClaudeHarnessSession implements HarnessSession {
           return;
         }
         if (context === null) continue;
-        this.#contextUsageFreshUntilMs = Date.now() + CONTEXT_USAGE_TTL_MS;
-        this.#contextUsageCooldownUntilMs = 0;
+        if (request.detail === "full") {
+          this.#contextUsageFreshUntilMs = Date.now() + CONTEXT_USAGE_TTL_MS;
+          this.#contextUsageCooldownUntilMs = 0;
+        }
         const delta: Partial<HostUsage> = {
           contextUsedTokens: Math.max(context.usedTokens, this.#minimumContextUsedTokens ?? 0),
           contextWindowTokens: context.maxTokens,
         };
-        // Restore the cache hit rate from the session-cumulative API usage the
-        // context response carries when no latest-request measurement exists.
         if (context.apiUsage && this.#latestUsage?.cacheHitRatePercent === undefined) {
           const cacheHitRatePercent = this.#cacheHitRatePercent(context.apiUsage);
           if (cacheHitRatePercent !== undefined) delta.cacheHitRatePercent = cacheHitRatePercent;
         }
-        this.#mergeAndPublishUsage(delta, request.turnId);
+        this.#mergeAndPublishUsage(
+          delta,
+          request.turnId,
+        );
         return;
       } catch {
         // Context Usage is an independent, best-effort projection.
       }
     }
     if (
+      request.detail === "full" &&
       this.#phase === "open" &&
       this.#transport === request.transport &&
       this.#usageGeneration === request.generation
@@ -2786,7 +2794,6 @@ class ClaudeHarnessSession implements HarnessSession {
     const promptTokens =
       usage.inputTokens + usage.cacheCreationInputTokens + usage.cacheReadInputTokens;
     if (promptTokens > 0) this.#minimumContextUsedTokens = promptTokens;
-    if (usage.model) this.#latestRequestModel = usage.model;
     const cacheHitRatePercent = this.#cacheHitRatePercent(usage);
     const contextWindowTokens = this.#latestUsage?.contextWindowTokens;
     this.#mergeAndPublishUsage(
@@ -2863,37 +2870,16 @@ class ClaudeHarnessSession implements HarnessSession {
       const cacheHitRatePercent = this.#cacheHitRatePercent(event.lastRequestUsage);
       if (cacheHitRatePercent !== undefined) delta.cacheHitRatePercent = cacheHitRatePercent;
     }
-    // The Result names each Model's context window for free. Without it the
-    // passive per-request projection cannot show Context until an explicit
-    // (count_tokens-backed) Usage detail refresh, i.e. until the popover opens.
+    // Result modelUsage describes Model capacity, not the Session's configured cap.
+    // The native summary reads the effective window without count_tokens calls.
     if (
-      this.#latestUsage?.contextWindowTokens === undefined &&
-      this.#minimumContextUsedTokens !== null
+      this.#transport &&
+      this.#minimumContextUsedTokens !== null &&
+      event.modelUsage?.some(({ contextWindowTokens }) => contextWindowTokens !== undefined)
     ) {
-      const contextWindowTokens = this.#resultContextWindow(event.modelUsage);
-      if (contextWindowTokens !== undefined) {
-        delta.contextUsedTokens = this.#minimumContextUsedTokens;
-        delta.contextWindowTokens = contextWindowTokens;
-      }
+      this.#requestContextUsage(this.#transport, active.command.turnId, [0], "summary");
     }
     this.#mergeAndPublishUsage(delta, active.command.turnId);
-  }
-
-  /** The latest request's Model, else the Model that carried the most prompt tokens. */
-  #resultContextWindow(
-    modelUsage: Extract<ClaudeTurnEvent, { type: "usage.result" }>["modelUsage"],
-  ): number | undefined {
-    if (!modelUsage?.length) return undefined;
-    const latest = this.#latestRequestModel;
-    const matched = latest ? modelUsage.find(({ model }) => model === latest) : undefined;
-    const main =
-      matched ??
-      modelUsage.reduce((best, entry) =>
-        (entry.promptTokens ?? entry.inputTokens) > (best.promptTokens ?? best.inputTokens)
-          ? entry
-          : best,
-      );
-    return main.contextWindowTokens;
   }
 
   /**

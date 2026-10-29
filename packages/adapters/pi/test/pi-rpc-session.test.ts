@@ -286,6 +286,7 @@ class FakePiRpcProcess extends EventEmitter {
             this.#scenario === "stats-unsupported-mismatch" && this.#stateRequestCount > 1
               ? "changed-model"
               : this.#modelId,
+          reasoning: true,
         },
         thinkingLevel: this.#thinkingLevel,
         isStreaming: this.#isStreaming,
@@ -1774,7 +1775,11 @@ describe("Pi RPC Turn aggregation", () => {
     await expect(
       rpc.selectModel({ provider: "other/provider", id: "family/model" }),
     ).resolves.toMatchObject({ provider: "other/provider", modelId: "family/model" });
-    expect(rpc.state).toMatchObject({ provider: "other/provider", modelId: "family/model" });
+    expect(rpc.state).toMatchObject({
+      provider: "other/provider",
+      modelId: "family/model",
+      modelReasoning: true,
+    });
     await rpc.close();
   });
 
