@@ -2058,9 +2058,7 @@ class ClaudeHarnessSession implements HarnessSession {
         }
         this.#completeAgentItem(active, { status: "succeeded" }, false);
         active.subagents.start(active.command.turnId, event);
-        if (event.operation === "send") {
-          if (event.nativeSubagentId) this.#occupancy.occupyAgent(event.nativeSubagentId);
-        } else if (event.background) {
+        if (event.operation === "spawn" && event.background) {
           this.#occupancy.occupySpawn(event.callId, event.nativeSubagentId);
         }
         return;
@@ -2087,11 +2085,19 @@ class ClaudeHarnessSession implements HarnessSession {
         }
         return;
       case "subagent.completed": {
-        const subagent = active.subagents.complete(
+        const { operation, subagent } = active.subagents.complete(
           active.command.turnId,
           event,
           active.cancellationRequested,
         );
+        if (operation === "send") {
+          // Delivery creates new work only when accepted. A refused send says nothing
+          // about an already-running Agent or its pending Root continuation.
+          if (subagent.status === "running" && subagent.nativeSubagentId) {
+            this.#occupancy.occupyAgent(subagent.nativeSubagentId);
+          }
+          return;
+        }
         if (subagent.status === "running") {
           // Claude Code may run an Agent asynchronously without `run_in_background`; the
           // Tool Result is then the first proof that it owes the Root a continuation.

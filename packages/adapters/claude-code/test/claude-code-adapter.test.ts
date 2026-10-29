@@ -1651,8 +1651,11 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
-  it("forks an exact Native prefix while later source history continues", async () => {
+  it("forks an exact Native prefix from a worktree while later source history continues", async () => {
     const { adapter, dependencies } = fixture();
+    vi.mocked(dependencies.getSessionInfo).mockResolvedValueOnce({
+      cwd: "/synthetic/.claude/worktrees/topic",
+    });
     const sourceRef = nativeSessionRefSchema.parse({
       harnessId: "claude-code",
       nativeSessionId: "source-session",
@@ -1791,10 +1794,6 @@ describe("Claude Code HarnessAdapter", () => {
         checkpoint: foreignCheckpoint,
       }),
     ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
-    vi.mocked(dependencies.getSessionInfo).mockResolvedValueOnce({ cwd: "/other-workspace" });
-    await expect(
-      adapter.open({ kind: "fork", cwd: "/synthetic", sourceRef, checkpoint }),
-    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
     history.push(
       {
         type: "user",

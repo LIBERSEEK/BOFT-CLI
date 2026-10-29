@@ -80,6 +80,7 @@ export interface RendererSettingsMessages {
   readonly runtimeCapabilityNotInstalled: string;
   readonly sessionImportTitle: string;
   readonly sessionImportHarness: string;
+  readonly sessionImportSelectHost: string;
   readonly sessionImportDescription: string;
   readonly sessionImportAvailabilityNote: string;
   readonly sessionImportRefresh: string;
@@ -376,6 +377,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   runtimeCapabilityNotInstalled: "This runtime capability is not installed yet.",
   sessionImportTitle: "Session Import",
   sessionImportHarness: "Harness",
+  sessionImportSelectHost: "Select the Host to import sessions from",
   sessionImportDescription:
     "Sessions keep their original project path. If a folder is not in the Codex sidebar, add it as a project first. Original history remains managed by the Harness.",
   sessionImportAvailabilityNote:
@@ -727,6 +729,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   runtimeCapabilityNotInstalled: "运行时尚未安装该项能力，因此暂不可用。",
   sessionImportTitle: "会话导入",
   sessionImportHarness: "Harness",
+  sessionImportSelectHost: "请选择要导入会话的 Host",
   sessionImportDescription:
     "会话将保留原始项目路径；若该文件夹尚未出现在 Codex 侧栏，请先将其添加为项目。原始历史仍由 Harness 管理。",
   sessionImportAvailabilityNote:
@@ -742,7 +745,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   sessionImportPageSize: "每页:",
   sessionImportPrevious: "上一页",
   sessionImportNext: "下一页",
-  sessionImportPageSummary: "{total} 条记录 / {from}-{to}",
+  sessionImportPageSummary: "第 {page} / {pages} 页 · 共 {total} 条",
   sessionImportLoadFailed: "无法读取当前 Host 上的会话，请检查目录访问权限或重复的会话 ID 后重试。",
   sessionImportFailed: "无法导入该会话。",
   sessionImportUntitled: "未命名会话",

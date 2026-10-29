@@ -26,7 +26,7 @@ const testState = vi.hoisted(() => ({
   selectModel: null as null | ((modelId: string) => void),
   selectThinking: null as null | ((thinkingOptionId: string) => void),
   getConnectionDiagnostics: null as null | (() => RendererConnectionDiagnostics | null),
-  getSessionImportClient: null as null | (() => RendererSessionImportClient | null),
+  getSessionImportClient: null as null | ((hostId?: string) => RendererSessionImportClient | null),
   sidebarOptions: null as null | Parameters<typeof installRendererSidebarAgentIcons>[0],
   sidebarRefresh: vi.fn(),
   documentListeners: new Map<string, EventListener>(),
@@ -120,7 +120,7 @@ vi.mock("../src/renderer-settings-lifecycle.js", () => ({
     _window: unknown,
     options: {
       getConnectionDiagnostics(): RendererConnectionDiagnostics | null;
-      getSessionImportClient(): RendererSessionImportClient | null;
+      getSessionImportClient(hostId?: string): RendererSessionImportClient | null;
     },
   ) => {
     testState.getConnectionDiagnostics = options.getConnectionDiagnostics;
@@ -184,6 +184,10 @@ function installFakeBrowser(): void {
   const listeners = new EventTarget();
   class FakeElement {
     readonly nodeType = 1;
+    // This catalog-only fixture has no layout; visible question cards have browser coverage.
+    getClientRects(): DOMRect[] {
+      return [];
+    }
     closest(): Element | null {
       return null;
     }
@@ -201,6 +205,7 @@ function installFakeBrowser(): void {
     closest: () => composer,
   }) as unknown as Element;
   const sendButton = {
+    closest: () => null,
     type: "submit",
     disabled: false,
     parentElement: null,
@@ -225,6 +230,8 @@ function installFakeBrowser(): void {
     dispatchEvent: listeners.dispatchEvent.bind(listeners),
     setTimeout,
     clearTimeout,
+    setInterval: vi.fn(() => 0),
+    clearInterval: vi.fn(),
     open: vi.fn(),
   };
   const document_ = {
@@ -1111,9 +1118,10 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
       listHarnessSessions: vi.fn(),
       importHarnessSession: vi.fn(),
     };
+    let currentHostId: string | null = "remote-1";
     const modelControl = {
       ...remote,
-      currentHostId: () => "remote-1",
+      currentHostId: () => currentHostId,
       clientForHost: vi.fn((hostId: string) => (hostId === "local" ? local : remote)),
       inspectThread: vi.fn(),
       inspectThreadCommands: vi.fn(async () => ({ commands: [] })),
@@ -1149,8 +1157,19 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
       harnessId: "pi",
       nativeSessionId: "native-session",
     });
+
+    expect(local.listSessionImportSources).not.toHaveBeenCalled();
     expect(local.listHarnessSessions).not.toHaveBeenCalled();
     expect(local.importHarnessSession).not.toHaveBeenCalled();
+    currentHostId = null;
+    expect(testState.getSessionImportClient?.()).toBeNull();
+    const selected = testState.getSessionImportClient?.("remote-1");
+    expect(selected?.hostId).toBe("remote-1");
+    await selected?.listSessionImportSources();
+    expect(remote.listSessionImportSources).toHaveBeenCalledTimes(2);
+    expect(local.listSessionImportSources).not.toHaveBeenCalled();
+    modelControl.clientForHost.mockReturnValueOnce(null as never);
+    expect(testState.getSessionImportClient?.("remote-1")).toBeNull();
   });
 
   it("invalidates and refreshes a stale managed Web capability after open fails", async () => {

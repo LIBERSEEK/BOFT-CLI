@@ -31,7 +31,7 @@ export interface RendererSettingsLifecycleOptions {
   getUpdateClient?(): RendererUpdateClient | null;
   getConnectionDiagnostics?(): RendererConnectionDiagnostics | null;
   getAccountClient?(): RendererCodexAccountClient | null;
-  getSessionImportClient?(): RendererSessionImportClient | null;
+  getSessionImportClient?(hostId?: string): RendererSessionImportClient | null;
   getLoadedSessionsClient?(): LoadedSessionsClient | null;
   getRemoteConnections?(): RemoteConnectionsControl | null;
   requestUsageStatistics?: RendererUsageStatisticsRequest;

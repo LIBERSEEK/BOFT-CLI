@@ -57,6 +57,7 @@ describe("Renderer settings localization", () => {
     );
     expect(chinese.updateStarLink).toBe("GitHub");
     expect(chinese.pageLabels.about).toBe("关于");
+
     expect(chinese.pageLabels["session-import"]).toBe("会话");
     expect(chinese.sessionImportTitle).toBe("会话导入");
     expect(chinese.pageLabels.plugins).toBe("插件");
@@ -68,6 +69,7 @@ describe("Renderer settings localization", () => {
     expect(english.connectionInstallPrompt).toContain("{command}");
     expect(chinese.generalSection).toBe("通用");
     expect(chinese.otherSection).toBe("其他");
+
     expect(chinese.sessionImportAvailabilityNote).toContain("可选 Harness 来自当前 Host");
     expect(chinese.sessionImportAvailabilityNote).toContain("先在原生客户端关闭该会话再导入");
     expect(chinese.sessionImportAvailabilityNote).toContain("避免同时写入");

@@ -107,9 +107,14 @@ import {
   isGrokAskUserQuestionMethod,
   isGrokExitPlanModeMethod,
   parseGrokAskUserQuestionParams,
-  type GrokQuestionRequest,
+  type GrokQuestionRequest as GrokLegacyQuestionRequest,
 } from "./grok-question.js";
 import { GrokSessionImport } from "./session-import.js";
+import {
+  GrokQuestions,
+  type GrokQuestionRequest,
+  type GrokQuestionResponse,
+} from "./grok-questions.js";
 import { grokMediaResolveRoots, rewriteLocalMediaMarkdown } from "./local-media-markdown.js";
 import { GrokSubagentLifecycle } from "./grok-subagent-lifecycle.js";
 import {
@@ -199,7 +204,8 @@ export interface GrokAcpTransportLike {
     text: string,
     onEvent: (event: GrokTransportEvent) => void,
     onPermission: (request: GrokPermissionRequest) => Promise<RequestPermissionResponse>,
-    onExtension: (request: GrokExtensionRequest) => Promise<Record<string, unknown>>,
+    onQuestion: (request: GrokQuestionRequest) => Promise<GrokQuestionResponse>,
+    onExtension?: (request: GrokExtensionRequest) => Promise<Record<string, unknown>>,
   ): Promise<PromptResponse>;
   compact(
     userContext: string | undefined,
@@ -227,7 +233,7 @@ interface ActiveApproval {
 interface ActiveQuestion {
   type: "question" | "planApproval";
   interaction: HostQuestionInteraction;
-  request: GrokQuestionRequest | GrokPlanApprovalRequest;
+  request: GrokLegacyQuestionRequest | GrokPlanApprovalRequest;
   resolve(response: Record<string, unknown>): void;
 }
 
@@ -247,7 +253,8 @@ interface ActiveTurn {
   subagents: GrokSubagentLifecycle;
   completedItems: HostItemSnapshot[];
   approvals: Map<HostInteractionId, ActiveApproval>;
-  questions: Map<HostInteractionId, ActiveQuestion>;
+  questions: GrokQuestions;
+  legacyQuestions: Map<HostInteractionId, ActiveQuestion>;
   cancellationRequested: boolean;
   beforeNativeTurnKeys: Set<string>;
   completion: Promise<void>;
@@ -555,6 +562,9 @@ class GrokHarnessSession implements HarnessSession {
     });
     const active: ActiveTurn = {
       command,
+      questions: new GrokQuestions(command.turnId, this.#randomUUID, (output) =>
+        this.#channel.emit(output),
+      ),
       usage: new GrokTurnUsage(this.#usage, this.#snapshot.turns.length === 0),
       agent: null,
       agentMessageId: null,
@@ -569,7 +579,7 @@ class GrokHarnessSession implements HarnessSession {
       subagents: this.#createSubagents(),
       completedItems: [],
       approvals: new Map(),
-      questions: new Map(),
+      legacyQuestions: new Map(),
       cancellationRequested: false,
       beforeNativeTurnKeys: new Set(
         this.#snapshot.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey),
@@ -584,8 +594,13 @@ class GrokHarnessSession implements HarnessSession {
         text,
         (event) => this.#handleEvent(active, event),
         (request) => this.#requestPermission(active, request),
+        (request) =>
+          this.#active === active && this.#phase === "open" && !active.cancellationRequested
+            ? active.questions.ask(request)
+            : Promise.resolve({ outcome: "cancelled" }),
         (request) => this.#requestExtension(active, request),
       )
+      .finally(() => active.questions.cancel())
       .then(
         (response) =>
           this.#settleFromHistory(
@@ -679,6 +694,9 @@ class GrokHarnessSession implements HarnessSession {
     });
     const active: ActiveTurn = {
       command: { type: "turn.start", turnId: command.turnId, input: [] },
+      questions: new GrokQuestions(command.turnId, this.#randomUUID, (output) =>
+        this.#channel.emit(output),
+      ),
       agent: null,
       agentMessageId: null,
       rawAgentText: "",
@@ -692,7 +710,7 @@ class GrokHarnessSession implements HarnessSession {
       subagents: this.#createSubagents(),
       completedItems: [],
       approvals: new Map(),
-      questions: new Map(),
+      legacyQuestions: new Map(),
       cancellationRequested: false,
       beforeNativeTurnKeys: new Set(),
       completion,
@@ -921,6 +939,7 @@ class GrokHarnessSession implements HarnessSession {
     }
     if (active.cancellationRequested) return { ok: true, value: { cancellationRequested: true } };
     active.cancellationRequested = true;
+    active.questions.cancel();
     this.#closePendingInteractions(active, "cancelled");
     try {
       await this.#transport.cancel();
@@ -934,9 +953,10 @@ class GrokHarnessSession implements HarnessSession {
     command: InteractionRespondCommand,
   ): Promise<HarnessResult<InteractionRespondAccepted>> {
     const active = this.#active;
+    if (active?.questions.has(command.interactionId)) return active.questions.respond(command);
     const approval = active?.approvals.get(command.interactionId);
     if (active && approval) return this.#respondApproval(active, approval, command);
-    const question = active?.questions.get(command.interactionId);
+    const question = active?.legacyQuestions.get(command.interactionId);
     if (active && question) return this.#respondQuestion(active, question, command);
     return { ok: false, error: invalidState("Grok Interaction is not pending") };
   }
@@ -999,8 +1019,11 @@ class GrokHarnessSession implements HarnessSession {
     const native =
       pending.type === "planApproval"
         ? grokExitPlanModeResponse(pending.request as GrokPlanApprovalRequest, command.response)
-        : grokAskUserQuestionResponse(pending.request as GrokQuestionRequest, command.response);
-    active.questions.delete(command.interactionId);
+        : grokAskUserQuestionResponse(
+            pending.request as GrokLegacyQuestionRequest,
+            command.response,
+          );
+    active.legacyQuestions.delete(command.interactionId);
     pending.resolve(native);
     this.#event({
       type: "interaction.closed",
@@ -1062,7 +1085,7 @@ class GrokHarnessSession implements HarnessSession {
 
   #requestQuestion(
     active: ActiveTurn,
-    request: GrokQuestionRequest,
+    request: GrokLegacyQuestionRequest,
   ): Promise<Record<string, unknown>> {
     if (this.#active !== active || active.cancellationRequested) {
       return Promise.resolve(grokSkipInterviewResponse());
@@ -1074,7 +1097,7 @@ class GrokHarnessSession implements HarnessSession {
       active.command.turnId,
     );
     return new Promise((resolve) => {
-      active.questions.set(interactionId, {
+      active.legacyQuestions.set(interactionId, {
         type: "question",
         interaction,
         request,
@@ -1094,7 +1117,7 @@ class GrokHarnessSession implements HarnessSession {
     const interactionId = hostInteractionIdSchema.parse(this.#randomUUID());
     const interaction = createGrokPlanReview(request, interactionId, active.command.turnId);
     return new Promise((resolve) => {
-      active.questions.set(interactionId, {
+      active.legacyQuestions.set(interactionId, {
         type: "planApproval",
         interaction,
         request,
@@ -1115,8 +1138,8 @@ class GrokHarnessSession implements HarnessSession {
         reason,
       });
     }
-    for (const [interactionId, pending] of active.questions) {
-      active.questions.delete(interactionId);
+    for (const [interactionId, pending] of active.legacyQuestions) {
+      active.legacyQuestions.delete(interactionId);
       pending.resolve(
         pending.type === "planApproval" ? grokPlanRejectedResponse() : grokSkipInterviewResponse(),
       );
@@ -1131,6 +1154,10 @@ class GrokHarnessSession implements HarnessSession {
 
   #handleEvent(active: ActiveTurn, event: GrokTransportEvent): void {
     if (this.#active !== active || this.#phase !== "open") return;
+    if (event.type === "interaction.resolved") {
+      active.questions.withdraw(event.toolCallId);
+      return;
+    }
     const requestUsage = active.usage?.observe(event);
     if (requestUsage) {
       this.#publishUsage(requestUsage, active.command.turnId, true);
@@ -1621,6 +1648,7 @@ class GrokHarnessSession implements HarnessSession {
     nativeTurnRef?: NativeTurnRef,
   ): void {
     if (this.#active !== active) return;
+    active.questions.cancel();
     const itemOutcome: HostItemOutcome = outcome;
     this.#completeReasoning(active, itemOutcome);
     this.#completeAgent(active, itemOutcome);
@@ -1671,16 +1699,8 @@ class GrokHarnessSession implements HarnessSession {
     const active = this.#active;
     if (active) {
       active.cancellationRequested = true;
-      for (const approval of active.approvals.values()) {
-        approval.resolve({ outcome: { outcome: "cancelled" } });
-      }
-      for (const question of active.questions.values()) {
-        question.resolve(
-          question.type === "planApproval"
-            ? grokPlanRejectedResponse()
-            : grokSkipInterviewResponse(),
-        );
-      }
+      active.questions.cancel();
+      this.#closePendingInteractions(active, "cancelled");
       await this.#transport.cancel().catch(() => undefined);
       await Promise.race([
         active.completion,
