@@ -43,6 +43,10 @@ import { createAppearanceSettingsPage } from "./appearance-page.js";
 import type { LoadedSessionsClient } from "./loaded-sessions-table.js";
 import { createReleaseNotesElement } from "./release-notes.js";
 import { createAccountsSettingsPage, type RendererCodexAccountClient } from "./accounts-page.js";
+import {
+  createHarnessSchedulesPage,
+  type HarnessSchedulesPageOptions,
+} from "./harness-schedules-page.js";
 
 export type {
   RendererConnectionAgentSnapshot,
@@ -549,12 +553,17 @@ function updatesPage(
       const setManualFallback = (fallback: boolean): void => {
         // While automatic update works, manual download is a one-line escape hatch;
         // once it fails, the section returns at full weight.
-        controls.className =
-          !fallback && !windows ? "settings-update-controls is-quiet" : "settings-update-controls";
-        manualNpmDescription.textContent = windows
-          ? messages.updateWindowsNpmDescription
-          : fallback
-            ? messages.updateManualFallbackDescription
+        controls.className = fallback
+          ? "settings-update-controls"
+          : "settings-update-controls is-quiet";
+        const windowsNpm =
+          windows && installationValue.textContent === messages.updateInstallationNpm;
+        manualNpmDescription.textContent = fallback
+          ? windowsNpm
+            ? messages.updateWindowsNpmDescription
+            : messages.updateManualFallbackDescription
+          : windowsNpm
+            ? messages.updateWindowsNpmDescription
             : messages.updateManualNpmDescription;
         manualNpmDescription.className = fallback
           ? "settings-update-manual-description is-fallback"
@@ -752,14 +761,23 @@ function updatesPage(
           : result.error
             ? messages.updateFailed
             : result.updateAvailable
-              ? messages.updateWindowsManualRequired
+              ? messages.updateAvailable
               : messages.updateUpToDate;
-        const head =
-          result.error || !result.updateAvailable || windows || actionableStatus
-            ? createPanelHead(document, view, title)
-            : null;
+        // Every state gets a status line; a bare button in an empty card reads as unfinished.
+        const inlineUpdate = !result.error && !actionableStatus && result.updateAvailable;
+        if (inlineUpdate) panel.dataset.inline = "";
+        else delete panel.dataset.inline;
+        const head = createPanelHead(
+          document,
+          view,
+          title,
+        );
         const buttons: HTMLElement[] = [];
-        if (!windows && result.updateAvailable && result.installationAvailable) {
+        if (
+          result.updateAvailable &&
+          result.installationAvailable &&
+          (!windows || result.installation !== "npm")
+        ) {
           const update = document.createElement("button");
           update.type = "button";
           update.className = "settings-command-button";
@@ -825,7 +843,7 @@ export function createDefaultRendererSettingsPages(
   getUpdateClient: () => RendererUpdateClient | null = () => null,
   getDiagnostics: () => RendererConnectionDiagnostics | null = () => null,
   getAccountClient: () => RendererCodexAccountClient | null = () => null,
-  getSessionImportClient: () => RendererSessionImportClient | null = () => null,
+  getSessionImportClient: (hostId?: string) => RendererSessionImportClient | null = () => null,
   openImportedThread: RendererImportedThreadOpener | null = () =>
     Promise.reject(new Error("Imported Thread navigation is unavailable")),
   getLoadedSessionsClient: () => LoadedSessionsClient | null = () => null,
@@ -833,6 +851,7 @@ export function createDefaultRendererSettingsPages(
   requestUsageStatistics: RendererUsageStatisticsRequest = () =>
     Promise.reject(new Error("Local Host connection is unavailable")),
   usageStatisticsHosts?: RendererUsageStatisticsHostsProvider,
+  harnessSchedules?: HarnessSchedulesPageOptions,
 ): readonly RendererSettingsPageDefinition[] {
   return Object.freeze([
     createConnectionsSettingsPage(messages, getDiagnostics, undefined, getRemoteConnections, () => {
@@ -841,6 +860,7 @@ export function createDefaultRendererSettingsPages(
     }),
     createRemoteConnectionsPage(messages, getRemoteConnections),
     createAccountsSettingsPage(messages, getAccountClient),
+    ...(harnessSchedules ? [createHarnessSchedulesPage(messages, harnessSchedules)] : []),
     createSessionImportSettingsPage(
       messages,
       getSessionImportClient,
@@ -865,7 +885,7 @@ export function createDefaultRendererSettingsRegistry(
   getUpdateClient: () => RendererUpdateClient | null = () => null,
   getDiagnostics: () => RendererConnectionDiagnostics | null = () => null,
   getAccountClient: () => RendererCodexAccountClient | null = () => null,
-  getSessionImportClient: () => RendererSessionImportClient | null = () => null,
+  getSessionImportClient: (hostId?: string) => RendererSessionImportClient | null = () => null,
   openImportedThread?: RendererImportedThreadOpener,
   requestUsageStatistics?: RendererUsageStatisticsRequest,
   usageStatisticsHosts?: RendererUsageStatisticsHostsProvider,

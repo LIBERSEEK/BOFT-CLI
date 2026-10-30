@@ -56,6 +56,7 @@ createInterface({input:process.stdin}).on('line', line => {
           "fixture",
           (event) => events.push(event),
           async () => ({ outcome: { outcome: "cancelled" } }),
+          async () => ({ outcome: "cancelled" as const }),
           async () => ({}),
         );
         expect(events).toEqual([

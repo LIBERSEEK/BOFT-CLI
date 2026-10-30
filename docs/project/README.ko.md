@@ -277,7 +277,7 @@ BOFT CLI는 다른 방식을 사용합니다.
   <tr>
     <td>
       <strong>교류 그룹 참여</strong><br />
-      <sub>BOFT CLI 사용법과 기능에 관심 있는 개발자는 QR 코드를 스캔해 위챗 그룹에 참여할 수 있습니다.</sub>
+      <sub>BOFT CLI의 사용법과 기능에 관심 있는 개발자는 QR 코드를 스캔하고 메모에 “BOFT CLI”라고 적어 주세요. 위챗 그룹에 초대해 드립니다.</sub>
       <ul>
         <li><sub>설치 문제는 그룹에서 질문할 수 있습니다</sub></li>
         <li><sub>기능 제안과 피드백</sub></li>
@@ -287,7 +287,7 @@ BOFT CLI는 다른 방식을 사용합니다.
       <sub><strong>함께 기여해 주세요.</strong></sub>
     </td>
     <td align="center">
-      <img width="230" alt="위챗 그룹 QR 코드" src="../imgs/wechat-group-4-qrcode-2026-10-17.jpg" />
+      <img width="230" alt="위챗 QR 코드" src="../imgs/wechat-contact-qrcode.jpg" />
     </td>
   </tr>
 </table>

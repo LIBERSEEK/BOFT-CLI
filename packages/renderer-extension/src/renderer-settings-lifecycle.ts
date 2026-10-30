@@ -2,6 +2,7 @@ import type { RendererUsageStatisticsRequest } from "./console/pages/usage-stati
 import type { RendererUsageStatisticsHostsProvider } from "./console/usage/usage-hosts.js";
 import type { RemoteConnectionsControl } from "./remote-connections-control.js";
 import type { LoadedSessionsClient } from "./settings/loaded-sessions-table.js";
+import type { HarnessSchedulesPageOptions } from "./settings/harness-schedules-page.js";
 import { readCodexLocaleSettings, type CodexLocaleSettings } from "./codex-locale-adapter.js";
 import {
   rendererSettingsMessages,
@@ -28,10 +29,11 @@ const UPDATE_CHECK_TIMEOUT_MS = 5_000;
 const UPDATE_RETRY_DELAYS_MS = [1_000, 3_000, 10_000, 30_000] as const;
 
 export interface RendererSettingsLifecycleOptions {
+  harnessSchedules?: HarnessSchedulesPageOptions;
   getUpdateClient?(): RendererUpdateClient | null;
   getConnectionDiagnostics?(): RendererConnectionDiagnostics | null;
   getAccountClient?(): RendererCodexAccountClient | null;
-  getSessionImportClient?(): RendererSessionImportClient | null;
+  getSessionImportClient?(hostId?: string): RendererSessionImportClient | null;
   getLoadedSessionsClient?(): LoadedSessionsClient | null;
   getRemoteConnections?(): RemoteConnectionsControl | null;
   requestUsageStatistics?: RendererUsageStatisticsRequest;
@@ -70,6 +72,7 @@ export function installRendererSettingsLifecycle(
     trigger: RendererSettingsHeaderTriggerControl;
   } => {
     const messages = rendererSettingsMessages(locale);
+    const schedules = options.harnessSchedules;
     const definitions = createDefaultRendererSettingsPages(
       messages,
       options.getUpdateClient ?? (() => null),
@@ -87,6 +90,14 @@ export function installRendererSettingsLifecycle(
       options.getRemoteConnections ?? (() => null),
       options.requestUsageStatistics,
       options.usageStatisticsHosts,
+      schedules
+        ? {
+            openSchedules: async (signal) => {
+              await schedules.openSchedules(signal);
+              if (!disposed && !signal.aborted) shell?.close();
+            },
+          }
+        : undefined,
     );
     const nextShell = installRendererSettingsShell(definitions, messages, ownerWindow.document, {
       onOpenChange(open) {

@@ -82,7 +82,11 @@ export const brokerOpenInputSchema = z.discriminatedUnion("kind", [
 ]);
 
 export const brokerInspectInputSchema = z
-  .object({ cwd: cwdSchema.optional(), refresh: z.boolean().optional() })
+  .object({
+    cwd: cwdSchema.optional(),
+    refresh: z.boolean().optional(),
+    purpose: z.literal("availability").optional(),
+  })
   .strict();
 
 export const brokerSessionImportListParamsSchema = z
@@ -97,7 +101,6 @@ export const brokerSessionImportResolveParamsSchema = z
   .strict();
 
 export const brokerSessionImportCandidatesSchema = z.array(harnessSessionImportCandidateSchema);
-
 export const brokerSessionImportPageSchema = z
   .object({
     candidates: z
@@ -114,13 +117,10 @@ export const brokerSessionImportSourceSchema = z
   })
   .strict()
   .superRefine((source, context) => {
-    if (
-      source.nativeRef.harnessId !== "claude-code" ||
-      source.nativeRef.nativeSessionId !== source.candidate.nativeSessionId
-    ) {
+    if (source.nativeRef.nativeSessionId !== source.candidate.nativeSessionId) {
       context.addIssue({
         code: "custom",
-        message: "Claude Session import source identity does not match",
+        message: "Session import source identity does not match",
       });
     }
   });

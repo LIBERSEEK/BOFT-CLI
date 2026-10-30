@@ -3351,14 +3351,15 @@ describe("Renderer Updates page", () => {
   });
 
   it.each([
-    ["npm" as const, "Windows 暂不支持自动更新。请退出 BOFT CLI，在终端运行以下命令完成更新。"],
-    [
-      "windows-installer" as const,
-      "Windows 暂不支持自动更新。请下载并运行适用于当前系统的安装包。",
-    ],
-  ])("renders manual Windows updates for %s installations", async (installation, expected) => {
+    ["npm" as const, "如需手动更新", false],
+    ["windows-installer" as const, "如需手动更新，请下载并运行适用于当前系统的安装包。", true],
+  ])("offers the appropriate Windows update for %s installations", async (installation, expected, automatic) => {
     const client = {
-      checkUpdate: vi.fn(async () => ({ ...updateCheck(), installation })),
+      checkUpdate: vi.fn(async () => ({
+        ...updateCheck(),
+        installation,
+        installationAvailable: automatic,
+      })),
       startUpdate: vi.fn(),
       readUpdateStatus: vi.fn(async () => ({ status: null })),
     };
@@ -3380,17 +3381,21 @@ describe("Renderer Updates page", () => {
     await vi.waitFor(() => {
       expect(visibleText(content)).toContain(expected);
       expect(visibleText(elementWithClass(content, "settings-update-panel"))).toContain(
-        "Windows 暂不支持自动更新",
+        "有新版本可用",
       );
     });
-    expect(
-      descendants(elementWithClass(content, "settings-update-panel")).find(
-        ({ tagName }) => tagName === "button",
-      ),
-    ).toBeUndefined();
-    expect(client.startUpdate).not.toHaveBeenCalled();
+    if (installation === "npm") {
+      expect(visibleText(content)).toContain("暂不支持自动更新");
+    } else {
+      expect(visibleText(content)).not.toContain("暂不支持自动更新");
+    }
+    const update = descendants(elementWithClass(content, "settings-update-panel")).find(
+      ({ tagName }) => tagName === "button",
+    );
+    expect(Boolean(update)).toBe(automatic);
     if (installation === "npm") {
       expect(visibleText(content)).toContain("npm install -g @liberseek/boft-cli@latest");
+      expect(client.startUpdate).not.toHaveBeenCalled();
     } else {
       const link = descendants(content).find(
         ({ tagName, href }) =>
@@ -3603,6 +3608,100 @@ describe("Renderer Updates page", () => {
 });
 
 describe("Renderer Session Import page", () => {
+  it("selects an explicit Host when tabs are ambiguous and invalidates disconnected Host switches", async () => {
+    const rows = [
+      {
+        nativeSessionId: "remote-session",
+        title: "Remote session",
+        cwd: "/remote",
+        updatedAt: 1,
+        running: false,
+      },
+    ];
+    const slow = deferred<{ candidates: typeof rows; total: number }>();
+    const imported = deferred<{ threadId: ReturnType<typeof hostThreadIdSchema.parse> }>();
+    const remote = {
+      hostId: "remote-1",
+      listSessionImportSources: vi.fn(async () => ({
+        harnesses: [{ harnessId: harnessIdSchema.parse("pi"), name: "Pi" }],
+      })),
+      listHarnessSessions: vi
+        .fn(async () => ({ candidates: rows, total: 1 }))
+        .mockImplementationOnce(() => slow.promise),
+      importHarnessSession: vi.fn(() => imported.promise),
+    };
+    const getClient = vi.fn((hostId?: string) => (hostId === "remote-1" ? remote : null));
+    const diagnostics = {
+      snapshot: () => ({
+        adapter: {},
+        hosts: ["local", "remote-1"].map((hostId) => ({ hostId, active: false, agents: [] })),
+      }),
+    };
+    const open = vi.fn(async () => undefined);
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("en"),
+      () => null,
+      () => diagnostics as never,
+      () => null,
+      getClient,
+      open,
+    ).find(({ id }) => id === "session-import");
+    if (!page) throw new Error("Import page missing");
+    const content = new FakeDocument().createElement("main");
+    const scope = new RendererSettingsPageScope();
+    page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+    const action = (name: string) => {
+      const control = descendants(content).find(
+        ({ dataset }) => dataset.sessionImportAction === name,
+      );
+      if (!control) throw new Error(`Missing ${name}`);
+      return control;
+    };
+    const visibleRows = () =>
+      descendants(content).filter(({ dataset }) => dataset.sessionImportId !== undefined);
+    const hostButton = (hostId: string) => {
+      const button = descendants(content).find(
+        ({ dataset }) => dataset.sessionImportHost === hostId,
+      );
+      if (!button) throw new Error(`Missing Host ${hostId}`);
+      return button;
+    };
+    expect(visibleText(content)).toContain("Select the Host to import sessions from");
+    expect(remote.listSessionImportSources).not.toHaveBeenCalled();
+    hostButton("remote-1").dispatch("click");
+    await vi.waitFor(() => expect(remote.listHarnessSessions).toHaveBeenCalledOnce());
+    hostButton("local").dispatch("click");
+    slow.resolve({ candidates: rows, total: 1 });
+    await vi.waitFor(() => expect(visibleText(content)).toContain("Session import is unavailable"));
+    expect(visibleRows()).toHaveLength(0);
+    expect(
+      descendants(content).filter(({ dataset }) => dataset.sessionImportHarnessOption),
+    ).toHaveLength(0);
+    hostButton("remote-1").dispatch("click");
+    await vi.waitFor(() => expect(visibleRows()).toHaveLength(1));
+    expect(hostButton("remote-1").getAttribute("aria-pressed")).toBe("true");
+    action("import").dispatch("click");
+    expect(hostButton("remote-1").disabled).toBe(true);
+    expect(hostButton("local").disabled).toBe(true);
+    getClient.mockClear();
+    hostButton("local").dispatch("click");
+    expect(getClient).not.toHaveBeenCalled();
+    imported.resolve({ threadId: hostThreadIdSchema.parse("imported-remote") });
+    await vi.waitFor(() =>
+      expect(open).toHaveBeenCalledWith("imported-remote", expect.any(AbortSignal), "remote-1"),
+    );
+    action("refresh").dispatch("click");
+    expect(getClient).toHaveBeenLastCalledWith("remote-1");
+    await vi.waitFor(() =>
+      expect(hostButton("remote-1").getAttribute("aria-pressed")).toBe("true"),
+    );
+    scope.dispose();
+  });
+
   it("configures page size, searches all metadata, rejects stale searches and locks controls during import", async () => {
     const rows = Array.from({ length: 45 }, (_, index) => ({
       nativeSessionId: `session-${index}`,
@@ -3827,6 +3926,197 @@ describe("Renderer Session Import page", () => {
     scope.dispose();
   });
 
+  it.each(["local", "remote-1"])(
+    "filters installed Harnesses using only %s diagnostics",
+    async (hostId) => {
+      const client = {
+        hostId,
+        listSessionImportSources: vi.fn(async () => ({
+          harnesses: ["pi", "kimi-code", "grok", "omp", "third-party"].map((id) => ({
+            harnessId: harnessIdSchema.parse(id),
+            name: id,
+          })),
+        })),
+        listHarnessSessions: vi.fn(async () => ({ total: 0, candidates: [] })),
+        importHarnessSession: vi.fn(),
+      };
+      const agent = (name: string, availability: string) => ({
+        agent: name,
+        availability,
+        error: null,
+      });
+      const diagnostics = {
+        snapshot: vi.fn(() => ({
+          adapter: {},
+          hosts: [
+            {
+              hostId: "local",
+              active: false,
+              agents: [
+                agent("pi", "notInstalled"),
+                agent("kimi-code", "notInstalled"),
+                // Still being checked, failing or incompatible: its own error is shown on use.
+                agent("grok", "checking"),
+                agent("omp", "error"),
+              ],
+            },
+            // The non-selected Host must not affect this page's sources.
+            { hostId: "remote-1", active: true, agents: [agent("grok", "notInstalled")] },
+          ],
+        })),
+        refresh: vi.fn(),
+        subscribe: vi.fn(),
+      };
+      const page = createDefaultRendererSettingsPages(
+        rendererSettingsMessages("en"),
+        () => null,
+        () => diagnostics as never,
+        () => null,
+        () => client,
+        vi.fn(async () => undefined),
+      ).find(({ id }) => id === "session-import");
+      if (!page) throw new Error("Session import page missing");
+      const content = new FakeDocument().createElement("main");
+      const scope = new RendererSettingsPageScope();
+      page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+      });
+      // The first Harness that is not missing is selected, not the hidden one.
+      await vi.waitFor(() =>
+        expect(client.listHarnessSessions).toHaveBeenCalledWith(
+          expect.objectContaining({ harnessId: hostId === "local" ? "grok" : "pi" }),
+        ),
+      );
+      expect(
+        descendants(content)
+          .filter(({ dataset }) => dataset.sessionImportHarnessOption !== undefined)
+          .map(({ textContent }) => textContent),
+      ).toEqual(
+        hostId === "local"
+          ? ["grok", "omp", "third-party"]
+          : ["pi", "kimi-code", "omp", "third-party"],
+      );
+      expect(diagnostics.refresh).not.toHaveBeenCalled();
+      scope.dispose();
+    },
+  );
+
+  it("shows a scroll hint only while the Harness options overflow and scrolls them with the wheel", async () => {
+    const client = {
+      listSessionImportSources: vi.fn(async () => ({
+        harnesses: ["pi", "omp", "grok"].map((id) => ({
+          harnessId: harnessIdSchema.parse(id),
+          name: id,
+        })),
+      })),
+      listHarnessSessions: vi.fn(async () => ({ total: 0, candidates: [] })),
+      importHarnessSession: vi.fn(),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("en"),
+      () => null,
+      () => null,
+      () => null,
+      () => client,
+      vi.fn(async () => undefined),
+    ).find(({ id }) => id === "session-import");
+    if (!page) throw new Error("Session import page missing");
+    const content = new FakeDocument().createElement("main");
+    const scope = new RendererSettingsPageScope();
+    page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+    await vi.waitFor(() => expect(client.listHarnessSessions).toHaveBeenCalledTimes(1));
+    const selector = descendants(content).find(
+      ({ dataset }) => dataset.sessionImportHarness === "selector",
+    );
+    const indicator = descendants(content).find(
+      ({ className }) => className === "settings-session-import-harness__indicator",
+    );
+    const thumb = indicator?.children[0] as FakeElement | undefined;
+    if (!selector || !indicator || !thumb) throw new Error("Harness selector missing");
+    // Everything fits: no hint, and the wheel is left to the page.
+    expect(indicator.dataset.overflowing).toBe("false");
+    const wheel = (deltaY: number, deltaX = 0) => {
+      const event = { deltaX, deltaY, ctrlKey: false, preventDefault: vi.fn() };
+      selector.dispatch("wheel", event);
+      return event.preventDefault.mock.calls.length > 0;
+    };
+    expect(wheel(100)).toBe(false);
+
+    selector.scrollWidth = 1_200;
+    selector.clientWidth = 600;
+    selector.dispatch("scroll");
+    expect(indicator.dataset.overflowing).toBe("true");
+    expect(thumb.style).toMatchObject({ width: "50%", left: "0%" });
+
+    expect(wheel(300)).toBe(true);
+    selector.dispatch("scroll");
+    expect(selector.scrollLeft).toBe(300);
+    expect(thumb.style.left).toBe("25%");
+    // Horizontal gestures already scroll natively and must not be handled twice.
+    expect(wheel(100, 40)).toBe(false);
+    expect(wheel(900)).toBe(true);
+    expect(selector.scrollLeft).toBe(600);
+    // At either end the page keeps scrolling.
+    expect(wheel(100)).toBe(false);
+
+    // The hint is draggable with a mouse: 600px of line stand for 1200px of options.
+    const capture = vi.fn();
+    Object.assign(indicator, {
+      getBoundingClientRect: () => ({ left: 100, width: 600 }),
+      setPointerCapture: capture,
+    });
+    const pointer = (clientX: number, target: FakeElement, overrides = {}) => ({
+      button: 0,
+      pointerId: 7,
+      clientX,
+      target,
+      preventDefault: vi.fn(),
+      ...overrides,
+    });
+    // Pressing the bare line first centres the visible part on the pointer...
+    indicator.dispatch("pointerdown", pointer(250, indicator));
+    expect(selector.scrollLeft).toBe(0);
+    expect(capture).toHaveBeenCalledWith(7);
+    expect(indicator.dataset.dragging).toBe("true");
+    // ...and moving then follows the pointer one to one along the line, within the ends.
+    indicator.dispatch("pointermove", pointer(400, indicator));
+    expect(selector.scrollLeft).toBe(300);
+    expect(thumb.style.left).toBe("25%");
+    indicator.dispatch("pointermove", pointer(400, indicator, { pointerId: 8 }));
+    indicator.dispatch("pointermove", pointer(5_000, indicator));
+    expect(selector.scrollLeft).toBe(600);
+    indicator.dispatch("pointerup", pointer(5_000, indicator));
+    expect(indicator.dataset.dragging).toBeUndefined();
+    indicator.dispatch("pointermove", pointer(100, indicator));
+    expect(selector.scrollLeft).toBe(600);
+    // Pressing the thumb itself keeps the position; other buttons do nothing.
+    indicator.dispatch("pointerdown", pointer(650, thumb, { button: 2 }));
+    expect(indicator.dataset.dragging).toBeUndefined();
+    indicator.dispatch("pointerdown", pointer(650, thumb));
+    expect(selector.scrollLeft).toBe(600);
+    indicator.dispatch("pointermove", pointer(600, thumb));
+    expect(selector.scrollLeft).toBe(500);
+    indicator.dispatch("pointercancel", pointer(600, thumb));
+    indicator.dispatch("pointerdown", pointer(700, thumb));
+    indicator.dispatch("pointermove", pointer(5_000, thumb));
+    indicator.dispatch("pointerup", pointer(5_000, thumb));
+    expect(selector.scrollLeft).toBe(600);
+
+    // Choosing another Harness rebuilds the options without jumping back to the start.
+    descendants(content)
+      .find(({ dataset }) => dataset.sessionImportHarnessOption === "grok")
+      ?.dispatch("click");
+    expect(selector.scrollLeft).toBe(600);
+    expect(thumb.style.left).toBe("50%");
+    scope.dispose();
+  });
+
   it("discovers Harness options, ignores stale Harness results, and imports Pi with an activity warning", async () => {
     const oldList = deferred<{ candidates: []; total: number }>();
     const client = {
@@ -4019,13 +4309,15 @@ describe("Renderer Session Import page", () => {
         threadId: hostThreadIdSchema.parse("imported-thread"),
       })),
     };
+    const otherClient = { ...client, hostId: "remote-2", importHarnessSession: vi.fn() };
+    let selectedClient = client;
     const openImportedThread = vi.fn(async () => undefined);
     const page = createDefaultRendererSettingsPages(
       rendererSettingsMessages("zh-CN"),
       () => null,
       () => null,
       () => null,
-      () => client,
+      () => selectedClient,
       openImportedThread,
     ).find(({ id }) => id === "session-import");
     if (!page) throw new Error("Session Import page is not registered");
@@ -4060,8 +4352,9 @@ describe("Renderer Session Import page", () => {
     expect(visibleText(header)).toContain(
       "会话将保留原始项目路径；若该文件夹尚未出现在 Codex 侧栏，请先将其添加为项目。原始历史仍由 Harness 管理。",
     );
-    expect(visibleText(header)).not.toContain(
-      "当前仅支持导入 DeepSeek Harness Modern 会话；其他 Harness 的会话导入能力敬请期待。",
+
+    expect(visibleText(content)).toContain(
+      "可选 Harness 来自当前 Host。运行状态未知时，请先在原生客户端关闭该会话再导入，避免同时写入。",
     );
     expect(visibleText(header)).toContain(
       "可选 Harness 来自当前 Host。运行状态未知时，请先在原生客户端关闭该会话再导入，避免同时写入。",
@@ -4107,6 +4400,7 @@ describe("Renderer Session Import page", () => {
     expect(actions[1]?.disabled).toBe(true);
     actions[1]?.dispatch("click");
     expect(client.importHarnessSession).not.toHaveBeenCalled();
+    selectedClient = otherClient;
     actions[0]?.dispatch("click");
     expect(descendants(content)).toContain(actions[0]);
     expect(actions[0]?.getAttribute("aria-disabled")).toBe("true");
@@ -4117,6 +4411,7 @@ describe("Renderer Session Import page", () => {
       harnessId: "deepseek-harness",
       nativeSessionId: "idle-session-identifier-that-is-long",
     });
+    expect(otherClient.importHarnessSession).not.toHaveBeenCalled();
     await vi.waitFor(() =>
       expect(openImportedThread).toHaveBeenCalledWith(
         "imported-thread",
@@ -4307,8 +4602,9 @@ describe("Renderer Session Import page", () => {
     }
   });
 
-  it("keeps project recovery actions after committed import navigation fails", async () => {
+  it("keeps project recovery and the original Host after committed import navigation fails", async () => {
     const client = {
+      hostId: "remote-original",
       listSessionImportSources: vi.fn(async () => ({
         harnesses: [
           { harnessId: harnessIdSchema.parse("deepseek-harness"), name: "DeepSeek Harness" },
@@ -4330,6 +4626,7 @@ describe("Renderer Session Import page", () => {
         threadId: hostThreadIdSchema.parse("imported-thread"),
       })),
     };
+    let selectedClient = client;
     const openImportedThread = vi
       .fn()
       .mockRejectedValueOnce(new Error("private navigation detail"))
@@ -4339,7 +4636,7 @@ describe("Renderer Session Import page", () => {
       () => null,
       () => null,
       () => null,
-      () => client,
+      () => selectedClient,
       openImportedThread,
     ).find(({ id }) => id === "session-import");
     if (!page) throw new Error("Session Import page is not registered");
@@ -4376,6 +4673,7 @@ describe("Renderer Session Import page", () => {
       ({ dataset }) => dataset.sessionImportAction === "retry-open",
     );
     if (!retry) throw new Error("Retry open action is not rendered");
+    selectedClient = { ...client, hostId: "remote-other" };
     retry.dispatch("click");
     expect(retry.disabled).toBe(true);
     expect(retry.getAttribute("aria-busy")).toBe("true");
@@ -4384,6 +4682,11 @@ describe("Renderer Session Import page", () => {
         ?.disabled,
     ).toBe(true);
     await vi.waitFor(() => expect(openImportedThread).toHaveBeenCalledTimes(2));
+    expect(openImportedThread).toHaveBeenLastCalledWith(
+      "imported-thread",
+      expect.any(AbortSignal),
+      "remote-original",
+    );
     expect(client.importHarnessSession).toHaveBeenCalledOnce();
     scope.dispose();
   });

@@ -15,9 +15,9 @@ import type {
 import {
   harnessAccountListParamsSchema,
   harnessAccountSnapshotSchema,
-  harnessPluginIdSchema,
   harnessSessionImportCandidateSchema,
   type HarnessSessionImportCandidate,
+  harnessPluginIdSchema,
   nativeSessionRefSchema,
 } from "@codexhost/shared-contracts";
 import { consumeBrokerFrames, writeBrokerFrame } from "./framing.js";
@@ -39,6 +39,7 @@ import {
   brokerOpenInputSchema,
   brokerSessionImportListParamsSchema,
   brokerSessionImportResolveParamsSchema,
+  brokerSessionImportSourceSchema,
   sessionCommandExecuteParamsSchema,
   sessionExecuteParamsSchema,
   sessionParamsSchema,
@@ -522,31 +523,28 @@ export async function startHarnessBrokerServer(input: {
         const inspection = await input.adapter.inspect({
           ...(parsed.cwd ? { cwd: parsed.cwd } : {}),
           ...(parsed.refresh !== undefined ? { refresh: parsed.refresh } : {}),
+          ...(parsed.purpose !== undefined ? { purpose: parsed.purpose } : {}),
         });
         // An unusable Harness gains nothing from a resident broker; exit once idle.
         retireWhenIdle = inspection.status !== "ready";
         return inspection;
       }
-      if (request.method === "adapter.subagent.readSnapshot") {
-        const subagents = input.adapter.subagents;
-        if (!subagents)
-          return { ok: false, error: harnessError("Harness subagents are unavailable", false) };
-        const params = subagentReadSnapshotSchema.parse(request.params);
-        if (params.parent.harnessId !== input.adapter.harnessId)
-          return { ok: false, error: protocolError("Subagent parent belongs to another Harness") };
-        return subagents.readSnapshot(params);
-      }
       if (request.method === "adapter.sessionImport.list") {
         const { limit, offset } = brokerSessionImportListParamsSchema.parse(request.params);
-        const sessionImport = input.adapter.sessionImport;
-        if (!sessionImport?.resolveCandidate) {
+        const capability = input.adapter.sessionImport;
+        if (!capability?.resolveCandidate) {
           return {
             ok: false,
-            error: harnessError("Claude Session import is unavailable", false),
+            error: {
+              code: "unsupported",
+              message: "Harness Session import is unavailable",
+              retryable: false,
+            },
           };
         }
         if (offset === 0) {
-          const result = await sessionImport.listCandidates();
+          delete state.sessionImportCandidates;
+          const result = await capability.listCandidates();
           if (!result.ok) return result;
           state.sessionImportCandidates = result.value.map((candidate) =>
             harnessSessionImportCandidateSchema.parse(candidate),
@@ -558,9 +556,8 @@ export async function startHarnessBrokerServer(input: {
             ok: false,
             error: {
               code: "invalidState",
-              message: "Claude Session import page snapshot is unavailable",
+              message: "Session import snapshot is unavailable; refresh the list",
               retryable: true,
-              stage: "harnessBroker.sessionImport",
             },
           };
         }
@@ -571,14 +568,40 @@ export async function startHarnessBrokerServer(input: {
       }
       if (request.method === "adapter.sessionImport.resolve") {
         const { nativeSessionId } = brokerSessionImportResolveParamsSchema.parse(request.params);
-        const resolveCandidate = input.adapter.sessionImport?.resolveCandidate;
-        if (!resolveCandidate) {
+        const capability = input.adapter.sessionImport;
+        if (!capability?.resolveCandidate) {
           return {
             ok: false,
-            error: harnessError("Claude Session import is unavailable", false),
+            error: {
+              code: "unsupported",
+              message: "Harness Session import is unavailable",
+              retryable: false,
+            },
           };
         }
-        return resolveCandidate(nativeSessionId);
+        const result = await capability.resolveCandidate(nativeSessionId);
+        if (!result.ok) return result;
+        const source = brokerSessionImportSourceSchema.safeParse(result.value);
+        if (
+          !source.success ||
+          source.data.nativeRef.harnessId !== input.adapter.harnessId ||
+          source.data.candidate.nativeSessionId !== nativeSessionId
+        ) {
+          return {
+            ok: false,
+            error: protocolError("Session import source identity does not match"),
+          };
+        }
+        return { ok: true, value: source.data };
+      }
+      if (request.method === "adapter.subagent.readSnapshot") {
+        const subagents = input.adapter.subagents;
+        if (!subagents)
+          return { ok: false, error: harnessError("Harness subagents are unavailable", false) };
+        const params = subagentReadSnapshotSchema.parse(request.params);
+        if (params.parent.harnessId !== input.adapter.harnessId)
+          return { ok: false, error: protocolError("Subagent parent belongs to another Harness") };
+        return subagents.readSnapshot(params);
       }
       if (request.method === "adapter.open") {
         while (openingCreate) await openingCreate;

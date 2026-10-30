@@ -164,6 +164,7 @@ describe.skipIf(process.platform === "win32")("Grok ACP permission wire", () => 
             async () => ({
               outcome: { outcome: "cancelled" },
             }),
+            async () => ({ outcome: "cancelled" as const }),
             async () => ({}),
           ),
         ).rejects.toThrow("active operation");

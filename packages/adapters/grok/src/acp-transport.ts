@@ -54,6 +54,7 @@ import {
   grokSkipInterviewResponse,
   isGrokAskUserQuestionMethod,
   isGrokExitPlanModeMethod,
+  parseGrokAskUserQuestionParams,
 } from "./grok-question.js";
 import { decodeGrokPermissionModeId, grokPermissionModeSessionMeta } from "./permission-modes.js";
 import {
@@ -61,6 +62,13 @@ import {
   GrokPermissionConfirmation,
   grokPermissionLogFilter,
 } from "./permission-confirmation.js";
+
+import {
+  GROK_ASK_USER_QUESTION_METHOD,
+  parseGrokQuestionRequest,
+  type GrokQuestionRequest,
+  type GrokQuestionResponse,
+} from "./grok-questions.js";
 
 export type GrokTransportFaultKind =
   "notInstalled" | "authenticationRequired" | "unavailable" | "protocolError" | "processExited";
@@ -80,6 +88,7 @@ export class GrokTransportError extends Error {
 }
 
 export type GrokTransportEvent =
+  | { type: "interaction.resolved"; toolCallId: string; metadata?: Record<string, unknown> }
   | { type: "user.text"; text: string; messageId?: string; metadata?: Record<string, unknown> }
   | { type: "agent.text"; text: string; messageId?: string; metadata?: Record<string, unknown> }
   | { type: "agent.thought"; text: string; messageId?: string; metadata?: Record<string, unknown> }
@@ -207,6 +216,7 @@ export interface GrokExtensionRequest {
 }
 
 interface ActivePrompt {
+  onQuestion(request: GrokQuestionRequest): Promise<GrokQuestionResponse>;
   onEvent(event: GrokTransportEvent): void;
   onPermission(request: GrokPermissionRequest): Promise<RequestPermissionResponse>;
   onExtension(request: GrokExtensionRequest): Promise<Record<string, unknown>>;
@@ -353,6 +363,12 @@ function transportEvent(
   if (compaction) return compaction;
   const subagent = grokSubagentEventFromUpdate(extension);
   if (subagent) return subagent;
+  if (extension.sessionUpdate === "interaction_resolved") {
+    const toolCallId = extension.tool_call_id ?? extension.toolCallId;
+    return typeof toolCallId === "string" && toolCallId.trim().length > 0
+      ? { type: "interaction.resolved", toolCallId, ...(metadata ? { metadata } : {}) }
+      : null;
+  }
   switch (update.sessionUpdate) {
     case "user_message_chunk":
     case "agent_message_chunk":
@@ -894,7 +910,9 @@ export class GrokAcpTransport {
     text: string,
     onEvent: ActivePrompt["onEvent"],
     onPermission: ActivePrompt["onPermission"],
-    onExtension: ActivePrompt["onExtension"],
+    onQuestion: ActivePrompt["onQuestion"],
+    onExtension: ActivePrompt["onExtension"] = async ({ method }) =>
+      isGrokExitPlanModeMethod(method) ? grokPlanRejectedResponse() : grokSkipInterviewResponse(),
   ): Promise<PromptResponse> {
     const connection = this.#connection;
     if (!connection || !this.#sessionId || this.#closed || this.#closing) {
@@ -903,7 +921,7 @@ export class GrokAcpTransport {
     if (this.#activePrompt) throw new Error("Grok ACP Session already has an active Prompt");
     if (this.#permissionConfirmation)
       throw new GrokTransportError("unavailable", "Grok ACP Session has an active operation");
-    const active = { onEvent, onPermission, onExtension };
+    const active = { onEvent, onPermission, onExtension, onQuestion };
     this.#activePrompt = active;
     try {
       return await connection.prompt({
@@ -1119,11 +1137,48 @@ export class GrokAcpTransport {
     return this.#activePrompt.onPermission({ request: params, options: params.options });
   }
 
-  #handleExtensionRequest(
+  async #handleExtensionRequest(
     method: string,
     params: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
-    if (this.#activePrompt) {
+    // BOFT retains the native plan/legacy question bridge; newer Grok builds use
+    // the typed multi-question request handled by GrokQuestions.
+    if (method === GROK_ASK_USER_QUESTION_METHOD) {
+      const active = this.#activePrompt;
+      let request: GrokQuestionRequest | null = null;
+      let parseError: unknown;
+      try {
+        request = parseGrokQuestionRequest(params);
+      } catch (error) {
+        parseError = error;
+      }
+      if (request) {
+        if (
+          !active ||
+          this.#closed ||
+          this.#closing ||
+          this.#replay !== null ||
+          this.#activeCompact !== null ||
+          request.sessionId !== this.#sessionId
+        )
+          return { outcome: "cancelled" };
+        return { ...(await active.onQuestion(request)) };
+      }
+      // Keep accepting the older native payload while supporting Grok's typed multi-select form.
+      if (!isRecord(params) || ("toolCallId" in params && "mode" in params)) {
+        throw RequestError.invalidParams(undefined, errorText(parseError));
+      }
+      const legacy = parseGrokAskUserQuestionParams(params);
+      if (!legacy) throw RequestError.invalidParams(params, "Grok Question is invalid");
+      if (legacy.sessionId && legacy.sessionId !== this.#sessionId) return { outcome: "cancelled" };
+      if (active && !this.#closed && !this.#closing && this.#replay === null)
+        return active.onExtension({ method, params });
+      return grokSkipInterviewResponse();
+    }
+    if (
+      this.#activePrompt &&
+      (isGrokAskUserQuestionMethod(method) || isGrokExitPlanModeMethod(method))
+    ) {
       return this.#activePrompt.onExtension({ method, params });
     }
     if (isGrokAskUserQuestionMethod(method)) return Promise.resolve(grokSkipInterviewResponse());

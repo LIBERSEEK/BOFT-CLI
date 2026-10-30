@@ -53,6 +53,7 @@ import {
 } from "@codexhost/shared-contracts";
 
 import { consumeBrokerFrames, writeBrokerFrame } from "./framing.js";
+import { createBrokerSessionImportCapability } from "./session-import-client.js";
 import {
   defaultHarnessBrokerDescriptorPath,
   harnessBrokerLaunchAgentLabel,
@@ -725,6 +726,7 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
   readonly commandCatalog?: HarnessCommandCatalog;
   readonly liveCommandCatalog?: boolean;
   readonly harnessId: HarnessId;
+  readonly sessionImport?: HarnessSessionImportCapability;
   readonly credits?: () => AccountCreditsSnapshot | null;
   readonly refreshCredits?: () => Promise<AccountCreditsSnapshot | null>;
   readonly #descriptorPath: string;
@@ -734,8 +736,6 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
   readonly #startTimeoutMs: number;
   #connection: Promise<BrokerConnection> | null = null;
   #closed = false;
-  #sessionImportListing: Promise<HarnessResult<readonly HarnessSessionImportCandidate[]>> | null =
-    null;
   #credits: AccountCreditsSnapshot | null = null;
   #creditsRefresh: Promise<AccountCreditsSnapshot | null> | null = null;
 
@@ -752,104 +752,14 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
       }
     },
   };
-  readonly sessionImport = Object.freeze({
-    listCandidates: () => {
-      this.#sessionImportListing ??= this.#listSessionImportCandidates().finally(() => {
-        this.#sessionImportListing = null;
-      });
-      return this.#sessionImportListing;
-    },
-    resolveCandidate: async (
-      nativeSessionId: string,
-    ): Promise<HarnessResult<HarnessSessionImportSource>> => {
-      if (this.#closed) {
-        return {
-          ok: false,
-          error: unavailable("Claude Aqua broker adapter is closed", false),
-        };
-      }
-      try {
-        const result = parseHarnessResult<unknown>(
-          await (
-            await this.#connect()
-          ).request("adapter.sessionImport.resolve", {
-            nativeSessionId,
-          }),
-        );
-        if (!result.ok) return result;
-        const parsed = brokerSessionImportSourceSchema.safeParse(result.value);
-        if (!parsed.success || parsed.data.candidate.nativeSessionId !== nativeSessionId) {
-          return {
-            ok: false,
-            error: {
-              ...unavailable("Harness broker returned an invalid Session source", false),
-              code: "protocolError",
-            },
-          };
-        }
-        return { ok: true, value: parsed.data };
-      } catch (error) {
-        this.#connection = null;
-        return {
-          ok: false,
-          error: unavailable(error instanceof Error ? error.message : String(error)),
-        };
-      }
-    },
-  } satisfies HarnessSessionImportCapability);
-
-  async #listSessionImportCandidates(): Promise<
-    HarnessResult<readonly HarnessSessionImportCandidate[]>
-  > {
-    if (this.#closed) {
-      return {
-        ok: false,
-        error: unavailable("Claude Aqua broker adapter is closed", false),
-      };
-    }
-    try {
-      const candidates: HarnessSessionImportCandidate[] = [];
-      for (;;) {
-        const result = parseHarnessResult<unknown>(
-          await (
-            await this.#connect()
-          ).request("adapter.sessionImport.list", {
-            offset: candidates.length,
-            limit: HARNESS_BROKER_SESSION_IMPORT_PAGE_SIZE,
-          }),
-        );
-        if (!result.ok) return result;
-        const parsed = brokerSessionImportPageSchema.safeParse(result.value);
-        if (
-          !parsed.success ||
-          parsed.data.total < candidates.length + parsed.data.candidates.length ||
-          (parsed.data.candidates.length === 0 && candidates.length < parsed.data.total)
-        ) {
-          return {
-            ok: false,
-            error: {
-              ...unavailable("Harness broker returned invalid Session candidates", false),
-              code: "protocolError",
-            },
-          };
-        }
-        candidates.push(...parsed.data.candidates);
-        if (candidates.length === parsed.data.total) return { ok: true, value: candidates };
-      }
-    } catch (error) {
-      this.#connection = null;
-      return {
-        ok: false,
-        error: unavailable(error instanceof Error ? error.message : String(error)),
-      };
-    }
-  }
 
   constructor(
     input: {
       harnessId?: string;
       /** Plugin-owned capability; defaults to true for existing Broker consumers. */
       accountCredits?: boolean;
+      /** Enable only when the plugin implements native Session import in its broker. */
+      sessionImport?: boolean;
       forwardDelegationEnvironment?: boolean;
       descriptorPath?: string;
       environment?: NodeJS.ProcessEnv;
@@ -866,6 +776,17 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
     } = {},
   ) {
     this.harnessId = harnessPluginIdSchema.parse(input.harnessId ?? "claude-code");
+    if (input.sessionImport) {
+      this.sessionImport = createBrokerSessionImportCapability({
+        harnessId: this.harnessId,
+        request: async (method, params) =>
+          parseHarnessResult(
+            await this.#request(method, params, method === "adapter.sessionImport.resolve"),
+          ),
+        isClosed: () => this.#closed,
+        error: (error) => this.#error(error),
+      });
+    }
     if (input.accountCredits !== false) {
       this.credits = () => this.#credits;
       this.refreshCredits = () => this.#refreshAccountCredits();

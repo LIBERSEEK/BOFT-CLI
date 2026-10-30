@@ -80,6 +80,7 @@ export interface RendererSettingsMessages {
   readonly runtimeCapabilityNotInstalled: string;
   readonly sessionImportTitle: string;
   readonly sessionImportHarness: string;
+  readonly sessionImportSelectHost: string;
   readonly sessionImportDescription: string;
   readonly sessionImportAvailabilityNote: string;
   readonly sessionImportRefresh: string;
@@ -270,7 +271,6 @@ export interface RendererSettingsMessages {
   readonly updateLatestVersion: string;
   readonly updateUpToDate: string;
   readonly updateAvailable: string;
-  readonly updateWindowsManualRequired: string;
   readonly updateAndRestart: string;
   readonly updateChecking: string;
   readonly updateDownloading: string;
@@ -376,6 +376,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   runtimeCapabilityNotInstalled: "This runtime capability is not installed yet.",
   sessionImportTitle: "Session Import",
   sessionImportHarness: "Harness",
+  sessionImportSelectHost: "Select the Host to import sessions from",
   sessionImportDescription:
     "Sessions keep their original project path. If a folder is not in the Codex sidebar, add it as a project first. Original history remains managed by the Harness.",
   sessionImportAvailabilityNote:
@@ -592,8 +593,6 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateLatestVersion: "Latest version",
   updateUpToDate: "You are up to date.",
   updateAvailable: "A new version is available.",
-  updateWindowsManualRequired:
-    "Automatic updates are unavailable on Windows. Update manually below.",
   updateAndRestart: "Update",
   updateChecking: "Checking for updates...",
   updateDownloading: "Downloading update...",
@@ -613,7 +612,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateWindowsNpmDescription:
     "Automatic updates are unavailable on Windows. Quit BOFT CLI and run this command in a terminal:",
   updateWindowsInstallerDescription:
-    "Automatic updates are unavailable on Windows. Download and run the installer for this system.",
+    "To update manually, download and run the installer for this system.",
   updateManualTitle: "Manual update",
   updateManualFallbackDescription:
     "The automatic update did not complete. Run this command in a terminal instead, then quit Codex and relaunch it with boft.",
@@ -727,6 +726,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   runtimeCapabilityNotInstalled: "运行时尚未安装该项能力，因此暂不可用。",
   sessionImportTitle: "会话导入",
   sessionImportHarness: "Harness",
+  sessionImportSelectHost: "请选择要导入会话的 Host",
   sessionImportDescription:
     "会话将保留原始项目路径；若该文件夹尚未出现在 Codex 侧栏，请先将其添加为项目。原始历史仍由 Harness 管理。",
   sessionImportAvailabilityNote:
@@ -742,7 +742,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   sessionImportPageSize: "每页:",
   sessionImportPrevious: "上一页",
   sessionImportNext: "下一页",
-  sessionImportPageSummary: "{total} 条记录 / {from}-{to}",
+  sessionImportPageSummary: "第 {page} / {pages} 页 · 共 {total} 条",
   sessionImportLoadFailed: "无法读取当前 Host 上的会话，请检查目录访问权限或重复的会话 ID 后重试。",
   sessionImportFailed: "无法导入该会话。",
   sessionImportUntitled: "未命名会话",
@@ -930,7 +930,6 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateLatestVersion: "最新版本",
   updateUpToDate: "当前已是最新版本。",
   updateAvailable: "有新版本可用。",
-  updateWindowsManualRequired: "Windows 暂不支持自动更新，请在下方手动更新。",
   updateAndRestart: "更新",
   updateChecking: "正在检查更新...",
   updateDownloading: "正在下载更新...",
@@ -949,7 +948,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateWindowsNpmDescription:
     "Windows 暂不支持自动更新。请退出 BOFT CLI，在终端运行以下命令完成更新。",
   updateWindowsInstallerDescription:
-    "Windows 暂不支持自动更新。请下载并运行适用于当前系统的安装包。",
+    "如需手动更新，请下载并运行适用于当前系统的安装包。",
   updateManualTitle: "手动更新",
   updateManualFallbackDescription:
     "自动更新未能完成，请改用下列命令在终端手动更新。完成后请退出 Codex 并通过 boft 重新启动。",

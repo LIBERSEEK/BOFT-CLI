@@ -1,4 +1,8 @@
 import {
+  THREAD_QUESTIONS_LIST_METHOD,
+  THREAD_QUESTION_RESPOND_METHOD,
+  threadQuestionsListParamsSchema,
+  threadQuestionRespondParamsSchema,
   DELEGATION_READ_METHOD,
   delegationReadParamsSchema,
   EXTERNAL_THREAD_PREWARM_PARAM,
@@ -162,6 +166,11 @@ import { executeExternalThreadFork } from "./external-thread-fork.js";
 import { settleExternalOutputFailure } from "./external-output-failure.js";
 import { isSessionImportRequest, SessionImportRequests } from "./session-import-requests.js";
 import {
+  sharedQuestion,
+  usesSharedQuestionCard,
+  validateSharedQuestionResponse,
+} from "./shared-question.js";
+import {
   ExternalHistoryRequestError,
   listExternalItems,
   listExternalTurns,
@@ -181,6 +190,8 @@ import {
   type ExternalThreadLocation,
   type ExternalThreadResolution,
 } from "./external-thread-runtime.js";
+import { ExternalSessionReleaseError } from "./external-thread-lifecycle.js";
+import { ExternalQueueError, ExternalThreadQueue } from "./external-thread-queue.js";
 import {
   ExternalSteerError,
   ExternalTurnSteering,
@@ -394,6 +405,8 @@ interface PendingDesktopApproval {
 }
 
 interface PendingDesktopQuestion {
+  shared: boolean;
+  responding: boolean;
   thread: ExternalThread;
   interaction: HostQuestionInteraction;
   projection: CodexQuestionRequestProjection;
@@ -649,6 +662,10 @@ export class AppServerHost {
   readonly #executionHosts = new WeakMap<ExternalThread, string>();
   readonly #externalPrewarms = new ExternalThreadPrewarms();
   readonly #externalSteering = new ExternalTurnSteering();
+  readonly #externalQueue = new ExternalThreadQueue({
+    notifyChanged: (threadId) =>
+      this.#writer.json({ method: "thread/queue/changed", params: { threadId } }),
+  });
   readonly #liveCommandCache = new LiveCommandCatalogCache();
   readonly #modelPrices: ModelPriceCatalog;
   readonly #observedSessionUsage: ObservedSessionUsage;
@@ -810,16 +827,7 @@ export class AppServerHost {
       hasRunningDescendants: (threadId) => this.#hasRunningSubagents(threadId),
       idleRelease: {
         queue: this.#desktopRequests,
-        onClosed: async (thread) => {
-          for (const pending of [...this.#pendingDesktopApprovals.values()]) {
-            if (pending.thread === thread)
-              await this.#resolveDesktopApproval(pending.interaction.interactionId);
-          }
-          for (const pending of [...this.#pendingDesktopQuestions.values()]) {
-            if (pending.thread === thread)
-              await this.#resolveDesktopQuestion(pending.interaction.interactionId);
-          }
-        },
+        onClosed: (thread) => this.#resolveThreadInteractions(thread),
         canRelease: (thread) =>
           !this.#hasRunningSubagents(thread.id) &&
           !thread.session.hasBackgroundWork?.() &&
@@ -1048,12 +1056,12 @@ export class AppServerHost {
       await this.#closeAdapters();
       await this.#externalRuntime.drain();
       for (const pending of [...this.#pendingDesktopApprovals.values()]) {
-        await this.#resolveDesktopApproval(pending.interaction.interactionId).catch(
+        await this.#resolveDesktopApproval(pending.interaction.interactionId, pending.thread).catch(
           () => undefined,
         );
       }
       for (const pending of [...this.#pendingDesktopQuestions.values()]) {
-        await this.#resolveDesktopQuestion(pending.interaction.interactionId).catch(
+        await this.#resolveDesktopQuestion(pending.interaction.interactionId, pending.thread).catch(
           () => undefined,
         );
       }
@@ -1752,6 +1760,20 @@ export class AppServerHost {
       await this.#listThreadOwnership(request);
       return;
     }
+    if (
+      request.method === THREAD_QUESTIONS_LIST_METHOD ||
+      request.method === THREAD_QUESTION_RESPOND_METHOD
+    ) {
+      const threadId = requestObject(request).threadId;
+      this.#dispatchDesktopReply(
+        request,
+        () => this.#handleSharedQuestionRequest(request),
+        request.method === THREAD_QUESTION_RESPOND_METHOD && typeof threadId === "string"
+          ? threadId
+          : undefined,
+      );
+      return;
+    }
     if (request.method === "codexhost/thread/steering/inspect") {
       await this.#inspectThreadSteering(request);
       return;
@@ -2161,6 +2183,22 @@ export class AppServerHost {
         } else {
           await this.#deleteExternalThread(request, location);
         }
+        return;
+      }
+    }
+    if (
+      request.method.startsWith("thread/queue/") &&
+      isRecord(request.params) &&
+      typeof request.params.threadId === "string"
+    ) {
+      const location = await this.#locateExternalThread(request.params.threadId);
+      if (await this.#writeResolutionError(request, location)) return;
+      if (location.kind === "external") {
+        this.#dispatchDesktopReply(
+          request,
+          () => this.#handleExternalQueueRequest(request, location.record.hostThreadId),
+          location.record.hostThreadId,
+        );
         return;
       }
     }
@@ -4213,6 +4251,8 @@ export class AppServerHost {
     }
     const params = requestObject(request);
     const route = decodeCreateRoute(request);
+    // Renderer-side prewarms mark the request; main-process prewarms can mark only the Model.
+    const prewarm = params[EXTERNAL_THREAD_PREWARM_PARAM] === true || route?.prewarm === true;
     const requestedModel = route && route.harnessId !== "codex" ? route.model : undefined;
     const requestedThinkingOptionId =
       route && route.harnessId !== "codex" ? route.thinkingOptionId : undefined;
@@ -4268,7 +4308,7 @@ export class AppServerHost {
     const session = sessionResult.value;
     await this.#externalRuntime.idleRelease.runOperation(record.hostThreadId, async () => {
       try {
-        if (session.initialState.nativeRef && params[EXTERNAL_THREAD_PREWARM_PARAM] !== true) {
+        if (session.initialState.nativeRef && !prewarm) {
           record = await this.#repository.commitNative(
             record.hostThreadId,
             session.initialState.nativeRef,
@@ -4282,7 +4322,7 @@ export class AppServerHost {
         const externalThread = this.#registerExternalThread({
           record,
           session,
-          unsubmittedPrewarm: params[EXTERNAL_THREAD_PREWARM_PARAM] === true,
+          unsubmittedPrewarm: prewarm,
           sessionId: record.hostThreadId,
           thread,
           turns: [],
@@ -4290,7 +4330,7 @@ export class AppServerHost {
           ...(requestedThinkingOptionId ? { requestedThinkingOptionId } : {}),
           ...(requestedPermissionModeId ? { requestedPermissionModeId } : {}),
         });
-        if (params[EXTERNAL_THREAD_PREWARM_PARAM] === true) {
+        if (prewarm) {
           this.#externalPrewarms.register(externalThread);
         }
         this.#routeObservationTracker.bindCreatedThread(request.id, externalThread.id);
@@ -4565,29 +4605,26 @@ export class AppServerHost {
     request: JsonRpcRequest,
     location: Extract<ExternalThreadLocation, { kind: "external" }>,
   ): Promise<void> {
-    const thread = location.thread;
     try {
-      await this.#repository.removeThread(location.record.hostThreadId);
-    } catch {
-      await this.#writer.json(rpcError(request, -32081, "External Thread could not be removed"));
-      return;
-    }
-    this.#externalRuntime.remove(location.record.hostThreadId);
-    this.#routeObservationTracker.forgetThread(location.record.hostThreadId);
-    if (!thread) {
-      await this.#writer.json(rpcEnvelope(request, { result: {} }));
-      return;
-    }
-    thread.stateObserver.fault(new Error("External Thread was deleted"));
-    try {
-      await thread.session.close();
-      await thread.outputTask;
-      await this.#writer.json(rpcEnvelope(request, { result: {} }));
+      await this.#externalRuntime.deleteThread(location.record.hostThreadId);
     } catch (error) {
+      if (!(error instanceof ExternalSessionReleaseError) && location.thread)
+        await this.#resolveThreadInteractions(location.thread);
       await this.#writer.json(
-        rpcError(request, -32075, `External Thread could not close: ${errorMessage(error)}`),
+        error instanceof ExternalSessionReleaseError
+          ? rpcError(request, -32075, error.message)
+          : rpcError(request, -32081, "External Thread could not be removed"),
       );
+      return;
     }
+    if (location.thread) await this.#resolveThreadInteractions(location.thread);
+    this.#routeObservationTracker.forgetThread(location.record.hostThreadId);
+    this.#externalQueue.forget(location.record.hostThreadId);
+    await this.#writer.json(rpcEnvelope(request, { result: {} }));
+    await this.#writer.json({
+      method: "thread/deleted",
+      params: { threadId: location.record.hostThreadId },
+    });
   }
 
   async #readExternalThreadMetadata(
@@ -4897,6 +4934,147 @@ export class AppServerHost {
     }
   }
 
+  async #handleExternalQueueRequest(request: JsonRpcRequest, threadId: string): Promise<void> {
+    const queue = this.#externalQueue;
+    try {
+      const params = requestObject(request);
+      const input = (): JsonValue[] => {
+        requestText(params);
+        return params.input as JsonValue[];
+      };
+      const submissionId = (): string => {
+        if (typeof params.queuedSubmissionId !== "string")
+          throw new ExternalQueueError(-32602, "queuedSubmissionId must be a string");
+        return params.queuedSubmissionId;
+      };
+      let result: JsonObject;
+      switch (request.method) {
+        case "thread/queue/list":
+          result = queue.list(threadId, params);
+          break;
+        case "thread/queue/add": {
+          if (typeof params.clientUserMessageId !== "string" || !params.clientUserMessageId)
+            throw new ExternalQueueError(-32602, "clientUserMessageId must be a string");
+          const sourceHostId = params[THREAD_REFERENCE_SOURCE_HOST_PARAM];
+          const submission = await queue.add(
+            threadId,
+            input(),
+            params.clientUserMessageId,
+            typeof sourceHostId === "string" ? sourceHostId : undefined,
+          );
+          result = { queuedSubmission: submission as unknown as JsonObject };
+          break;
+        }
+        case "thread/queue/update": {
+          const submission = await queue.update(threadId, submissionId(), input());
+          result = { queuedSubmission: submission as unknown as JsonObject };
+          break;
+        }
+        case "thread/queue/delete":
+          result = { deleted: await queue.delete(threadId, submissionId()) };
+          break;
+        case "thread/queue/reorder": {
+          const ids = params.queuedSubmissionIds;
+          if (!Array.isArray(ids) || !ids.every((id) => typeof id === "string"))
+            throw new ExternalQueueError(-32602, "queuedSubmissionIds must be strings");
+          await queue.reorder(threadId, ids as string[]);
+          result = {};
+          break;
+        }
+        case "thread/queue/start": {
+          const resolution = await this.#resolveExternalThread(threadId);
+          if (await this.#writeResolutionError(request, resolution)) return;
+          if (resolution.kind !== "external")
+            throw new ExternalQueueError(-32073, "External Thread is no longer available");
+          const started = await this.#startQueuedSubmission(
+            resolution.thread,
+            params.queuedSubmissionId == null ? null : submissionId(),
+          );
+          try {
+            await this.#writer.json(rpcEnvelope(request, { result: { turn: started.turn } }));
+          } finally {
+            started.gate.resolve();
+          }
+          return;
+        }
+        default:
+          throw new ExternalQueueError(
+            -32076,
+            `External Thread does not support ${request.method}`,
+          );
+      }
+      await this.#writer.json(rpcEnvelope(request, { result }));
+      if (request.method === "thread/queue/add") {
+        const thread = this.#externalRuntime.get(threadId);
+        const lastTurn = thread?.turns.at(-1);
+        // The completion handler may have checked an empty queue before this add arrived.
+        // Use only a terminal Turn published here, not restored history or a failed start.
+        if (
+          thread &&
+          thread.projectedTerminalTurnId === lastTurn?.id &&
+          lastTurn?.status === "completed" &&
+          isRecord(thread.thread.status) &&
+          thread.thread.status.type === "idle"
+        ) {
+          void this.#drainExternalQueue(thread);
+        }
+      }
+    } catch (error) {
+      await this.#writer.json(
+        rpcError(
+          request,
+          error instanceof ExternalQueueError ||
+            error instanceof ExternalSteerError ||
+            error instanceof ExternalCommandError
+            ? error.code
+            : -32602,
+          errorMessage(error),
+        ),
+      );
+    }
+  }
+
+  /** Starts a queued follow-up as a Turn; it returns to its place when the start fails. */
+  async #startQueuedSubmission(
+    thread: ExternalThread,
+    submissionId?: string | null,
+  ): Promise<{ turnId: HostTurnId; turn: JsonObject; gate: TurnProjectionGate }> {
+    if (this.#externalThreadBusy(thread) || this.#pendingExternalCommandRequests.has(thread.id))
+      throw new ExternalSteerError(-32072, "External Thread already has an active Turn");
+    const taken = this.#externalQueue.take(thread.id, submissionId);
+    try {
+      const started = await this.#beginExternalInputTurn(
+        thread,
+        requestText({ input: taken.submission.input }),
+        undefined,
+        taken.submission.clientUserMessageId,
+        taken.sourceHostId,
+        true,
+      );
+      await this.#externalQueue.notifyChanged(thread.id);
+      return started;
+    } catch (error) {
+      this.#externalQueue.restore(thread.id, taken);
+      await this.#externalQueue.notifyChanged(thread.id);
+      throw error;
+    }
+  }
+
+  /** Desktop leaves queued follow-ups to the app-server once a Turn completes normally. */
+  async #drainExternalQueue(thread: ExternalThread): Promise<void> {
+    if (
+      !this.#externalQueue.has(thread.id) ||
+      this.#externalThreadBusy(thread) ||
+      this.#pendingExternalCommandRequests.has(thread.id)
+    )
+      return;
+    try {
+      (await this.#startQueuedSubmission(thread)).gate.resolve();
+    } catch (error) {
+      this.#diagnose(error);
+    }
+  }
+
   async #steerExternalTurn(request: JsonRpcRequest, thread: ExternalThread): Promise<void> {
     try {
       const started = await this.#externalSteering.run(
@@ -4977,12 +5155,13 @@ export class AppServerHost {
     assertActive?: () => void,
     clientUserMessageId?: string,
     sourceHostId?: unknown,
+    projectInput = false,
   ): Promise<{ turnId: HostTurnId; turn: JsonObject; gate: TurnProjectionGate }> {
     const text = restoreHarnessCommandMentions(inputText);
     const commands = thread.session.commands;
     if (!commands || !isExternalCommandCandidate(text)) {
       assertActive?.();
-      return this.#beginExternalTurn(thread, text, clientUserMessageId, sourceHostId);
+      return this.#beginExternalTurn(thread, text, clientUserMessageId, sourceHostId, projectInput);
     }
     this.#pendingExternalCommandRequests.add(thread.id);
     try {
@@ -4995,7 +5174,13 @@ export class AppServerHost {
       assertActive?.();
       if (!command) {
         this.#pendingExternalCommandRequests.delete(thread.id);
-        return await this.#beginExternalTurn(thread, text, clientUserMessageId, sourceHostId);
+        return await this.#beginExternalTurn(
+          thread,
+          text,
+          clientUserMessageId,
+          sourceHostId,
+          projectInput,
+        );
       }
       return await this.#beginExternalCommand(
         thread,
@@ -5035,11 +5220,16 @@ export class AppServerHost {
     };
   }
 
+  /**
+   * Desktop renders the input of its own `turn/start` locally. Other starts (Host-only clients
+   * and queued follow-ups) need the user message projected with the Turn.
+   */
   async #beginExternalTurn(
     thread: ExternalThread,
     text: string,
     clientUserMessageId?: string,
     sourceHostId?: unknown,
+    projectInput = false,
   ): Promise<{
     turnId: HostTurnId;
     turn: JsonObject;
@@ -5063,7 +5253,7 @@ export class AppServerHost {
         turnId,
         cwd: thread.cwd,
         startedAtMs,
-        ...(this.#options.externalOnly
+        ...(this.#options.externalOnly || projectInput
           ? {
               initialInput: [{ type: "text" as const, text }],
               ...(clientUserMessageId ? { clientUserMessageId } : {}),
@@ -5234,12 +5424,12 @@ export class AppServerHost {
     try {
       for (const pending of [...this.#pendingDesktopApprovals.values()]) {
         if (pending.thread === thread && pending.interaction.turnId === turnId) {
-          await this.#resolveDesktopApproval(pending.interaction.interactionId);
+          await this.#resolveDesktopApproval(pending.interaction.interactionId, pending.thread);
         }
       }
       for (const pending of [...this.#pendingDesktopQuestions.values()]) {
         if (pending.thread === thread && pending.interaction.turnId === turnId) {
-          await this.#resolveDesktopQuestion(pending.interaction.interactionId);
+          await this.#resolveDesktopQuestion(pending.interaction.interactionId, pending.thread);
         }
       }
       await this.#writer.json({
@@ -5434,6 +5624,10 @@ export class AppServerHost {
       return;
     }
     if (event.type === "session.faulted") {
+      for (const pending of [...this.#pendingDesktopQuestions.values()]) {
+        if (pending.shared && pending.thread === thread)
+          this.#retireDesktopQuestion(pending.interaction.interactionId, thread);
+      }
       this.#externalSteering.fault(thread.id, new Error(event.error.message));
       thread.stateObserver.fault(new Error(event.error.message));
       this.#externalRuntime.markSessionUnavailable(thread);
@@ -5492,9 +5686,19 @@ export class AppServerHost {
     ) {
       return;
     }
+    if (event.type === "turn.completed") {
+      for (const pending of [...this.#pendingDesktopQuestions.values()]) {
+        if (
+          pending.shared &&
+          pending.thread === thread &&
+          pending.interaction.turnId === event.turnId
+        )
+          this.#retireDesktopQuestion(pending.interaction.interactionId, thread);
+      }
+    }
     if (event.type === "interaction.closed") {
-      await this.#resolveDesktopApproval(event.interactionId);
-      await this.#resolveDesktopQuestion(event.interactionId);
+      await this.#resolveDesktopApproval(event.interactionId, thread);
+      await this.#resolveDesktopQuestion(event.interactionId, thread);
     }
     const ephemeralTurn =
       event.type === "turn.completed" &&
@@ -5581,6 +5785,14 @@ export class AppServerHost {
           : { type: "idle" },
       );
       this.#externalSteering.terminal(thread.id, event.turnId, event.outcome);
+      // Interrupted and failed Turns pause the queue until Desktop starts it again.
+      if (
+        !ephemeralTurn &&
+        result.completedTurn?.status === "completed" &&
+        this.#externalQueue.has(thread.id)
+      ) {
+        void this.#drainExternalQueue(thread);
+      }
     }
   }
 
@@ -5804,7 +6016,7 @@ export class AppServerHost {
       )
         return true;
       if (this.#options.externalOnly)
-        await this.#resolveDesktopApproval(pending.interaction.interactionId);
+        await this.#resolveDesktopApproval(pending.interaction.interactionId, pending.thread);
       else this.#pendingDesktopApprovals.delete(requestId);
 
       let response: HostApprovalResponse;
@@ -5863,9 +6075,24 @@ export class AppServerHost {
     return denied.ok;
   }
 
-  async #resolveDesktopApproval(interactionId: HostInteractionId): Promise<void> {
+  async #resolveThreadInteractions(thread: ExternalThread): Promise<void> {
+    for (const pending of [...this.#pendingDesktopApprovals.values()]) {
+      if (pending.thread === thread)
+        await this.#resolveDesktopApproval(pending.interaction.interactionId, thread);
+    }
+    for (const pending of [...this.#pendingDesktopQuestions.values()]) {
+      if (pending.thread === thread)
+        await this.#resolveDesktopQuestion(pending.interaction.interactionId, thread);
+    }
+  }
+
+  async #resolveDesktopApproval(
+    interactionId: HostInteractionId,
+    thread: ExternalThread,
+  ): Promise<void> {
     for (const [requestId, pending] of this.#pendingDesktopApprovals) {
-      if (pending.interaction.interactionId !== interactionId) continue;
+      if (pending.thread !== thread || pending.interaction.interactionId !== interactionId)
+        continue;
       this.#pendingDesktopApprovals.delete(requestId);
       await this.#writer.json({
         method: "serverRequest/resolved",
@@ -5883,6 +6110,87 @@ export class AppServerHost {
     return requestId;
   }
 
+  async #handleSharedQuestionRequest(request: JsonRpcRequest): Promise<void> {
+    const responding = request.method === THREAD_QUESTION_RESPOND_METHOD;
+    const parsed = (
+      responding ? threadQuestionRespondParamsSchema : threadQuestionsListParamsSchema
+    ).safeParse(request.params);
+    if (!parsed.success) {
+      await this.#writer.json(rpcError(request, -32602, "Invalid Question params"));
+      return;
+    }
+    const { threadId } = parsed.data;
+    const thread = this.#externalRuntime.get(threadId);
+    const pendingQuestions = () =>
+      [...this.#pendingDesktopQuestions.values()].filter(
+        (pending) =>
+          pending.shared &&
+          pending.thread === thread &&
+          pending.interaction.turnId === thread?.activeTurnId &&
+          (!Number.isFinite(Date.parse(pending.interaction.expiresAt ?? "")) ||
+            Date.parse(pending.interaction.expiresAt ?? "") > Date.now()),
+      );
+    if (!responding) {
+      const questions =
+        thread && !thread.sessionUnavailable && !this.#externalRuntime.idleRelease.failure(thread)
+          ? pendingQuestions().map((pending) => sharedQuestion(pending.interaction))
+          : [];
+      await this.#writer.json(
+        rpcEnvelope(request, { result: jsonValueSchema.parse({ questions }) }),
+      );
+      return;
+    }
+    const params = threadQuestionRespondParamsSchema.parse(parsed.data);
+    try {
+      await this.#externalRuntime.idleRelease.runOperation(threadId, async () => {
+        const pending = pendingQuestions().find(
+          ({ interaction }) =>
+            interaction.interactionId === params.interactionId &&
+            interaction.turnId === params.turnId,
+        );
+        if (
+          !thread ||
+          this.#externalRuntime.get(threadId) !== thread ||
+          thread.sessionUnavailable ||
+          this.#externalRuntime.idleRelease.failure(thread) ||
+          !pending ||
+          pending.responding
+        ) {
+          throw new Error("Question is no longer pending on this Thread and Turn");
+        }
+        const response = {
+          type: "question" as const,
+          answers: params.answers,
+          cancelled: params.cancelled,
+        };
+        validateSharedQuestionResponse(pending.interaction, response);
+        pending.responding = true;
+        let result;
+        try {
+          result = await thread.session.execute({
+            type: "interaction.respond",
+            interactionId: pending.interaction.interactionId,
+            response,
+          });
+        } catch (error) {
+          // Delivery is ambiguous; never permit a second write of the same answer.
+          this.#retireDesktopQuestion(pending.interaction.interactionId, thread);
+          throw error;
+        }
+        if (!result.ok) {
+          pending.responding = false;
+          if (result.error.code === "invalidState")
+            this.#retireDesktopQuestion(pending.interaction.interactionId, thread);
+          throw new Error(result.error.message);
+        }
+        this.#retireDesktopQuestion(pending.interaction.interactionId, thread);
+        await this.#writer.json(rpcEnvelope(request, { result: { accepted: true } }));
+      });
+    } catch (error) {
+      await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
+    }
+  }
+
   async #projectQuestion(
     thread: ExternalThread,
     interaction: HostQuestionInteraction,
@@ -5890,7 +6198,9 @@ export class AppServerHost {
     const projection = this.#projectedTurn(thread, interaction.turnId);
     await this.#waitForTurnResponse(thread, interaction.turnId);
     let result: CodexQuestionProjection;
+    const shared = usesSharedQuestionCard(interaction);
     try {
+      if (shared) sharedQuestion(interaction);
       result = projection.projector.projectQuestion(
         interaction,
         hostItemIdSchema.parse(randomUUID()),
@@ -5915,6 +6225,8 @@ export class AppServerHost {
     const expiresAtMs = interaction.expiresAt ? Date.parse(interaction.expiresAt) : Number.NaN;
     const timeoutMs = Number.isFinite(expiresAtMs) ? Math.max(0, expiresAtMs - Date.now()) : null;
     const pending: PendingDesktopQuestion = {
+      shared,
+      responding: false,
       thread,
       interaction,
       projection: result.questionRequest,
@@ -5926,10 +6238,12 @@ export class AppServerHost {
       }, timeoutMs);
     }
     this.#pendingDesktopQuestions.set(requestId, pending);
+    // Multi-select groups have one owner/surface; never also publish a native single-choice card.
+    if (shared) return;
     try {
       await this.#writer.json({ id: requestId, ...result.questionRequest.request });
     } catch (error) {
-      this.#retireDesktopQuestion(interaction.interactionId);
+      this.#retireDesktopQuestion(interaction.interactionId, thread);
       await thread.session
         .execute({
           type: "interaction.respond",
@@ -5945,7 +6259,7 @@ export class AppServerHost {
     if (!isRecord(value) || !isHostQuestionRequestId(value.id)) return false;
     const requestId = value.id;
     const pending = this.#pendingDesktopQuestions.get(requestId);
-    if (!pending) return true;
+    if (!pending || pending.shared) return true;
     return this.#externalRuntime.idleRelease.runOperation(pending.thread.id, async () => {
       if (
         this.#externalRuntime.get(pending.thread.id) !== pending.thread ||
@@ -5953,7 +6267,7 @@ export class AppServerHost {
       )
         return true;
       if (this.#options.externalOnly)
-        await this.#resolveDesktopQuestion(pending.interaction.interactionId);
+        await this.#resolveDesktopQuestion(pending.interaction.interactionId, pending.thread);
       else this.#pendingDesktopQuestions.delete(requestId);
       if (pending.timeout) clearTimeout(pending.timeout);
 
@@ -5987,7 +6301,8 @@ export class AppServerHost {
         this.#externalRuntime.idleRelease.failure(pending.thread)
       )
         return;
-      await this.#resolveDesktopQuestion(pending.interaction.interactionId);
+      await this.#resolveDesktopQuestion(pending.interaction.interactionId, pending.thread);
+      if (pending.responding) return;
       const result = await pending.thread.session.execute({
         type: "interaction.respond",
         interactionId: pending.interaction.interactionId,
@@ -5999,19 +6314,25 @@ export class AppServerHost {
     });
   }
 
-  #retireDesktopQuestion(interactionId: HostInteractionId): void {
+  #retireDesktopQuestion(interactionId: HostInteractionId, thread: ExternalThread): void {
     for (const [requestId, pending] of this.#pendingDesktopQuestions) {
-      if (pending.interaction.interactionId !== interactionId) continue;
+      if (pending.thread !== thread || pending.interaction.interactionId !== interactionId)
+        continue;
       if (pending.timeout) clearTimeout(pending.timeout);
       this.#pendingDesktopQuestions.delete(requestId);
     }
   }
 
-  async #resolveDesktopQuestion(interactionId: HostInteractionId): Promise<void> {
+  async #resolveDesktopQuestion(
+    interactionId: HostInteractionId,
+    thread: ExternalThread,
+  ): Promise<void> {
     for (const [requestId, pending] of this.#pendingDesktopQuestions) {
-      if (pending.interaction.interactionId !== interactionId) continue;
+      if (pending.thread !== thread || pending.interaction.interactionId !== interactionId)
+        continue;
       if (pending.timeout) clearTimeout(pending.timeout);
       this.#pendingDesktopQuestions.delete(requestId);
+      if (pending.shared) continue;
       await this.#writer.json({
         method: "serverRequest/resolved",
         params: { threadId: pending.thread.id, requestId },
