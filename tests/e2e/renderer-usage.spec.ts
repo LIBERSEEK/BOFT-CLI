@@ -273,7 +273,7 @@ test("keeps Usage usable while the composer shrinks and expands", async ({ page 
   await page.setViewportSize({ width: 380, height: 600 });
   await expect(label).not.toBeVisible();
   await expect(icon).toBeVisible();
-  await expect(trigger).toHaveAttribute("aria-label", "Thread Usage: CH 99.9% · $0.822");
+  await expect(trigger).toHaveAttribute("aria-label", "Thread Usage: 99.9% · $0.822");
   await expect
     .poll(() => usage.evaluate((element) => element.getBoundingClientRect().width))
     .toBeLessThanOrEqual(28);
@@ -287,7 +287,7 @@ test("keeps Usage usable while the composer shrinks and expands", async ({ page 
 
   await page.setViewportSize({ width: 800, height: 600 });
   await expect(label).toBeVisible();
-  await expect(label).toHaveText("CH 99.9% · $0.822");
+  await expect(label).toHaveText("99.9% · $0.822");
   await expect(icon).not.toBeVisible();
 });
 

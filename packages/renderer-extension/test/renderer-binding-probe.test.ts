@@ -635,7 +635,8 @@ describe("Renderer Composer DOM behavior", () => {
     it("keeps the mount-time last-button fallback for unlabelled action buttons", () => {
       const stale = { ...button(false), type: "button" } as unknown as HTMLButtonElement;
       const owned = {
-        closest: () => null,
+        closest: (selector: string) =>
+          selector.includes("[data-codexhost-agent-control]") ? owned : null,
         type: "button",
         disabled: false,
         isConnected: true,

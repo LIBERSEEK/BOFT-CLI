@@ -17,8 +17,6 @@ import {
   type HarnessSession,
   type HarnessSessionCapabilities,
   type HarnessSessionImportCapability,
-  type HarnessSessionImportCandidate,
-  type HarnessSessionImportSource,
   type HarnessSessionState,
   type HostCommand,
   type HostThreadSnapshot,
@@ -64,7 +62,6 @@ import {
   HARNESS_BROKER_RETIRING_ERROR_CODE,
   HARNESS_BROKER_PROTOCOL_VERSION,
   HARNESS_BROKER_REQUEST_TIMEOUT_MS,
-  HARNESS_BROKER_SESSION_IMPORT_PAGE_SIZE,
   harnessBrokerDescriptorSchema,
   harnessBrokerServerFrameSchema,
   type HarnessBrokerDescriptorV1,
@@ -73,8 +70,6 @@ import {
 import {
   harnessErrorSchema,
   harnessOutputSchema,
-  brokerSessionImportPageSchema,
-  brokerSessionImportSourceSchema,
   harnessSessionStateSchema,
 } from "./validation.js";
 
