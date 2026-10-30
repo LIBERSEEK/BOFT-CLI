@@ -947,8 +947,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
     "如需手动更新，请在终端运行以下命令。更新完成后，请退出 Codex 并通过 boft 重新启动。",
   updateWindowsNpmDescription:
     "Windows 暂不支持自动更新。请退出 BOFT CLI，在终端运行以下命令完成更新。",
-  updateWindowsInstallerDescription:
-    "如需手动更新，请下载并运行适用于当前系统的安装包。",
+  updateWindowsInstallerDescription: "如需手动更新，请下载并运行适用于当前系统的安装包。",
   updateManualTitle: "手动更新",
   updateManualFallbackDescription:
     "自动更新未能完成，请改用下列命令在终端手动更新。完成后请退出 Codex 并通过 boft 重新启动。",

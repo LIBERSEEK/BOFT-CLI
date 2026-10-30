@@ -3353,62 +3353,65 @@ describe("Renderer Updates page", () => {
   it.each([
     ["npm" as const, "如需手动更新", false],
     ["windows-installer" as const, "如需手动更新，请下载并运行适用于当前系统的安装包。", true],
-  ])("offers the appropriate Windows update for %s installations", async (installation, expected, automatic) => {
-    const client = {
-      checkUpdate: vi.fn(async () => ({
-        ...updateCheck(),
-        installation,
-        installationAvailable: automatic,
-      })),
-      startUpdate: vi.fn(),
-      readUpdateStatus: vi.fn(async () => ({ status: null })),
-    };
-    const page = createDefaultRendererSettingsPages(
-      rendererSettingsMessages("zh-CN"),
-      () => client,
-    ).find(({ id }) => id === "updates");
-    if (!page) throw new Error("Updates page is not registered");
+  ])(
+    "offers the appropriate Windows update for %s installations",
+    async (installation, expected, automatic) => {
+      const client = {
+        checkUpdate: vi.fn(async () => ({
+          ...updateCheck(),
+          installation,
+          installationAvailable: automatic,
+        })),
+        startUpdate: vi.fn(),
+        readUpdateStatus: vi.fn(async () => ({ status: null })),
+      };
+      const page = createDefaultRendererSettingsPages(
+        rendererSettingsMessages("zh-CN"),
+        () => client,
+      ).find(({ id }) => id === "updates");
+      if (!page) throw new Error("Updates page is not registered");
 
-    const document = new FakeDocument("Win32");
-    const content = document.createElement("main");
-    const scope = new RendererSettingsPageScope();
-    const cleanup = page.mount({
-      content: content as unknown as HTMLElement,
-      signal: scope.signal,
-      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
-    });
+      const document = new FakeDocument("Win32");
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      const cleanup = page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+      });
 
-    await vi.waitFor(() => {
-      expect(visibleText(content)).toContain(expected);
-      expect(visibleText(elementWithClass(content, "settings-update-panel"))).toContain(
-        "有新版本可用",
+      await vi.waitFor(() => {
+        expect(visibleText(content)).toContain(expected);
+        expect(visibleText(elementWithClass(content, "settings-update-panel"))).toContain(
+          "有新版本可用",
+        );
+      });
+      if (installation === "npm") {
+        expect(visibleText(content)).toContain("暂不支持自动更新");
+      } else {
+        expect(visibleText(content)).not.toContain("暂不支持自动更新");
+      }
+      const update = descendants(elementWithClass(content, "settings-update-panel")).find(
+        ({ tagName }) => tagName === "button",
       );
-    });
-    if (installation === "npm") {
-      expect(visibleText(content)).toContain("暂不支持自动更新");
-    } else {
-      expect(visibleText(content)).not.toContain("暂不支持自动更新");
-    }
-    const update = descendants(elementWithClass(content, "settings-update-panel")).find(
-      ({ tagName }) => tagName === "button",
-    );
-    expect(Boolean(update)).toBe(automatic);
-    if (installation === "npm") {
-      expect(visibleText(content)).toContain("npm install -g @liberseek/boft-cli@latest");
-      expect(client.startUpdate).not.toHaveBeenCalled();
-    } else {
-      const link = descendants(content).find(
-        ({ tagName, href }) =>
-          tagName === "a" &&
-          href ===
-            "https://github.com/LIBERSEEK/BOFT-CLI/releases/download/v1.2.3/boft-cli-1.2.3-windows-x64.exe",
-      );
-      expect(link).toMatchObject({ target: "_blank", rel: "noopener noreferrer" });
-    }
+      expect(Boolean(update)).toBe(automatic);
+      if (installation === "npm") {
+        expect(visibleText(content)).toContain("npm install -g @liberseek/boft-cli@latest");
+        expect(client.startUpdate).not.toHaveBeenCalled();
+      } else {
+        const link = descendants(content).find(
+          ({ tagName, href }) =>
+            tagName === "a" &&
+            href ===
+              "https://github.com/LIBERSEEK/BOFT-CLI/releases/download/v1.2.3/boft-cli-1.2.3-windows-x64.exe",
+        );
+        expect(link).toMatchObject({ target: "_blank", rel: "noopener noreferrer" });
+      }
 
-    cleanup?.();
-    scope.dispose();
-  });
+      cleanup?.();
+      scope.dispose();
+    },
+  );
 
   it("renders the open-source project introduction on the About page", () => {
     const page = createDefaultRendererSettingsPages(rendererSettingsMessages("zh-CN")).find(

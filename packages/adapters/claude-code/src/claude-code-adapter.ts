@@ -2681,10 +2681,7 @@ class ClaudeHarnessSession implements HarnessSession {
           const cacheHitRatePercent = this.#cacheHitRatePercent(context.apiUsage);
           if (cacheHitRatePercent !== undefined) delta.cacheHitRatePercent = cacheHitRatePercent;
         }
-        this.#mergeAndPublishUsage(
-          delta,
-          request.turnId,
-        );
+        this.#mergeAndPublishUsage(delta, request.turnId);
         return;
       } catch {
         // Context Usage is an independent, best-effort projection.

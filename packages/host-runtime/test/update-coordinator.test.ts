@@ -78,9 +78,7 @@ async function npmFixture(platform: "darwin" | "win32" = "darwin"): Promise<{
   };
   await Promise.all([
     file(hostRuntimePath),
-    file(
-      path.join(packageRoot, "libexec", windows ? "boft-updater.exe" : "boft-updater"),
-    ),
+    file(path.join(packageRoot, "libexec", windows ? "boft-updater.exe" : "boft-updater")),
     file(environment.CODEXHOST_LAUNCHER_EXECUTABLE),
     file(environment.CODEXHOST_NPM_NODE_PATH),
     file(environment.CODEXHOST_NPM_CLI_PATH),

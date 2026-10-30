@@ -767,11 +767,7 @@ function updatesPage(
         const inlineUpdate = !result.error && !actionableStatus && result.updateAvailable;
         if (inlineUpdate) panel.dataset.inline = "";
         else delete panel.dataset.inline;
-        const head = createPanelHead(
-          document,
-          view,
-          title,
-        );
+        const head = createPanelHead(document, view, title);
         const buttons: HTMLElement[] = [];
         if (
           result.updateAvailable &&
