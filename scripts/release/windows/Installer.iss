@@ -58,7 +58,7 @@ begin
     if not ExecAndLogOutput(
       ExpandConstant('{tmp}\boft-install-helper.exe'),
       'prepare-install --install-root ' + AddQuotes(AddBackslash(ExpandConstant('{app}')) + '.'),
-      ExpandConstant('{tmp}'), SW_SHOWNORMAL, ewWaitUntilTerminated, ResultCode, nil) then
+      ExpandConstant('{tmp}'), SW_HIDE, ewWaitUntilTerminated, ResultCode, nil) then
       Result := 'Could not start BOFT CLI installation preparation: ' + SysErrorMessage(ResultCode)
     else if ResultCode <> 0 then begin
       Log(Format('BOFT CLI installation preparation failed with exit code %d', [ResultCode]));
