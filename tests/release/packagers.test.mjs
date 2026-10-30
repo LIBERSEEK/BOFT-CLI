@@ -144,11 +144,20 @@ describe("platform packagers", () => {
       "'prepare-install --install-root ' + AddQuotes(AddBackslash(ExpandConstant('{app}')) + '.')",
     );
     expect(code).toContain("ExecAndLogOutput(");
-    expect(code).toContain("ewWaitUntilTerminated, ResultCode, nil");
+    expect(code).toContain("SW_HIDE, ewWaitUntilTerminated, ResultCode, nil");
     expect(code).toContain("else if ResultCode <> 0 then begin");
     expect(code).toContain("Could not close BOFT CLI");
     expect(installer).not.toMatch(/CloseApplications\s*=\s*no/i);
     expect(installer).not.toMatch(/taskkill|powershell|\[Run\]/i);
+  });
+
+  it("statically links the MSVC runtime so Windows executables need no VC++ Redistributable", async () => {
+    const config = await readFile(path.join(root, ".cargo/config.toml"), "utf8");
+    for (const target of ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"]) {
+      expect(config).toContain(
+        `[target.${target}]\nrustflags = ["-C", "target-feature=+crt-static"]`,
+      );
+    }
   });
 
   it("builds a standard Inno Setup installer for both Windows architectures", async () => {
