@@ -364,6 +364,8 @@ export {
   type DelegationMentionRewrite,
 } from "./delegation-mention.js";
 
+export { desktopImageAttachmentPaths } from "./desktop-attachments.js";
+
 export {
   REMOTE_SSH_SETUP_METHOD,
   remoteSshSetupParamsSchema,
