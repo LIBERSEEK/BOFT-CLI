@@ -4,15 +4,17 @@ codexhost keeps the Desktop's main app-server on the Host Runtime while routing
 private native-tool app-servers to the official CLI. Tool policy, authentication,
 and approvals remain owned by the official CLI and Desktop.
 
-The official CLI stays inside the Desktop bundle. Current Desktop builds place
-the Mach-O at `Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex`.
-`Contents/Resources/codex-cli/codex-package.json` declares layout version 1 and
-entrypoint `bin/codex`; that entrypoint is the wrapper which executes the Mach-O.
-Earlier builds keep the Mach-O at `Contents/Resources/codex`. Discovery uses the
-packaged Mach-O when that manifest is present, and the earlier path when the
-manifest is absent. The Shim executes that resolved Mach-O. Helper detection
-walks from it to the Desktop bundle that owns the same path, including when a
-nested `CodexCLI.app` sits between the CLI and Desktop.
+When the selected Desktop bundles `Contents/Resources/cua_node/bin/node`, the
+Launcher uses that signed Node for the Host and Desktop Controller by default.
+The Desktop authenticates the native-tool peer, its parent and its grandparent;
+an ad-hoc-signed Host Node breaks that chain even when the tool itself uses the
+official runtime. The Launcher resolves the Node from the selected Desktop on
+each start. An explicit `--node` still takes precedence. The npm wrapper leaves
+the automatic choice to the Launcher instead of overriding it with its own Node;
+older Desktops without a bundled runtime keep the installer Node or npm Node.
+The Desktop's peer authorization remains enabled and rejects untrusted runtimes.
+The recovery console starts before Desktop discovery and uses the explicit Node
+override, installer Node, or npm Node so it can report an incomplete installation.
 
 Three independent macOS helper paths need different handling:
 
