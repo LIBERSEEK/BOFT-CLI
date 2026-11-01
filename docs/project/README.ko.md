@@ -25,9 +25,12 @@
   <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/Grok-000000?logo=x&logoColor=white" /></a>
   <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="../imgs/badge-omp-v5.svg" /></a><br />
   <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek_Harness-4D6BFE?logo=deepseek&logoColor=white" /></a>
+  <a href="https://github.com/QwenLM/qwen-code"><img alt="Qwen Code" src="https://img.shields.io/badge/Qwen_Code-6950EF?logo=qwen&logoColor=white" /></a>
+  <a href="https://docs.devin.ai/cli"><img alt="Devin" src="../imgs/badge-devin.svg" /></a>
   <a href="https://antigravity.google/product/antigravity-cli"><img alt="AGY" src="../imgs/badge-agy.svg" /></a>
   <a href="https://kiro.dev/docs/cli/"><img alt="Kiro CLI" src="../imgs/badge-kiro.svg" /></a>
   <a href="https://www.codebuddy.cn/home/"><img alt="CodeBuddy" src="../imgs/badge-codebuddy.svg" /></a>
+  <a href="https://www.workbuddy.ai/docs/workbuddy/Quickstart"><img alt="WorkBuddy" src="../imgs/badge-workbuddy.svg" /></a>
   <a href="https://cursor.com/docs/cli/overview"><img alt="Cursor" src="../imgs/badge-cursor.svg" /></a>
   <a href="https://hermes-agent.nousresearch.com/docs"><img alt="Hermes" src="../imgs/badge-hermes.svg" /></a>
 </p>
@@ -167,7 +170,7 @@ Codex Desktop을 완전히 종료한 뒤, 새 터미널을 열고 `boft`를 실�
 
 ## 기능 상태
 
-**CodeBuddy(실험적):** 네이티브 ACP를 사용하며, 실제 작업을 실행하는 컴퓨터에 [CodeBuddy CLI](https://www.codebuddy.ai/docs/zh/cli/overview)를 설치하고 로그인해야 합니다. BOFT CLI에는 플러그인만 포함되며 CLI는 포함되지 않습니다. CodeBuddy App만 설치해서는 CLI를 대체할 수 없습니다.
+각 Harness는 자체 기능에 따라 Codex Desktop 네이티브 UI와 통합됩니다. 아래 매트릭스를 참고하세요. **CodeBuddy(실험적):** 네이티브 ACP를 사용하며, 실제 작업을 실행하는 컴퓨터에 [CodeBuddy CLI](https://www.codebuddy.ai/docs/zh/cli/overview)를 설치하고 로그인해야 합니다. BOFT CLI에는 플러그인만 포함되며 CLI는 포함되지 않습니다. CodeBuddy App만 설치해서는 CLI를 대체할 수 없습니다.
 
 | 기능 | <a href="https://openai.com/codex/"><img alt="Codex" src="../imgs/harness-icon-codex.svg" /></a> | <a href="https://pi.dev/"><img alt="Pi" src="https://img.shields.io/badge/-000000?logo=pi&logoColor=white" /></a> | <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="../imgs/harness-icon-omp-v5.svg" /></a> | <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/-D97757?logo=claudecode&logoColor=white" /></a> | <a href="https://opencode.ai/docs/"><img alt="OpenCode" src="../imgs/harness-icon-opencode.svg" /></a> | <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/-000000?logo=x&logoColor=white" /></a> | <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/-4D6BFE?logo=deepseek&logoColor=white" /></a> | <a href="https://antigravity.google/product/antigravity-cli"><img alt="AGY" src="../imgs/harness-icon-agy.svg" /></a> | <a href="https://www.codebuddy.cn/home/"><img alt="CodeBuddy" src="../imgs/harness-icon-codebuddy.svg" /></a> | <a href="https://cursor.com/docs/cli/overview"><img alt="Cursor" src="../imgs/harness-icon-cursor.svg" /></a> | <a href="https://hermes-agent.nousresearch.com/docs"><img alt="Hermes" src="../imgs/harness-icon-hermes.svg" /></a> |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -186,6 +189,23 @@ Codex Desktop을 완전히 종료한 뒤, 새 터미널을 열고 `boft`를 실�
 | 이전 메시지 수정 | 기본 제공 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | — | — |
 
 > **Antigravity:**¹ **Skip permissions(위험)**만 제공하며 네이티브 `--dangerously-skip-permissions`를 사용합니다. BOFT CLI는 도구 승인, 권한 규칙, 작업 영역 읽기/쓰기 제한을 추가하지 않으므로 신뢰할 수 있는 환경에서만 사용하세요. 이전 Configured permissions / Desktop approvals는 더 이상 지원되지 않으며 Skip permissions를 명시적으로 선택해야 합니다. 질문은 단일 선택과 텍스트를 지원하고, 하위 Agent는 네이티브 카드와 읽기 전용 기록을 지원합니다. 자세한 내용은 [권한 설명](../harnesses/antigravity/antigravity-tool-approval.md)과 [하위 Agent 설명](../harnesses/antigravity/antigravity-subagents.md)을 참고하세요.
+| 기능 | <a href="https://pi.dev/"><img alt="Pi" src="https://img.shields.io/badge/-000000?logo=pi&logoColor=white" /></a> | <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="../imgs/harness-icon-omp-v5.svg" /></a> | <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/-D97757?logo=claudecode&logoColor=white" /></a> | <a href="https://opencode.ai/docs/"><img alt="OpenCode" src="../imgs/harness-icon-opencode.svg" /></a> | <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/-000000?logo=x&logoColor=white" /></a> | <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/-4D6BFE?logo=deepseek&logoColor=white" /></a> | <a href="https://antigravity.google/product/antigravity-cli"><img alt="AGY" src="../imgs/harness-icon-agy.svg" /></a> | <a href="https://www.codebuddy.cn/home/"><img alt="CodeBuddy" src="../imgs/harness-icon-codebuddy.svg" width="24" height="24" /></a> | <a href="https://www.workbuddy.ai/docs/workbuddy/Quickstart"><img alt="WorkBuddy" src="../../packages/adapters/workbuddy/assets/icon.svg" width="24" height="24" /></a> | <a href="https://cursor.com/docs/cli/overview"><img alt="Cursor" src="../imgs/harness-icon-cursor.svg" /></a> | <a href="https://hermes-agent.nousresearch.com/docs"><img alt="Hermes" src="../imgs/harness-icon-hermes.svg" /></a> | <a href="https://qoder.com/cli"><img alt="Qoder" src="../../packages/adapters/qoder/assets/icon.svg" width="28" height="28" /></a> | <a href="https://github.com/QwenLM/qwen-code"><img alt="Qwen Code" src="../../packages/adapters/qwen-code/assets/icon.svg" width="28" height="28" /></a> | <a href="../harnesses/devin/devin-cli-acp-integration.md"><img alt="Devin" src="../../packages/adapters/devin/assets/icon.svg" width="28" height="28" /></a> |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| 스트리밍 응답 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 도구 상태 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Edit Diff | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ |
+| 질문 / 취소 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — / ✅ |
+| Model / Thinking 선택 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ / — | ✅ / ◐ |
+| 도구 승인 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 권한 모드 | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Agent 간 작업 협업 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ | ✅ | ✅ | ◐ |
+| Usage | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ | ✅ | — |
+| Fork | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ◐ |
+| 컨텍스트 압축 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ | — | ✅ | ✅ | — | — |
+| 슬래시 명령 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | — |
+| 이전 메시지 수정 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ◐ |
+
+Devin: ◐는 조건부 지원 또는 네이티브 검증 대기를 뜻합니다. Thinking은 네이티브 선택 옵션이 있어야 하며, Fork와 메시지 수정은 revert 확장 협상에 성공한 경우 동일한 작업 공간에서만 지원됩니다. 위임 수신은 구현되어 있지만 전체 위임 흐름은 아직 검증되지 않았습니다. Thinking과 기록 작업은 인증된 실제 CLI 검증이 필요합니다. [통합 문서](../harnesses/devin/devin-cli-acp-integration.md)를 참고하세요.
 
 > **CodeBuddy:** 여러 Turn, 쓰기 가능한 Session 복원, 취소 후 대화 계속하기, 네이티브 하위 Agent 카드와 읽기 전용 기록을 지원하며 백그라운드 하위 Agent 관찰도 포함됩니다. Model, Thinking 및 권한 옵션은 CLI의 네이티브 카탈로그를 따릅니다.
 >
