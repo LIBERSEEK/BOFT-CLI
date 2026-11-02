@@ -1288,7 +1288,8 @@ export function installRendererBindingProbe(
         if (!isCurrent() || result.harnessId !== agent) return;
         mounted.accountCredits = result.account?.credits ?? null;
       }
-      if (agent === "codex") mounted.accountCredits = composerAccountCredits(mounted.accountCredits);
+      if (agent === "codex")
+        mounted.accountCredits = composerAccountCredits(mounted.accountCredits);
       mounted.draftUsageClient = client;
       renderMounted(mounted);
     } catch {
