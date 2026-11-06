@@ -138,7 +138,10 @@ const { outputFiles } = await build({
           select: () => true,
           clear: () => request(owner, "clear", () => undefined),
         };
-        window.__codexhostHostRoutingV1 = { forComposer: () => routeReady ? { hostId: owner, policy } : null };
+        window.__codexhostHostRoutingV1 = {
+          forComposer: () => routeReady ? { hostId: owner, policy } : null,
+          forHost: (host) => routeReady && host === owner ? { hostId: owner, policy } : null,
+        };
       };
       installPolicy();
       const composer = document.createElement("form");
@@ -241,7 +244,7 @@ const { outputFiles } = await build({
   format: "iife",
   platform: "browser",
   target: "es2024",
-  loader: { ".css": "text", ".png": "dataurl", ".svg": "dataurl" },
+  loader: { ".css": "text", ".png": "dataurl", ".svg": "dataurl", ".mp4": "dataurl" },
   plugins: [tailwindEsbuildPlugin()],
   write: false,
 });
@@ -288,24 +291,36 @@ async function calls(page: Page): Promise<Array<{ host: string; method: string }
   return page.evaluate(() => Reflect.get(globalThis, "accountsFixture").calls);
 }
 
-test("Usage stays hidden without token data when the current Account or Host changes", async ({
+test("Usage keeps the BOFT Account identity scoped to the current Host without token data", async ({
   page,
 }) => {
   await setup(page);
   const usage = page.locator("[data-codexhost-usage-control]");
   const details = page.getByRole("dialog", { name: "Thread Usage details" });
-  await expect(usage).toBeHidden();
-  await expect(details).toBeHidden();
+  await expect(usage).toHaveText("Usage");
+  await usage.hover();
+  await expect(details).toContainText("local-default@example.com");
+  await expect(details).not.toContainText("Tokens");
+  await page.keyboard.press("Escape");
+  await page.mouse.move(0, 0);
   await selectOtherAccount(page);
   await expect(page.locator(trigger)).toHaveAttribute("title", /local-other@example.com/);
-  await expect(usage).toBeHidden();
+  await usage.hover();
+  await expect(details).toContainText("local-other@example.com");
+  await expect(details).not.toContainText("local-default@example.com");
+  await page.keyboard.press("Escape");
+  await page.mouse.move(0, 0);
   await action(page, "switchHost", "remote");
   await expect(page.locator(trigger)).toHaveAttribute("title", /remote-default/);
-  await expect(usage).toBeHidden();
-  await expect(details).toBeHidden();
+  await usage.hover();
+  await expect(details).toContainText("remote-default@example.com");
+  await expect(details).not.toContainText("local-other@example.com");
+  await expect(details).not.toContainText("Tokens");
 });
 
-test("Usage displays native token data without the current Account identity", async ({ page }) => {
+test("Usage displays native token data with the BOFT Account identity for the current Host", async ({
+  page,
+}) => {
   await setup(page, { boundThread: true, withUsage: true });
   const usage = page.locator("[data-codexhost-usage-control]");
   const details = page.getByRole("dialog", { name: "Thread Usage details" });
@@ -313,11 +328,11 @@ test("Usage displays native token data without the current Account identity", as
   await usage.hover();
   await expect(details).toBeVisible();
   await expect(details).toContainText("Input / output10K / 2.3K");
-  await expect(details).not.toContainText("Account");
-  await expect(details).not.toContainText("@example.com");
+  await expect(details).toContainText("Accountlocal-default@example.com");
   await selectOtherAccount(page);
   await expect(page.locator(trigger)).toHaveAttribute("title", /local-other@example.com/);
-  await expect(details).not.toContainText("@example.com");
+  await expect(details).toContainText("local-other@example.com");
+  await expect(details).not.toContainText("local-default@example.com");
   await page.keyboard.press("Escape");
   await page.mouse.move(0, 0);
   await action(page, "switchHost", "remote");
@@ -326,8 +341,8 @@ test("Usage displays native token data without the current Account identity", as
   await usage.hover();
   await expect(details).toBeVisible();
   await expect(details).toContainText("Total12.3K");
-  await expect(details).not.toContainText("Account");
-  await expect(details).not.toContainText("@example.com");
+  await expect(details).toContainText("Accountremote-default@example.com");
+  await expect(details).not.toContainText("local-other@example.com");
 });
 
 async function waitForPending(page: Page, key: string): Promise<void> {
