@@ -426,6 +426,7 @@ npm start
 ```
 
 使用 `npm start 0.7.8` 可以为当前源码指定运行版本，也接受 `0.7.9-rc.1` 等预发布版本。Host 状态、控制台和更新检查会使用该版本；未指定时仍为 `<workspace-version>-dev`。构建一次后，可用 `npm start 0.7.8 -- --no-build` 复用产物。版本覆盖仅对本次启动生效，不修改版本文件或发布包。源码安装仍不支持自更新；远程 npm 安装会下载对应版本的已发布包。
+如果网络无法访问 `download.qoder.com`（Qoder CN：`static.qoder.com.cn`），Qoder SDK 的 `postinstall` 运行时下载可能导致 `npm ci` 失败。可改用 `QODER_SKIP_DOWNLOAD=1 npm ci`（PowerShell：`$env:QODER_SKIP_DOWNLOAD=1; npm ci`）。BOFT CLI 会启动本机已安装的 CLI（Qoder 使用 `qodercli`，Qoder CN 使用 `qoderclicn`），不依赖 SDK 附带的运行时；使用哪个 Harness，就需要在对应机器安装其 CLI。
 
 ### 运行架构
 

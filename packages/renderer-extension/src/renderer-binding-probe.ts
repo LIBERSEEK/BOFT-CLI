@@ -807,7 +807,8 @@ export function installRendererBindingProbe(
   let modelControl: RendererModelClient | null = null;
   const activeModelHostId = (composer?: Element): string | null => {
     if (!modelControl) return null;
-    return modelControl.currentHostId ? modelControl.currentHostId(composer) : "local";
+    const hostId = modelControl.currentHostId ? modelControl.currentHostId(composer) : "local";
+    return hostId === "durable" ? null : hostId;
   };
   const controllerTarget = (target: readonly unknown[] | null, hostId: string | null) =>
     scopedComposerTarget(target, hostId);
@@ -845,6 +846,7 @@ export function installRendererBindingProbe(
   const sidebarAgentIcons = installRendererSidebarAgentIcons({
     getClient: (hostId) => modelClientForHost(hostId),
     getPlugins: (hostId) => {
+      if (hostId === "durable") return undefined;
       const state = hostHarnessAvailabilityState(hostId);
       const client = modelClientForHost(hostId);
       // Sidebar ownership is enough to discover this Host's artwork; opening a Composer
@@ -928,6 +930,7 @@ export function installRendererBindingProbe(
     retryAttempt: 0,
   });
   const harnessAvailabilityByHost = new Map<string, HostHarnessAvailabilityState>();
+  const codexAccountLoads = new WeakMap<RendererCodexAccountState, Promise<void>>();
   const hostHarnessAvailabilityState = (hostId: string): HostHarnessAvailabilityState => {
     let state = harnessAvailabilityByHost.get(hostId);
     if (!state) {
@@ -2340,21 +2343,31 @@ export function installRendererBindingProbe(
     }
   };
 
-  const loadCodexAccounts = async (): Promise<void> => {
-    const hostIds = new Set([...mountedByComposer.values()].map((mounted) => mounted.hostId));
-    await Promise.all(
-      [...hostIds].map(async (hostId) => {
-        const accounts = codexAccountsForHost(hostId);
-        if (!accounts) return;
-        await accounts.refresh();
+  const loadCodexAccountsForHost = (hostId: string | null): Promise<void> => {
+    const accounts = codexAccountsForHost(hostId);
+    if (!accounts) return Promise.resolve();
+    const pending = codexAccountLoads.get(accounts);
+    if (pending) return pending;
+    const request = accounts
+      .refresh()
+      .then(() => {
         if (disposed || codexAccountsForHost(hostId) !== accounts) return;
         for (const mounted of mountedByComposer.values()) {
           if (mounted.hostId !== hostId) continue;
           renderMounted(mounted);
           if (controller.get(mounted.composer).agent === "codex") void refreshDraftUsage(mounted);
         }
-      }),
-    );
+      })
+      .finally(() => {
+        if (codexAccountLoads.get(accounts) === request) codexAccountLoads.delete(accounts);
+      });
+    codexAccountLoads.set(accounts, request);
+    return request;
+  };
+
+  const loadCodexAccounts = async (): Promise<void> => {
+    const hostIds = new Set([...mountedByComposer.values()].map((mounted) => mounted.hostId));
+    await Promise.all([...hostIds].map(loadCodexAccountsForHost));
   };
 
   function resetHarnessAvailabilityRetry(hostId: string): void {
@@ -2387,7 +2400,7 @@ export function installRendererBindingProbe(
     control: RendererModelClient | null,
     hostId: string | null,
   ): RendererModelClient | null {
-    if (!control || !hostId) return null;
+    if (!control || !hostId || hostId === "durable") return null;
     if (control.clientForHost) return control.clientForHost(hostId);
     // Only legacy controls without Host identity are local. An explicit null
     // means unresolved ownership, never permission to send a local request.
@@ -2405,6 +2418,7 @@ export function installRendererBindingProbe(
     retry = false,
     force = false,
   ): Promise<void> {
+    if (hostId === "durable") return Promise.resolve();
     const state = hostHarnessAvailabilityState(hostId);
     if (!retry) resetHarnessAvailabilityRetry(hostId);
     const client = modelClientForHost(hostId);
@@ -2612,7 +2626,8 @@ export function installRendererBindingProbe(
           void clearDraftPrewarm(mounted.composer).catch(() => undefined);
         }
         void loadExternalCatalog(mounted);
-        void refreshDraftUsage(mounted);
+        if (state.agent === "codex") void loadCodexAccountsForHost(hostId);
+        else void refreshDraftUsage(mounted);
         continue;
       }
       const target = controllerTarget(mounted.modelTarget, hostId);
@@ -2646,24 +2661,26 @@ export function installRendererBindingProbe(
     // Settings lists observed Hosts even when multiple Composers make the
     // active route ambiguous. Requests still resolve each Host independently.
     for (const hostId of modelControl?.knownHostIds?.() ?? []) {
-      hostHarnessAvailabilityState(hostId);
+      if (hostId !== "durable") hostHarnessAvailabilityState(hostId);
     }
     // Hidden/native Composers can belong to a different Host. Never rebind
     // every Thread to the globally selected Host when navigating between them.
     reloadMountedOwnershipForHost();
-    // Draft quota reads also recover when the Host has no usage notification channel.
+    // Draft quota follows the concrete client, including connections without notifications.
     for (const mounted of mountedByComposer.values()) {
       const client = composerClient(mounted);
       const request = draftUsageRequests.get(mounted);
+      const state = controller.get(mounted.composer);
       if (
-        controller.get(mounted.composer).agent !== "codex" &&
+        state.phase === "draft" &&
         mounted.draftUsageClient !== client &&
         (!request ||
           request.client !== client ||
           request.generation !== mounted.usageRequestGeneration ||
           (retryDraftUsage && !request.pending))
       ) {
-        void refreshDraftUsage(mounted);
+        if (state.agent === "codex") void loadCodexAccountsForHost(mounted.hostId);
+        else void refreshDraftUsage(mounted);
       }
     }
     let connectionsChanged = false;
@@ -2693,6 +2710,7 @@ export function installRendererBindingProbe(
     const hostId = activeModelHostId();
     if (
       !hostId ||
+      hostId === "durable" ||
       (hostId === activeAvailabilityHostId &&
         [...mountedByComposer.values()].every((mounted) => mounted.hostId !== null))
     )
@@ -2710,7 +2728,7 @@ export function installRendererBindingProbe(
     reconcileHarnessAvailabilityHost();
     const hostIds = new Set([activeAvailabilityHostId]);
     for (const mounted of mountedByComposer.values()) {
-      if (mounted.hostId) hostIds.add(mounted.hostId);
+      if (mounted.hostId && mounted.hostId !== "durable") hostIds.add(mounted.hostId);
     }
     await Promise.all(
       [...hostIds].map((hostId) => refreshHarnessAvailabilityForHost(hostId, refresh)),
@@ -2721,7 +2739,9 @@ export function installRendererBindingProbe(
     snapshot(): RendererConnectionSnapshot {
       const hostIds = [
         "local",
-        ...[...harnessAvailabilityByHost.keys()].filter((hostId) => hostId !== "local").sort(),
+        ...[...harnessAvailabilityByHost.keys()]
+          .filter((hostId) => hostId !== "local" && hostId !== "durable")
+          .sort(),
       ];
       return {
         adapter: { ...adapterStatus },
@@ -2744,6 +2764,7 @@ export function installRendererBindingProbe(
     },
     refresh(hostId?: string): Promise<void> {
       if (hostId !== undefined) {
+        if (hostId === "durable") return Promise.resolve();
         return refreshConnectionHosts(
           [hostId],
           (target) => refreshHarnessAvailabilityForHost(target, true, false, true),
@@ -2751,8 +2772,9 @@ export function installRendererBindingProbe(
         );
       }
       reconcileHarnessAvailabilityHost();
-      return refreshConnectionHosts(harnessAvailabilityByHost.keys(), (target) =>
-        refreshHarnessAvailabilityForHost(target, true, false, true),
+      return refreshConnectionHosts(
+        [...harnessAvailabilityByHost.keys()].filter((target) => target !== "durable"),
+        (target) => refreshHarnessAvailabilityForHost(target, true, false, true),
       );
     },
     async installation(hostId, agent, action) {
@@ -2941,7 +2963,10 @@ export function installRendererBindingProbe(
     ) {
       void loadExternalCatalog(mounted);
     }
-    if (!threadIdFromComposerModelTarget(modelTarget)) void refreshDraftUsage(mounted);
+    if (!threadIdFromComposerModelTarget(modelTarget)) {
+      if (state.agent === "codex") void loadCodexAccountsForHost(mounted.hostId);
+      else void refreshDraftUsage(mounted);
+    }
     void refreshCommands(mounted);
   };
 
@@ -3409,7 +3434,18 @@ export function installRendererBindingProbe(
   const api: RendererBindingProbeApi = {
     remoteConnections: (request) => handleRemoteConnectionsRequest(remoteConnections, request),
     currentThreadId() {
-      const mounted = connectedComposers();
+      // The app routinely keeps several composer roots connected (hidden leftovers included), so
+      // counting connected roots alone never yields exactly one. Pick the single visible root —
+      // the conversation the user is looking at; fall back to a single connected root so the
+      // one-composer layout behaves exactly as before.
+      const connected = connectedComposers();
+      const visible = connected.filter(
+        (mounted) =>
+          mounted.composer.getClientRects().length > 0 &&
+          window.getComputedStyle(mounted.composer).visibility === "visible" &&
+          !mounted.composer.closest('[hidden], [inert], [aria-hidden="true"]'),
+      );
+      const mounted = visible.length === 1 ? visible : connected.length === 1 ? connected : [];
       return mounted.length === 1 && mounted[0]
         ? (threadIdFromComposerModelTarget(mounted[0].modelTarget) ?? null)
         : null;

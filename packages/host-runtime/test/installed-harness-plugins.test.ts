@@ -124,6 +124,7 @@ describe("installed Harness composition", () => {
         "/boost",
         "/learn",
         "/schedule",
+        "/compact",
         "/help",
       ],
       hermes: ["/help", "/tools", "/context", "/version", "/compress"],
