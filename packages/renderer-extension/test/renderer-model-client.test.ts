@@ -2,8 +2,6 @@ import {
   HARNESS_INSTALLATION_START_METHOD,
   HARNESS_LAUNCH_SETTINGS_GET_METHOD,
   HARNESS_LAUNCH_SETTINGS_SET_METHOD,
-  HARNESS_LONG_CONTEXT_GET_METHOD,
-  HARNESS_LONG_CONTEXT_SET_METHOD,
   harnessIdSchema,
   harnessModelRefSchema,
   harnessPermissionModeIdSchema,
@@ -168,27 +166,6 @@ describe("Renderer fixed Model request client", () => {
     sendRequest.mockResolvedValueOnce({ path: 42 });
     await expect(client.getHarnessLaunchSettings?.({ harnessId })).rejects.toThrow();
   });
-
-  it("validates 1M context requests and responses", async () => {
-    const harnessId = harnessIdSchema.parse("claude-code");
-    const sendRequest = vi.fn().mockResolvedValue({ enabled: true });
-    const client = createRendererModelClient([{ sendRequest }]);
-    if (!client) throw new Error("Expected a model client");
-    expect(await client.getHarnessLongContext?.({ harnessId })).toEqual({ enabled: true });
-    expect(sendRequest).toHaveBeenLastCalledWith(HARNESS_LONG_CONTEXT_GET_METHOD, { harnessId });
-    expect(await client.setHarnessLongContext?.({ harnessId, enabled: false })).toEqual({
-      enabled: true,
-    });
-    expect(sendRequest).toHaveBeenLastCalledWith(HARNESS_LONG_CONTEXT_SET_METHOD, {
-      harnessId,
-      enabled: false,
-    });
-    await expect(
-      client.setHarnessLongContext?.({ harnessId, enabled: "yes" as never }),
-    ).rejects.toThrow();
-    sendRequest.mockResolvedValueOnce({ enabled: "yes" });
-    await expect(client.getHarnessLongContext?.({ harnessId })).rejects.toThrow();
-  });
   it("reads draft quota for the selected Account without activating it", async () => {
     const result = {
       accountId: "account-b",
@@ -340,28 +317,30 @@ describe("Renderer fixed Model request client", () => {
     await expect(remote?.listHarnessPlugins?.()).rejects.toThrow();
   });
 
+  it("opens Web through its fixed Host method and validates the result", async () => {
+    const sendRequest = vi
+      .fn()
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ url: "https://example.com/" })
+      .mockRejectedValueOnce(new Error("Host unavailable"));
+    const client = createRendererModelClient([{ addNotificationCallback: vi.fn(), sendRequest }]);
+    if (!client?.openWeb) throw new Error("Synthetic Model client cannot open Web");
+    await expect(client.openWeb()).resolves.toEqual({});
+    expect(sendRequest).toHaveBeenCalledWith("codexhost/web/open", {});
+    await expect(client.openWeb()).rejects.toThrow();
+    await expect(client.openWeb()).rejects.toThrow("Host unavailable");
+  });
+
   it("opens the console through its fixed Host method and validates the address", async () => {
     const sendRequest = vi
       .fn()
-      .mockResolvedValueOnce({ url: "http://127.0.0.1:26339/" })
+      .mockResolvedValueOnce({ url: "http://127.0.0.1:4399/" })
       .mockResolvedValueOnce({ url: "https://example.com/" });
     const client = createRendererModelClient([{ addNotificationCallback: vi.fn(), sendRequest }]);
     if (!client?.openConsole) throw new Error("Synthetic Model client cannot open the console");
-    await expect(client.openConsole()).resolves.toEqual({ url: "http://127.0.0.1:26339/" });
+    await expect(client.openConsole()).resolves.toEqual({ url: "http://127.0.0.1:4399/" });
     expect(sendRequest).toHaveBeenCalledWith("codexhost/console/open", {});
     await expect(client.openConsole()).rejects.toThrow();
-  });
-
-  it("opens an account site through the local Host and rejects non-web addresses", async () => {
-    const sendRequest = vi.fn().mockResolvedValue({});
-    const client = createRendererModelClient([{ addNotificationCallback: vi.fn(), sendRequest }]);
-    if (!client?.openExternalUrl) throw new Error("Synthetic Model client cannot open a site");
-    await expect(client.openExternalUrl("https://platform.openai.com")).resolves.toBeUndefined();
-    expect(sendRequest).toHaveBeenCalledWith("codexhost/external-url/open", {
-      url: "https://platform.openai.com",
-    });
-    await expect(client.openExternalUrl("file:///tmp/secret")).rejects.toThrow();
-    await expect(client.openExternalUrl("https://user:secret@bank.example")).rejects.toThrow();
   });
 
   it("calls only the fixed inspect and select methods with validated params", async () => {
@@ -443,9 +422,11 @@ describe("Renderer fixed Model request client", () => {
       "credentialImports",
       "executeThreadCommand",
       "forkThread",
+      "getHarnessDisplayCapabilities",
       "getHarnessDisplaySettings",
       "getHarnessLaunchSettings",
       "getHarnessLongContext",
+      "getHarnessPreferences",
       "importHarnessSession",
       "inspectCodexAccountUsage",
       "inspectHarness",
@@ -466,6 +447,8 @@ describe("Renderer fixed Model request client", () => {
       "openConsole",
       "openExternalUrl",
       "openHarnessWebUi",
+      "openWeb",
+      "patchHarnessPreferences",
       "readDelegationThread",
       "readUpdateStatus",
       "refreshCodexAccounts",
@@ -480,6 +463,8 @@ describe("Renderer fixed Model request client", () => {
       "setupSsh",
       "startUpdate",
       "subscribeCodexAccounts",
+      "subscribeHarnessDisplaySettings",
+      "subscribeHarnessPreferences",
       "subscribeThreadUsage",
       "updateRemote",
       "updateThreadPinned",

@@ -293,7 +293,7 @@ const CHINESE: ConsoleMessages = {
     reading: "正在读取本地会话 {read}/{sources}…",
     readingStart: "正在读取本地会话…",
     failed: "无法读取 {harness}：{message}",
-    restartHost: "正在运行的 Host 与控制台版本不一致，请重启 codexhost 后再查看用量统计。",
+    restartHost: "正在运行的 Host 与控制台版本不一致，请重启 BOFT CLI 后再查看用量统计。",
     empty: "该时间范围内没有用量。",
     loading: "正在加载…",
     cost: "费用",

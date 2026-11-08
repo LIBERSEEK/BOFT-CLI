@@ -7,6 +7,12 @@ import {
 export const SETTINGS_TRIGGER_ATTRIBUTE = "data-codexhost-settings-trigger";
 const SETTINGS_HEADER_SELECTOR = 'header[data-pip-obstacle="app-shell-header"]';
 const SETTINGS_HEADER_TOOLBAR_SELECTOR = '[data-app-shell-header-toolbar="true"]';
+const SETTINGS_RAIL_SELECTOR = "nav[data-app-navigation-rail]";
+const SETTINGS_RAIL_DESTINATION_SELECTOR = "[data-sidebar-destination]";
+const RAIL_ICON_COLOR = "var(--color-text-secondary-ghost, rgba(26, 28, 31, 0.5))";
+const RAIL_ICON_HOVER_COLOR = "var(--color-text-secondary-ghost-hover, #1a1c1f)";
+const RAIL_ICON_HOVER_BACKGROUND =
+  "var(--color-background-secondary-ghost-hover, rgba(26, 28, 31, 0.05))";
 
 export interface RendererSettingsTriggerControl {
   root: HTMLElement;
@@ -25,16 +31,30 @@ export interface RendererSettingsHeaderTriggerControl {
   dispose(): void;
 }
 
+export interface RendererSettingsRailTriggerControl {
+  readonly root: HTMLElement | null;
+  refresh(): boolean;
+  setUpdateAvailable(available: boolean): void;
+  setSelected(selected: boolean): void;
+  dispose(): void;
+}
+
 interface RendererSettingsHeaderInsertionPoint {
   parent: HTMLElement;
   before: ChildNode | null;
 }
 
-export interface RendererSettingsContractInspection {
-  headerCount: number;
-  visibleHeaderCount: number;
-  insertionPointCount: number;
-}
+export type RendererSettingsContractInspection =
+  | {
+      railCount: number;
+      visibleRailCount: number;
+      insertionPointCount: number;
+    }
+  | {
+      headerCount: number;
+      visibleHeaderCount: number;
+      insertionPointCount: number;
+    };
 
 function isVisible(element: Element): boolean {
   const bounds = element.getBoundingClientRect();
@@ -112,6 +132,16 @@ function findRendererSettingsHeaderInsertionPoint(
 export function inspectRendererSettingsContract(
   ownerDocument: Document = document,
 ): RendererSettingsContractInspection {
+  const rails = [...ownerDocument.querySelectorAll<HTMLElement>(SETTINGS_RAIL_SELECTOR)];
+  if (rails.length > 0) {
+    const visibleRails = rails.filter(isVisible);
+    return {
+      railCount: rails.length,
+      visibleRailCount: visibleRails.length,
+      insertionPointCount: visibleRails.filter((rail) => findRailInsertionPoint(rail) !== null)
+        .length,
+    };
+  }
   const headers = [...ownerDocument.querySelectorAll<HTMLElement>(SETTINGS_HEADER_SELECTOR)];
   const visibleHeaders = headers.filter(isVisible);
   return {
@@ -119,6 +149,81 @@ export function inspectRendererSettingsContract(
     visibleHeaderCount: visibleHeaders.length,
     insertionPointCount: visibleHeaders.filter((header) => findRightActionCluster(header) !== null)
       .length,
+  };
+}
+
+function hasRailDestination(element: Element): boolean {
+  return (
+    element.matches(SETTINGS_RAIL_DESTINATION_SELECTOR) ||
+    element.querySelector(SETTINGS_RAIL_DESTINATION_SELECTOR) !== null
+  );
+}
+
+function findRailInsertionPoint(rail: HTMLElement): { parent: HTMLElement } | null {
+  const column = [...rail.children].find(hasRailDestination) as HTMLElement | undefined;
+  return column ? { parent: column } : null;
+}
+
+export function installRendererSettingsRailTrigger(options: {
+  available: boolean;
+  onOpen(opener: HTMLButtonElement, pageId?: "updates"): void;
+  messages?: RendererSettingsMessages;
+  ownerDocument?: Document;
+}): RendererSettingsRailTriggerControl {
+  const ownerDocument = options.ownerDocument ?? document;
+  let trigger: RendererSettingsTriggerControl | null = null;
+  let updateAvailable = false;
+  let selected = false;
+  let disposed = false;
+
+  const refresh = (): boolean => {
+    if (disposed) return false;
+    const rail = ownerDocument.querySelector<HTMLElement>(SETTINGS_RAIL_SELECTOR);
+    const insertionPoint = rail && isVisible(rail) ? findRailInsertionPoint(rail) : null;
+    if (!insertionPoint) {
+      trigger?.root.remove();
+      return false;
+    }
+    if (!trigger) {
+      for (const duplicate of ownerDocument.querySelectorAll(`[${SETTINGS_TRIGGER_ATTRIBUTE}]`)) {
+        duplicate.remove();
+      }
+      trigger = mountRendererSettingsTrigger(
+        "navigation-rail",
+        options.available,
+        options.onOpen,
+        ownerDocument,
+        options.messages,
+      );
+      trigger.setUpdateAvailable(updateAvailable);
+      trigger.setSelected(selected);
+    }
+    if (trigger.root.parentElement !== insertionPoint.parent || trigger.root.nextSibling !== null) {
+      insertionPoint.parent.append(trigger.root);
+    }
+    return true;
+  };
+
+  refresh();
+  return {
+    get root() {
+      return trigger?.root ?? null;
+    },
+    refresh,
+    setUpdateAvailable(available) {
+      updateAvailable = available;
+      trigger?.setUpdateAvailable(available);
+    },
+    setSelected(next) {
+      selected = next;
+      trigger?.setSelected(next);
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      trigger?.dispose();
+      trigger = null;
+    },
   };
 }
 
@@ -162,20 +267,21 @@ export function mountRendererSettingsTrigger(
   button.style.display = "inline-flex";
   button.style.alignItems = "center";
   button.style.justifyContent = "center";
-  button.style.height = "28px";
+  button.style.width = "36px";
+  button.style.height = "36px";
   button.style.padding = "0 6px";
   button.style.gap = "0";
   button.style.border = "0";
-  button.style.borderRadius = "8px";
+  button.style.borderRadius = "12.5px";
+  button.style.setProperty("corner-shape", "superellipse(1.5)");
   button.style.background = "transparent";
-  button.style.color = "inherit";
+  button.style.color = RAIL_ICON_COLOR;
   button.style.cursor = available ? "pointer" : "not-allowed";
   button.style.opacity = available ? "1" : "0.5";
   button.style.outlineOffset = "2px";
   button.style.font = "inherit";
   button.style.transition = "padding 160ms ease, gap 160ms ease";
   button.style.setProperty("-webkit-app-region", "no-drag");
-
   const iconWrap = ownerDocument.createElement("span");
   iconWrap.style.position = "relative";
   iconWrap.style.display = "inline-flex";
@@ -289,7 +395,8 @@ export function mountRendererSettingsTrigger(
 
   const renderEmphasis = (): void => {
     if (brandExpanded) return;
-    button.style.background = selected ? "rgba(127, 127, 127, 0.22)" : "transparent";
+    button.style.background = selected ? RAIL_ICON_HOVER_BACKGROUND : "transparent";
+    button.style.color = selected ? RAIL_ICON_HOVER_COLOR : RAIL_ICON_COLOR;
   };
 
   const applyUpdateAvailable = (nextAvailable: boolean): void => {

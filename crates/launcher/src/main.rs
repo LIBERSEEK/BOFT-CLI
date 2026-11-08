@@ -1,25 +1,30 @@
 #![forbid(unsafe_code)]
 
 mod active_update;
+mod autostart;
 mod compatibility;
 mod console;
 mod desktop_attachment;
 mod desktop_path_overrides;
+mod host_service;
 mod installation_layout;
 mod native_harness_broker;
 mod runtime_instance;
 #[cfg(target_os = "linux")]
 mod secure_storage;
+mod service_update;
+mod services;
 mod startup_record;
 #[cfg(target_os = "macos")]
 mod system_proxy_environment;
+mod web_service;
 
 use std::env;
 use std::error::Error;
 use std::ffi::OsString;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 use std::fmt::{self, Display, Formatter};
-use std::io::{Read, Write};
+use std::io::{IsTerminal, Read, Write};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "windows")]
@@ -131,9 +136,14 @@ const USAGE: &str = "usage:
   boft --help
   boft --version
   boft inspect [--json] [--custom-install <absolute-directory>]
+  boft web [--background] [--connect-devices] [--host <address>] [--port <port>] [--public-url <url>] [--trusted-proxy <addresses>] [--relay <control-host>]
+  boft stop
+  boft status
+  boft autostart on|off|status
   boft console
   boft update
   boft launch [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--desktop-controller <absolute-file>] [--renderer <absolute-file>] [--pi <absolute-file>] [--custom-install <absolute-directory>]
+  boft desktop-screenshot
   boft broker install|status|stop|uninstall
   boft delegate --help
   boft harness list|inspect ...
@@ -141,9 +151,7 @@ const USAGE: &str = "usage:
   boft thread send|cancel|read|wait|watch|watches|list ...";
 
 fn usage() {
-    eprintln!(
-        "usage:\n  boft\n  boft --help\n  boft --version\n  boft inspect [--json] [--custom-install <absolute-directory>]\n  boft console\n  boft update\n  boft launch [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--desktop-controller <absolute-file>] [--renderer <absolute-file>] [--pi <absolute-file>] [--custom-install <absolute-directory>]\n  boft open-http-url\n  boft broker install|status|stop|uninstall\n  boft delegate --help\n  boft harness list|inspect ...\n  boft delegate start ...\n  boft thread send|cancel|read|wait|watch|watches|list ..."
-    );
+    eprintln!("{USAGE}");
 }
 
 const LOOPBACK_URL_MAX_BYTES: u64 = 4096;
@@ -171,53 +179,6 @@ fn validate_loopback_root_url(value: &str) -> Result<(), &'static str> {
         });
     if !loopback {
         return Err("native URL must target a loopback authority with an explicit port");
-    }
-    Ok(())
-}
-
-fn validate_external_http_url(value: &str) -> Result<(), &'static str> {
-    if value.is_empty() || value.len() > 2048 {
-        return Err("external URL must be an http(s) address");
-    }
-    let rest = value
-        .strip_prefix("https://")
-        .or_else(|| value.strip_prefix("http://"))
-        .ok_or("external URL must use HTTP or HTTPS")?;
-    if rest.is_empty() || rest.contains('@') || rest.contains('\\') || rest.contains(' ') {
-        return Err("external URL must be an uncredentialed HTTP address");
-    }
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    if authority.is_empty() || authority.contains('%') {
-        return Err("external URL must include a host");
-    }
-    if let Some(host) = authority.strip_prefix('[') {
-        let (host, port) = host
-            .split_once(']')
-            .ok_or("external URL must include a host")?;
-        if host.is_empty() {
-            return Err("external URL must include a host");
-        }
-        if port.is_empty() {
-            return Ok(());
-        }
-        let port = port
-            .strip_prefix(':')
-            .ok_or("external URL port is invalid")?;
-        if port.parse::<u16>().is_err() {
-            return Err("external URL port is invalid");
-        }
-        return Ok(());
-    }
-    if let Some((host, port)) = authority.rsplit_once(':')
-        && port.chars().all(|character| character.is_ascii_digit())
-    {
-        if host.is_empty() || port.parse::<u16>().is_err() {
-            return Err("external URL port is invalid");
-        }
-        return Ok(());
-    }
-    if authority.contains(':') {
-        return Err("external URL must include a host");
     }
     Ok(())
 }
@@ -293,7 +254,6 @@ fn emit_ready_line(output: &mut impl Write) -> std::io::Result<()> {
 fn notify_ready_and_detach() -> Result<(), Box<dyn Error>> {
     startup_trace("publishing ready");
     startup_record::finish(StartupOutcome::Ready, None);
-    // Before `ready`: a terminal launch must still see the printed address.
     console::show_for_launch(None);
     emit_ready_line(&mut std::io::stdout())?;
     codexhost_platform::detach_from_terminal()?;
@@ -388,9 +348,11 @@ fn inspect(custom_install_root: Option<&Path>, json: bool) -> Result<(), Box<dyn
 
 #[derive(Debug)]
 struct LaunchOptions {
+    update_recovery: bool,
     shim: Option<PathBuf>,
     node: Option<PathBuf>,
     host_runtime: Option<PathBuf>,
+    web_runtime: Option<PathBuf>,
     desktop_controller: Option<PathBuf>,
     renderer_extension: Option<PathBuf>,
     pi: Option<PathBuf>,
@@ -416,9 +378,11 @@ fn required_path(arguments: &[String], index: &mut usize, option: &str) -> Resul
 }
 
 fn parse_launch_options(arguments: &[String]) -> Result<LaunchOptions, String> {
+    let mut update_recovery = false;
     let mut shim = None;
     let mut node = None;
     let mut host_runtime = None;
+    let mut web_runtime = None;
     let mut desktop_controller = None;
     let mut renderer_extension = None;
     let mut pi = None;
@@ -426,10 +390,14 @@ fn parse_launch_options(arguments: &[String]) -> Result<LaunchOptions, String> {
     let mut index = 0;
     while index < arguments.len() {
         match arguments[index].as_str() {
+            "--update-recovery" => update_recovery = true,
             "--shim" => shim = Some(required_path(arguments, &mut index, "--shim")?),
             "--node" => node = Some(required_path(arguments, &mut index, "--node")?),
             "--host-runtime" => {
                 host_runtime = Some(required_path(arguments, &mut index, "--host-runtime")?)
+            }
+            "--web-runtime" => {
+                web_runtime = Some(required_path(arguments, &mut index, "--web-runtime")?)
             }
             "--desktop-controller" => {
                 desktop_controller = Some(required_path(
@@ -451,9 +419,11 @@ fn parse_launch_options(arguments: &[String]) -> Result<LaunchOptions, String> {
         index += 1;
     }
     Ok(LaunchOptions {
+        update_recovery,
         shim,
         node,
         host_runtime,
+        web_runtime,
         desktop_controller,
         renderer_extension,
         pi,
@@ -461,7 +431,7 @@ fn parse_launch_options(arguments: &[String]) -> Result<LaunchOptions, String> {
     })
 }
 
-/// Parse the options accepted by `codexhost inspect`.
+/// Parse the options accepted by `boft inspect`.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct InspectOptions {
     custom_install_root: Option<PathBuf>,
@@ -534,15 +504,22 @@ fn macos_default_node(
     }
 }
 
+fn select_host_node(
+    explicit: Option<PathBuf>,
+    desktop_root: Option<&Path>,
+    bundled: PathBuf,
+) -> PathBuf {
+    #[cfg(target_os = "macos")]
+    let bundled = macos_default_node(desktop_root, bundled, env::var_os(NPM_NODE_PATH_ENV));
+    #[cfg(not(target_os = "macos"))]
+    let _ = desktop_root;
+    explicit.unwrap_or(bundled)
+}
+
 impl LaunchOptions {
     fn resolve(self, desktop_root: Option<&Path>) -> Result<ResolvedLaunchOptions, Box<dyn Error>> {
         let installed = InstalledResources::from_current_executable()?;
-        let default_node = installed.node;
-        #[cfg(target_os = "macos")]
-        let default_node =
-            macos_default_node(desktop_root, default_node, env::var_os(NPM_NODE_PATH_ENV));
-        #[cfg(not(target_os = "macos"))]
-        let _ = desktop_root;
+        let default_node = select_host_node(None, desktop_root, installed.node);
         Ok(ResolvedLaunchOptions {
             shim: resolve_resource_path(self.shim, &installed.shim, "--shim", "bundled Shim")?,
             node: resolve_resource_path(
@@ -952,7 +929,7 @@ fn supervise_desktop(
     let mut started_update_request = None;
     loop {
         if let Err(error) = start_pending_update(&mut started_update_request) {
-            eprintln!("codexhost launcher: pending update could not be started: {error}");
+            eprintln!("boft launcher: pending update could not be started: {error}");
         }
         if should_stop_desktop_for_update(started_update_request.is_some()) {
             if let Err(error) = stop_managed_desktop_for_update(&mut desktop, &mut controller) {
@@ -1046,6 +1023,14 @@ fn desktop_environment(
         environment.push((OsString::from("CODEXHOST_DEV_VERSION"), version));
     }
     environment.extend(npm_update_runtime_environment(env::vars_os()));
+    if let Ok(value) = env::var("CODEXHOST_WEB_SERVICE")
+        && matches!(value.as_str(), "0" | "1")
+    {
+        environment.push((
+            OsString::from("CODEXHOST_WEB_SERVICE"),
+            OsString::from(value),
+        ));
+    }
     environment.extend(desktop_path_overrides::forwarded(env::vars_os()));
     #[cfg(target_os = "linux")]
     environment.extend(linux_wayland_runtime_environment(env::vars_os()));
@@ -1145,14 +1130,62 @@ fn force_stop_external_desktop(
     }
 }
 
+fn launch(options: LaunchOptions, interactive: bool) -> Result<(), Box<dyn Error>> {
+    autostart::refresh();
+    start_launch_console(&options);
+    let installation = discover_desktop(options.custom_install_root.as_deref());
+    if options.update_recovery {
+        services::prepare_host_for_update(
+            &options,
+            installation
+                .as_ref()
+                .ok()
+                .map(|desktop| desktop.install_root.as_path()),
+        )?;
+    }
+    if services::web_enabled()
+        && installation.as_ref().is_err_and(|error| {
+            matches!(
+                error.downcast_ref::<codexhost_platform::PlatformError>(),
+                Some(codexhost_platform::PlatformError::NotFound(_))
+            )
+        })
+    {
+        println!("Codex Desktop is not installed; opening Web instead");
+        match services::open_for_launch(&options) {
+            Ok(()) => {
+                startup_record::finish(StartupOutcome::Ready, None);
+                console::show_for_launch(None);
+                emit_ready_line(&mut std::io::stdout())?;
+                return Ok(());
+            }
+            Err(error) => {
+                eprintln!("Web startup failed: {error}");
+                return launch_gui(options, installation, interactive);
+            }
+        }
+    }
+    if services::web_enabled() {
+        services::start_for_launch(
+            &options,
+            installation
+                .as_ref()
+                .ok()
+                .map(|desktop| desktop.install_root.as_path()),
+        );
+    }
+    let result = launch_gui(options, installation, interactive);
+    services::finish_launch(false);
+    result
+}
+
 #[cfg(not(target_os = "linux"))]
-fn launch(
+fn launch_gui(
     options: LaunchOptions,
+    installation: Result<DesktopInstallation, Box<dyn Error>>,
     _interactive_running_desktop: bool,
 ) -> Result<(), Box<dyn Error>> {
     startup_trace("launch requested");
-    start_launch_console(&options);
-    let installation = discover_desktop(options.custom_install_root.as_deref());
     // 优先报告安装资源缺失，避免 Desktop 探测错误遮住损坏的 Host 安装。
     let options = options.resolve(
         installation
@@ -1290,13 +1323,12 @@ fn launch(
 }
 
 #[cfg(target_os = "linux")]
-fn launch(
+fn launch_gui(
     options: LaunchOptions,
+    installation: Result<DesktopInstallation, Box<dyn Error>>,
     _interactive_running_desktop: bool,
 ) -> Result<(), Box<dyn Error>> {
     startup_trace("launch requested");
-    start_launch_console(&options);
-    let installation = discover_desktop(options.custom_install_root.as_deref());
     // 优先报告安装资源缺失，避免 Desktop 探测错误遮住损坏的 Host 安装。
     let options = options.resolve(
         installation
@@ -1420,6 +1452,15 @@ fn run_console_command(action: &str) -> Result<(), Box<dyn Error>> {
     }
 }
 
+fn launch_presentation(arguments: &[String], terminal: bool) -> console::Presentation {
+    if arguments.first().map(String::as_str) == Some("launch") || (arguments.is_empty() && terminal)
+    {
+        console::Presentation::Print
+    } else {
+        console::Presentation::Browser
+    }
+}
+
 fn is_launch_command(arguments: &[String]) -> bool {
     matches!(
         arguments.first().map(String::as_str),
@@ -1429,9 +1470,11 @@ fn is_launch_command(arguments: &[String]) -> bool {
 
 fn default_launch_options() -> LaunchOptions {
     LaunchOptions {
+        update_recovery: false,
         shim: None,
         node: None,
         host_runtime: None,
+        web_runtime: None,
         desktop_controller: None,
         renderer_extension: None,
         pi: None,
@@ -1464,6 +1507,10 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
                 .transpose()?;
             inspect(custom_install_root.as_deref(), options.json)
         }
+        Some(action @ ("web" | "stop" | "status" | "stop-for-update")) => {
+            services::run(action, &arguments[1..])
+        }
+        Some("autostart") => autostart::run(&arguments[1..]),
         Some("console") if arguments.len() == 1 => run_console_command("open"),
         Some("update") if arguments.len() == 1 => run_console_command("update"),
         Some("update") => Err("update accepts no arguments".into()),
@@ -1475,12 +1522,14 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             codexhost_platform::open_external_url(&url).map_err(Into::into)
         }
         Some("open-loopback-url") => Err("open-loopback-url accepts no arguments".into()),
-        Some("open-http-url") if arguments.len() == 1 => {
-            let url = read_bounded_loopback_url(std::io::stdin().lock())?;
-            validate_external_http_url(&url)?;
-            codexhost_platform::open_external_url(&url).map_err(Into::into)
+        Some("desktop-screenshot") if arguments.len() == 1 => {
+            let image = codexhost_platform::capture_primary_desktop()?;
+            std::io::stdout().lock().write_all(&image)?;
+            Ok(())
         }
-        Some("open-http-url") => Err("open-http-url accepts no arguments".into()),
+        Some("desktop-screenshot") => Err("desktop-screenshot accepts no arguments".into()),
+        Some("host") => host_service::run(&arguments[1..]),
+        Some("web-service") => web_service::run(&arguments[1..]),
         Some("broker") => run_native_harness_broker_cli(&arguments[1..]),
         Some("harness") | Some("delegate") | Some("thread") => run_delegation_cli(arguments),
         _ => {
@@ -1505,11 +1554,14 @@ fn main() -> ExitCode {
     let launching = is_launch_command(&arguments);
     if launching {
         startup_record::begin();
-        console::set_presentation(if arguments.first().map(String::as_str) == Some("launch") {
-            console::Presentation::Print
-        } else {
-            console::Presentation::Browser
-        });
+        console::set_presentation(launch_presentation(
+            &arguments,
+            std::io::stdin().is_terminal()
+                || std::io::stdout().is_terminal()
+                || std::io::stderr().is_terminal()
+                || env::var_os("SSH_CONNECTION").is_some()
+                || env::var_os("SSH_TTY").is_some(),
+        ));
     }
     match run(&arguments) {
         Ok(()) => ExitCode::SUCCESS,
@@ -1571,7 +1623,7 @@ mod tests {
         desktop_controller_command, desktop_environment, emit_ready_line,
         managed_desktop_data_directory, npm_update_runtime_environment, parse_inspect_options,
         parse_launch_options, read_bounded_controller_line, read_bounded_loopback_url,
-        validate_external_http_url, validate_loopback_root_url,
+        validate_loopback_root_url,
     };
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     use super::{DESKTOP_TREE_REFRESH_INTERVAL, desktop_tree_refresh_due};
@@ -1617,31 +1669,6 @@ mod tests {
     }
 
     #[test]
-    fn external_http_url_accepts_public_sites_only() {
-        for accepted in [
-            "https://platform.openai.com",
-            "https://bank.example/path?q=1#usage",
-            "http://127.0.0.1:43123/",
-            "https://[::1]",
-            "https://[::1]:443/",
-        ] {
-            assert!(validate_external_http_url(accepted).is_ok(), "{accepted}");
-        }
-        for rejected in [
-            "file:///tmp/page",
-            "javascript:alert(1)",
-            "https://user:secret@bank.example",
-            "https://user@bank.example",
-            "https://bank.example\\windows",
-            "https://",
-            "https://bank.example:abc",
-        ] {
-            assert!(validate_external_http_url(rejected).is_err(), "{rejected}");
-        }
-        assert!(validate_external_http_url(&"https://bank.example/".repeat(200)).is_err());
-    }
-
-    #[test]
     fn native_url_handoff_bounds_stdin() {
         assert_eq!(
             read_bounded_loopback_url(std::io::Cursor::new(b"http://127.0.0.1:43123/"))
@@ -1650,6 +1677,18 @@ mod tests {
         );
         assert!(read_bounded_loopback_url(std::io::Cursor::new(vec![b'a'; 4097])).is_err());
         assert!(read_bounded_loopback_url(std::io::Cursor::new(b"one\ntwo")).is_err());
+    }
+
+    #[test]
+    fn launch_presentation_keeps_terminal_and_installer_entrypoints_distinct() {
+        use super::console::Presentation::{Browser, Print};
+        assert_eq!(super::launch_presentation(&[], false), Browser);
+        assert_eq!(super::launch_presentation(&[], true), Print);
+        assert_eq!(super::launch_presentation(&["launch".into()], false), Print);
+        assert_eq!(
+            super::launch_presentation(&[super::START_MENU_ARGUMENT.into()], true),
+            Browser
+        );
     }
 
     #[test]
@@ -1746,9 +1785,11 @@ mod tests {
         for node in [None, Some(executable.clone())] {
             let expected = node.clone().unwrap_or_else(|| desktop_node.clone());
             let options = super::LaunchOptions {
+                update_recovery: false,
                 shim: Some(executable.clone()),
                 node,
                 host_runtime: Some(executable.clone()),
+                web_runtime: None,
                 desktop_controller: Some(executable.clone()),
                 renderer_extension: Some(executable.clone()),
                 pi: None,

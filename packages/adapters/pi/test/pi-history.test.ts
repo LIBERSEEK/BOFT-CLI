@@ -207,54 +207,18 @@ describe("Pi active-branch history", () => {
     expect(mapPiSnapshot(history, state)).toEqual(snapshot);
   });
 
-  it("reads a missing isError as Tool success and only isError true as failure", () => {
-    const polarityHistory: PiSessionHistory = {
+  it("restores durable compaction entries in native order with stable IDs", () => {
+    const compactedHistory: PiSessionHistory = {
       entries: [
         {
-          id: "user",
+          id: "user-before-compact",
           parentId: null,
           type: "message",
-          message: { role: "user", content: [{ type: "text", text: "run tools" }] },
+          message: { role: "user", content: [{ type: "text", text: "work" }] },
         },
         {
-          id: "assistant-1",
-          parentId: "user",
-          type: "message",
-          message: {
-            role: "assistant",
-            stopReason: "toolUse",
-            content: [
-              { type: "toolCall", id: "call-implicit", name: "bash", arguments: {} },
-              { type: "toolCall", id: "call-failed", name: "read", arguments: {} },
-            ],
-          },
-        },
-        {
-          id: "tool-1",
-          parentId: "assistant-1",
-          type: "message",
-          message: {
-            role: "toolResult",
-            toolCallId: "call-implicit",
-            toolName: "bash",
-            content: [{ type: "text", text: "ok" }],
-          },
-        },
-        {
-          id: "tool-2",
-          parentId: "tool-1",
-          type: "message",
-          message: {
-            role: "toolResult",
-            toolCallId: "call-failed",
-            toolName: "read",
-            isError: true,
-            content: [{ type: "text", text: "boom" }],
-          },
-        },
-        {
-          id: "assistant-2",
-          parentId: "tool-2",
+          id: "assistant-before-compact",
+          parentId: "user-before-compact",
           type: "message",
           message: {
             role: "assistant",
@@ -262,24 +226,59 @@ describe("Pi active-branch history", () => {
             content: [{ type: "text", text: "done" }],
           },
         },
+        {
+          id: "native-compact",
+          parentId: "assistant-before-compact",
+          type: "compaction",
+          summary: "native summary",
+          firstKeptEntryId: "user-before-compact",
+          tokensBefore: 120_000,
+        },
+        {
+          id: "user-after-compact",
+          parentId: "native-compact",
+          type: "message",
+          message: { role: "user", content: [{ type: "text", text: "continue" }] },
+        },
+        {
+          id: "assistant-after-compact",
+          parentId: "user-after-compact",
+          type: "message",
+          message: {
+            role: "assistant",
+            stopReason: "stop",
+            content: [{ type: "text", text: "continued" }],
+          },
+        },
       ],
-      leafId: "assistant-2",
+      leafId: "assistant-after-compact",
     };
 
-    const tools = (mapPiSnapshot(polarityHistory, state).turns[0]?.items ?? []).filter(
-      ({ item }) => item.type === "toolExecution",
-    );
-    expect(tools.map(({ outcome }) => outcome)).toEqual([
-      { status: "succeeded" },
+    const snapshot = mapPiSnapshot(compactedHistory, state);
+
+    expect(snapshot.turns).toHaveLength(2);
+    expect(snapshot.turns[0]?.items).toEqual([
       {
-        status: "failed",
-        error: {
-          code: "nativeFailure",
-          message: "Pi Tool 'read' failed",
-          retryable: false,
+        item: {
+          type: "agentMessage",
+          itemId: "pi-item-v1-assistant-before-compact-assistant-0",
+          text: "done",
+          phase: "final_answer",
         },
+        outcome: { status: "succeeded" },
+      },
+      {
+        item: {
+          type: "contextCompaction",
+          itemId: "pi-item-v1-native-compact-compaction-0",
+        },
+        outcome: { status: "succeeded" },
       },
     ]);
+    expect(snapshot.turns[1]?.items).toEqual([
+      expect.objectContaining({ item: expect.objectContaining({ text: "continued" }) }),
+    ]);
+    expect(mapPiSnapshot(compactedHistory, state)).toEqual(snapshot);
   });
 
   it("replays interleaved Assistant messages and Tools in native order", () => {

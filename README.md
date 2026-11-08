@@ -89,6 +89,14 @@ xattr -d com.apple.quarantine /Applications/BOFT.app
 
 运行 `boft update` 可在终端检查最新版本并准备更新。有可用更新时请先退出 Codex Desktop；准备完成后，后台 updater 安装更新并重新启动 BOFT CLI。已是最新版本时直接退出。
 
+### Web 与手机访问
+
+安装版包含独立 Web 聊天页面，不需要 Codex Desktop 正在运行：执行 `boft web` 会在后台启动 Web 与共享 Host 并打开浏览器；也可以在 Codex Desktop 的设置中开启 Web。Web 可查看和继续本机原生 Codex 会话，也可使用已安装的其他 Harness；它与 Desktop 共用本机 Host，不会为同一会话另启一份执行进程。
+
+手机访问在 Web 的“设置 → 连接设备”中配置：同一 Wi-Fi 可使用局域网地址；异地访问可使用 Tailscale HTTPS、CodexHost 官方 Relay，或部署自建 Relay。官方/自建 Relay 通过电脑主动建立加密连接，无需在电脑开放入站端口；手机访问仍需登录令牌。Web 支持安装为 PWA，但 Agent 执行仍在运行 BOFT CLI 的电脑上。
+
+Web 启动、后台服务管理和访问方式详见[独立 Web 应用](docs/product/standalone-web.md)与[Web 远程访问](docs/product/web-remote-access.md)；自建 Relay 的部署步骤见[自建中转](docs/product/self-hosted-relay.md)。
+
 <details>
 <summary>其他安装问题</summary>
 
