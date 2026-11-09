@@ -148,7 +148,9 @@ const USAGE: &str = "usage:
   boft delegate --help
   boft harness list|inspect ...
   boft delegate start ...
-  boft thread send|cancel|read|wait|watch|watches|list ...";
+  boft thread send|cancel|read|wait|watch|watches|list ...
+  boft client add|list|remove ...
+  boft events [--after <id>] [--limit <n>] [--follow true|false]";
 
 fn usage() {
     eprintln!("{USAGE}");
@@ -1531,7 +1533,9 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         Some("host") => host_service::run(&arguments[1..]),
         Some("web-service") => web_service::run(&arguments[1..]),
         Some("broker") => run_native_harness_broker_cli(&arguments[1..]),
-        Some("harness") | Some("delegate") | Some("thread") => run_delegation_cli(arguments),
+        Some("harness") | Some("delegate") | Some("thread") | Some("client") | Some("events") => {
+            run_delegation_cli(arguments)
+        }
         _ => {
             usage();
             Err("invalid launcher arguments".into())

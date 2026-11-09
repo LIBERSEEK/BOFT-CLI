@@ -208,6 +208,8 @@ fn help_prints_usage_to_stdout_and_succeeds() {
             "boft harness list|inspect ...",
             "boft thread send|cancel|read|wait|watch|watches|list ...",
             "boft broker install|status|stop|uninstall",
+            "boft client add|list|remove ...",
+            "boft events [--after <id>] [--limit <n>] [--follow true|false]",
         ] {
             assert!(stdout.contains(command), "{argument}: {command}");
         }

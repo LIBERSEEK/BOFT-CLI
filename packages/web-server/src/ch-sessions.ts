@@ -17,13 +17,6 @@ import {
 } from "@codexhost/shared-contracts";
 import type { ChHostClient, ChProjectSnapshot } from "./ch-host-client.ts";
 import { ChHarnessCatalog, type ModelSelection } from "./ch-harness-catalog.ts";
-/** Out-of-band Web Push notification for one Session. */
-export interface SessionNotification {
-  kind: "turn" | "approval" | "question" | "error";
-  sessionId: string;
-  title: string;
-  body: string;
-}
 import type { ChThread } from "./ch-thread-view.ts";
 import type { Inspection } from "./harnesses.ts";
 import { nativePermissionView } from "./session-presentation.ts";
@@ -101,7 +94,6 @@ export class ChSessions {
   private readonly interactions: ChInteractions | undefined;
   private hostOnline = true;
   private hostEpoch: string | undefined;
-  notifier: ((notification: SessionNotification) => void) | undefined;
   constructor(
     private readonly host: ChHostClient,
     private readonly workspaces: Workspaces,
@@ -1084,11 +1076,17 @@ export class ChSessions {
         state.view?.log.setProjection("modelSelection", { lastUsed: selection, next: selection });
         return configuration;
       };
+      // Unchanged native settings may not emit a confirmation notification.
       const configuration = publish(
-        await this.host.request("codexhost/thread/model/select", {
-          threadId: id,
-          model: { id: request.model },
-        }),
+        owner.owner === "codex" && owner.effectiveModel?.id === request.model
+          ? {
+              effectiveModel: owner.effectiveModel,
+              effectiveThinkingOptionId: owner.effectiveThinkingOptionId,
+            }
+          : await this.host.request("codexhost/thread/model/select", {
+              threadId: id,
+              model: { id: request.model },
+            }),
       );
       if (
         request.reasoningEffort &&
@@ -1155,13 +1153,9 @@ export class ChSessions {
             ...(request.requestId ? { clientUserMessageId: request.requestId } : {}),
           });
         } else {
-          // DSH steering is best-effort: when the busy window closed before
-          // admission, retain the message as the next canonical follow-up.
           await this.host.request("turn/start", {
             threadId,
             input,
-            delivery: "queue",
-            presentationInput: presentation,
             ...(request.requestId ? { clientUserMessageId: request.requestId } : {}),
           });
         }
