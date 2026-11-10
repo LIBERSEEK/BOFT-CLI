@@ -15,6 +15,7 @@ import { nativeThreadConfiguration } from "./codex-runtime/native-thread-control
 import { sendNativeQueuedMessage } from "./native-queued-steering.js";
 import { submitNativeQueuedInput } from "./native-queued-input.js";
 import { NativeClientItems } from "./native-client-items.js";
+import { NativeAsyncQuestions } from "./native-async-questions.js";
 import {
   nativeElicitationApproval,
   nativeElicitationApprovalResponse,
@@ -130,6 +131,10 @@ function approvalInteraction(
     effect: decisionEffect(id),
   }));
   const command = stringValue(params.command);
+  const cwd = stringValue(params.cwd);
+  const description = [command, cwd ? `Working directory: ${cwd}` : undefined]
+    .filter(Boolean)
+    .join("\n\n");
   const reason = stringValue(params.reason);
   return {
     kind: "approval",
@@ -140,7 +145,7 @@ function approvalInteraction(
         (method === "item/commandExecution/requestApproval"
           ? "Allow command execution?"
           : "Allow file changes?"),
-      ...(command ? { description: command } : {}),
+      ...(description ? { description } : {}),
       subject: params,
       actions,
     },
@@ -386,6 +391,7 @@ export class NativeClientChannel {
   readonly #resumedThreads = new Set<string>();
   readonly #configuration = new Map<string, ReturnType<typeof nativeThreadConfiguration>>();
   readonly #items = new NativeClientItems();
+  readonly #asyncQuestions = new NativeAsyncQuestions();
   readonly #pending = new Map<string, PendingNativeInteraction>();
   readonly #pendingNativeIds = new Map<string, string>();
   readonly #unconfirmedResponses = new Set<string>();
@@ -404,6 +410,7 @@ export class NativeClientChannel {
     if (!isRecord(value) || typeof value.method !== "string") return;
     const params = isRecord(value.params) ? (value.params as JsonObject) : {};
     this.#items.observe(value.method, params);
+    const asyncQuestionsChanged = this.#asyncQuestions.observe(value.method, params);
     const threadId = threadIdFromParams(params);
     if (threadId) {
       this.noteThread(threadId);
@@ -412,6 +419,8 @@ export class NativeClientChannel {
       if (value.method === "thread/closed") this.#resumedThreads.delete(threadId);
       if (value.method === "turn/started") this.#interactionErrors.delete(threadId);
       this.#host.events.changed(threadId, value.method);
+      if (asyncQuestionsChanged)
+        this.#host.events.changed(threadId, "codexhost/thread/questions/updated");
     }
     if (value.method === "serverRequest/resolved") {
       const requestId = params.requestId;
@@ -572,15 +581,17 @@ export class NativeClientChannel {
   }
 
   interactions(threadId: string): ClientInteraction[] {
+    const prefix = `${NATIVE_REQUEST_PREFIX}${this.#generationToken}:`;
     return [...this.#pending.values()]
       .filter((pending) => pending.threadId === threadId)
-      .map((pending) => ({
+      .map<ClientInteraction>((pending) => ({
         requestId: pending.requestId,
         threadId,
         kind: pending.kind,
         interaction: pending.interaction,
         request: { method: pending.method, params: pending.params },
-      }));
+      }))
+      .concat(this.#asyncQuestions.interactions(threadId, prefix));
   }
 
   async snapshot(threadId: string, options: ClientSnapshotOptions): Promise<ClientThreadSnapshot> {
@@ -625,6 +636,7 @@ export class NativeClientChannel {
         throw new ClientChannelRequestError(turnsReply.error.code, turnsReply.error.message);
       const turnsResult = resultObject(turnsReply) ?? {};
       const data = Array.isArray(turnsResult.data) ? turnsResult.data : [];
+      this.#asyncQuestions.observeTurns(threadId, data);
       const turnsPage = {
         data,
         nextCursor: typeof turnsResult.nextCursor === "string" ? turnsResult.nextCursor : null,
@@ -656,6 +668,26 @@ export class NativeClientChannel {
   }
 
   async respond(requestId: string | number, threadId: string, result: JsonValue): Promise<boolean> {
+    const generation = this.#generationToken;
+    const prefix = `${NATIVE_REQUEST_PREFIX}${generation}:`;
+    if (typeof requestId === "string" && requestId.startsWith(`${prefix}async:`)) {
+      try {
+        return await this.#asyncQuestions.respond(
+          requestId,
+          threadId,
+          result,
+          prefix,
+          (method, params) =>
+            generation === this.#generationToken
+              ? this.request(method, params)
+              : Promise.resolve({
+                  error: { code: -32094, message: "Host generation changed; refresh the Thread" },
+                }),
+        );
+      } finally {
+        this.#host.events.changed(threadId, "codexhost/thread/questions/updated");
+      }
+    }
     if (typeof requestId === "string" && this.#unconfirmedResponses.has(requestId))
       throw new Error("Native interaction delivery outcome is unknown; do not resend the response");
     const pending = typeof requestId === "string" ? this.#pending.get(requestId) : undefined;
@@ -684,6 +716,7 @@ export class NativeClientChannel {
     this.#interactionErrors.clear();
     this.#configuration.clear();
     this.#items.clear();
+    this.#asyncQuestions.clear();
     for (const threadId of threads) this.#host.events.changed(threadId, "thread/status/changed");
   }
 
