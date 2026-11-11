@@ -353,22 +353,15 @@ function createConnectionRow(
     action.append(viewError);
   }
   if (longContext) action.append(longContext);
-  if (version?.state?.updateAvailable && !version.updating) {
-    const available = document.createElement("span");
-    available.className = "settings-connection-version-available";
-    available.textContent = messages.harnessVersionAvailable;
-    available.title = `${messages.harnessVersionCurrent}: ${version.state.currentVersion ?? "—"}\n${messages.harnessVersionLatest}: ${harnessVersionLabel(version.state, messages.harnessVersion)}`;
-    action.append(available);
-  }
   if (version?.state?.updateAvailable && version.state.canUpdate) {
     const update = document.createElement("button");
     update.type = "button";
     update.className = "settings-connection-install-link";
     update.dataset.connectionAction = "update";
     update.disabled = version.updating;
-    update.title = messages.harnessVersionUpdate;
+    update.title = `${messages.harnessVersionUpdate}: ${item.name}\n${messages.harnessVersionCurrent}: ${version.state.currentVersion ?? "—"}\n${messages.harnessVersionLatest}: ${harnessVersionLabel(version.state, messages.harnessVersion)}`;
     update.setAttribute("aria-label", `${messages.harnessVersionUpdate}: ${item.name}`);
-    update.append(createRendererSettingsIcon("download", 17));
+    update.append(createRendererSettingsIcon("download", 15));
     update.addEventListener("click", (event) => {
       event.stopPropagation();
       if (update.disabled) return;

@@ -101,12 +101,18 @@ describe("Antigravity recovered history boundaries", () => {
         history.append({
           nativeTurnRef: { ...f.nativeRef, nativeTurnKey: `turn:${turn}` },
           checkpoint: { ...f.nativeRef, checkpointId: `turn:${turn}` },
-          turnInput: [{ type: "text", text: `question ${turn}` }],
+          turnInput: [
+            { type: "text", text: `question ${turn}` },
+            ...(turn === 1
+              ? [{ type: "image" as const, mimeType: "image/png", base64Data: "aW1hZ2U=" }]
+              : []),
+          ],
           items: [],
           outcome: { status: "succeeded" },
         });
       }
       await history.flush();
+      expect(formatRecoveredHistoryContext(history.snapshot())).toContain("question 1");
       expect(await seedNativeConversationDb(f.nativeRef.nativeSessionId, f.home)).toBe(true);
       const sourcePath = nativeConversationDbPath(f.nativeRef.nativeSessionId, f.home);
       const db = new DatabaseSync(sourcePath);

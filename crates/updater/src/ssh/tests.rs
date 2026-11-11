@@ -159,7 +159,7 @@ fn request() -> Request {
 #[cfg(unix)]
 #[test]
 fn repair_preserves_desktop_selection_before_uninstalling_and_keeps_legacy_arguments() {
-        let root = std::env::temp_dir().join(format!("boft-ssh-repair-session-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("boft-ssh-repair-session-{}", std::process::id()));
     let mocks = r#"
 boft(){
   printf '%s\n' "$*" >> "$HOME/calls"

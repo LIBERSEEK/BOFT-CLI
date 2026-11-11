@@ -329,6 +329,7 @@ export function formatRecoveredHistoryContext(turns: readonly AntigravityTurn[])
   const formattedTurns: string[] = [];
   for (const [index, turn] of turns.entries()) {
     const userText = turn.input
+      .filter((part): part is HostTextInput => part.type === "text")
       .map((part) => part.text.trim())
       .filter(Boolean)
       .join("\n\n");
