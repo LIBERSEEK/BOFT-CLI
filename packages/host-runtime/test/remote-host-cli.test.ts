@@ -21,6 +21,23 @@ function textSink(): { output: Writable; text(): string } {
 }
 
 describe("remote SSH Host CLI", () => {
+  it.each([
+    ["install", "--session", "invalid"],
+    ["start", "--session", "desktop"],
+  ])("rejects invalid or misplaced execution-session options: %s", async (...arguments_) => {
+    const stdout = textSink();
+    const stderr = textSink();
+    expect(
+      await runRemoteHostCli({
+        arguments: arguments_,
+        output: stdout.output,
+        diagnosticOutput: stderr.output,
+      }),
+    ).toBe(1);
+    expect(stdout.text()).toBe("");
+    expect(stderr.text()).toContain("remote install --session ssh|desktop");
+  });
+
   it("prints a bounded command summary", async () => {
     const stdout = textSink();
     const stderr = textSink();
@@ -32,10 +49,13 @@ describe("remote SSH Host CLI", () => {
         diagnosticOutput: stderr.output,
       }),
     ).resolves.toBe(0);
-    expect(stdout.text()).toContain("boft remote install");
+    expect(stdout.text()).toContain(
+      "boft remote install [--stock-codex PATH] [--shared-data DIRECTORY] [--session ssh|desktop]",
+    );
     expect(stdout.text()).toContain("boft remote start");
     expect(stdout.text()).toContain("boft remote stop");
     expect(stdout.text()).toContain("boft remote uninstall");
+    expect(stdout.text()).toContain("--session desktop uses the logged-in desktop keychain");
     expect(stdout.text()).not.toContain("--claude-command");
     expect(stderr.text()).toBe("");
   });
