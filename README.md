@@ -10,6 +10,8 @@
 
 **BOFT CLI** 让你在 **Codex Desktop** 中选择真正执行任务的 **Agent**，同时保留 **Codex** 的原生体验，并让它们协作完成任务。
 
+另有 **Web 端**：手机和其他电脑也能远程使用这台电脑上的 Agent，与 Desktop 共用会话、审批和提问状态。
+
 ⭐ 如果这个项目对你有帮助，请给我们一个 Star！⭐
 
 <p>
@@ -38,6 +40,8 @@
   <a href="https://zcode.z.ai/"><img alt="ZCode" src="docs/imgs/badge-zcode.svg" /></a>
   <a href="docs/harnesses/copilot/copilot-harness-integration.md"><img alt="GitHub Copilot" src="https://img.shields.io/badge/Copilot-181717?logo=githubcopilot&logoColor=white" /></a>
 </p>
+
+<img width="90%" src="docs/imgs/hero-desktop-phone.png" alt="Several Agent sessions and the Diff review panel in Codex Desktop, with the same session open on a phone at the bottom right">
 
 <p align="center">
   <sub>简体中文 · <a href="docs/project/README.en.md">English</a> · <a href="docs/project/README.ko.md">한국어</a></sub>
@@ -74,7 +78,9 @@
 
 ```bash
 npm install -g @liberseek/boft-cli
-boft
+boft          # 启动 Codex Desktop
+boft web      # 启动 Web 并在浏览器中打开
+boft stop     # 停止 BOFT CLI 的全部后台服务
 ```
 
 系统显示名称为 **BOFT CLI**；Windows 开始菜单入口为 **BOFT CLI** 和 **BOFT CLI console**，升级时会移除旧的 BOFT 快捷方式。命令仍为 `boft`，应用身份和用户数据目录保持不变。
@@ -96,6 +102,7 @@ xattr -d com.apple.quarantine /Applications/BOFT.app
 手机访问在 Web 的“设置 → 连接设备”中配置：同一 Wi-Fi 可使用局域网地址；异地访问可使用 Tailscale HTTPS、CodexHost 官方 Relay，或部署自建 Relay。官方/自建 Relay 通过电脑主动建立加密连接，无需在电脑开放入站端口；手机访问仍需登录令牌。Web 支持安装为 PWA，但 Agent 执行仍在运行 BOFT CLI 的电脑上。
 
 Web 启动、后台服务管理和访问方式详见[独立 Web 应用](docs/product/standalone-web.md)与[Web 远程访问](docs/product/web-remote-access.md)；自建 Relay 的部署步骤见[自建中转](docs/product/self-hosted-relay.md)。
+运行 `boft stop` 可停止全部后台服务。用 npm 覆盖安装前，请先运行 `boft stop`。
 
 <details>
 <summary>其他安装问题</summary>
@@ -172,6 +179,14 @@ Web 启动、后台服务管理和访问方式详见[独立 Web 应用](docs/pro
       <p><strong>远程开发</strong><br /><sub>把 VPS 加为项目后，Agent 直接在远程机器上运行 · <a href="#远程连接-harness">了解更多</a></sub></p>
       <img src="docs/imgs/highlight-remote.png" alt="侧边栏中的远程 VPS 项目，对话返回远程工作目录">
     </td>
+  </tr>
+</table>
+
+<details>
+<summary>More: tool details, usage, account import, diagram rendering</summary>
+
+<table>
+  <tr>
     <td width="50%" valign="top">
       <p><strong>一键导入账号</strong><br /><sub>把本机已登录的 Codex 和 Grok 凭证复制到 Pi，并查看实时额度</sub></p>
       <img src="docs/imgs/highlight-account-import.png" alt="账号设置：5 小时与 7 天剩余额度，以及导入到 Pi 的账号">
@@ -194,12 +209,10 @@ Web 启动、后台服务管理和访问方式详见[独立 Web 应用](docs/pro
   </tr>
 </table>
 
-## Feature Status
-
-Harnesses integrate with Codex Desktop's native UI according to their capabilities; see the matrix below.
+</details>
 
 <details>
-<summary>Show full feature matrix</summary>
+<summary>Feature support by Agent</summary>
 
 | Capability | <a href="https://pi.dev/"><img alt="Pi" src="https://img.shields.io/badge/-000000?logo=pi&logoColor=white" /></a> | <a href="https://github.com/can1357/oh-my-pi"><img alt="Oh My Pi" src="docs/imgs/harness-icon-omp-v5.svg" /></a> | <a href="https://code.claude.com/docs/en/quickstart"><img alt="Claude Code" src="https://img.shields.io/badge/-D97757?logo=claudecode&logoColor=white" /></a> | <a href="https://opencode.ai/docs/"><img alt="OpenCode" src="docs/imgs/harness-icon-opencode.svg" /></a> | <a href="https://grok.com/"><img alt="Grok" src="https://img.shields.io/badge/-000000?logo=x&logoColor=white" /></a> | <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DSH" src="https://img.shields.io/badge/-4D6BFE?logo=deepseek&logoColor=white" /></a> | <a href="https://antigravity.google/product/antigravity-cli"><img alt="AGY" src="docs/imgs/harness-icon-agy.svg" /></a> | <a href="https://www.codebuddy.cn/home/"><img alt="CodeBuddy" src="docs/imgs/harness-icon-codebuddy.svg" width="24" height="24" /></a> | <a href="https://www.workbuddy.ai/docs/workbuddy/Quickstart"><img alt="WorkBuddy" src="packages/adapters/workbuddy/assets/icon.svg" width="24" height="24" /></a> | <a href="https://cursor.com/docs/cli/overview"><img alt="Cursor" src="docs/imgs/harness-icon-cursor.svg" /></a> | <a href="https://hermes-agent.nousresearch.com/docs"><img alt="Hermes" src="docs/imgs/harness-icon-hermes.svg" /></a> | <a href="https://qoder.com/cli"><img alt="Qoder" src="packages/adapters/qoder/assets/icon.svg" width="28" height="28" /></a> | <a href="https://moonshotai.github.io/kimi-code/"><img alt="Kimi Code" src="packages/adapters/kimi-code/assets/icon.svg" width="28" height="28" /></a> | <a href="docs/harnesses/copilot/copilot-harness-integration.md"><img alt="Copilot" src="packages/adapters/copilot/assets/icon.png" width="28" height="28" /></a> | <a href="https://github.com/QwenLM/qwen-code"><img alt="Qwen Code" src="packages/adapters/qwen-code/assets/icon.svg" width="28" height="28" /></a> | <a href="docs/harnesses/devin/devin-cli-acp-integration.md"><img alt="Devin" src="packages/adapters/devin/assets/icon.svg" width="28" height="28" /></a> |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -221,26 +234,39 @@ Devin: ◐ indicates conditional support or pending native validation. Thinking 
 
 </details>
 
-## Cross-Agent Collaboration
+<a id="collaboration"></a>
 
-Type `#` in the chat input to choose an Agent to delegate a task to, or to find commands and skills available for the selected Harness.
+## Agents hand work to each other
 
-Ask the current Agent to hand off a self-contained task to another Harness. For example:
+Type `#` in the chat input, pick an Agent, and hand it a self-contained task:
 
 > Have `#claude-code` review this change on its own and flag any compatibility risks.
 >
 > Have `#pi` figure out why this test is flaky.
 >
 > Have `#omp` implement this feature while I keep working on the docs.
->
-> Have `#opencode` verify this fix in a separate Thread and run the related tests.
 
-CodexHost spins up a separate Native Session in the target Harness. It shows up in the Codex Desktop conversation list, so you can open it anytime to check progress or pick up the conversation.
+Every delegated task runs as a separate native session in the target Agent. It shows up in the conversation list, so you can open it anytime to check progress or continue the conversation. When it finishes, the result returns to the session that started it.
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <p><strong>Agents work in parallel</strong><br /><sub>Each in its own session, without interfering</sub></p>
+      <img src="docs/product/images/multi-agent-parallel-sessions.png" alt="Delegated sessions of several Agents running in parallel in the sidebar">
+    </td>
+    <td width="50%" valign="top">
+      <p><strong>Reports back when done</strong><br /><sub>The originating session is notified when a delegated task ends</sub></p>
+      <img src="docs/product/images/multi-agent-completion-notice.png" alt="Notice shown in the originating session after a delegated task completes">
+    </td>
+  </tr>
+</table>
+
+**For developers:** local programs such as terminal scripts, Claude Desktop and always-on bots can also hand tasks to these Agents and wait for results through the `boft delegate` / `boft thread` commands or MCP. See [external clients](docs/architecture/external-clients.md).
 
 <details>
-<summary><h3 id="remote-harness">Remote Harness</h3></summary>
+<summary><h3 id="remote-harness">Advanced: use Agents on another machine from your local UI</h3></summary>
 
-Drive Harnesses on another machine from your local Codex Desktop: tasks run remotely, the UI stays local. Both machines need the same codexhost version.
+Tasks run on the other machine while the UI stays in your local Codex Desktop. Both machines need the same CodexHost version.
 
 | Remote machine | How to connect |
 | --- | --- |
@@ -249,47 +275,33 @@ Drive Harnesses on another machine from your local Codex Desktop: tasks run remo
 
 #### SSH
 
-Before you start, add the remote machine in Codex Desktop under **Settings → Connections → SSH**. Your local machine can run macOS, Linux, or Windows.
+Before you start, add the remote machine in Codex Desktop under **Settings → Connections → SSH**. Your local machine can run macOS, Linux or Windows.
 
 <div align="center">
   <img width="70%" src="docs/imgs/remote-ssh-connections.png" alt="SSH connections added under Settings → Connections → SSH in Codex Desktop">
 </div>
 
-1. Install and start codexhost on the remote machine:
+1. Install and start BOFT CLI on the remote machine:
 
    ```bash
-   npm install -g @codexhost/cli
-   codexhost remote install
-   codexhost remote start
-   codexhost remote status
+   npm install -g @liberseek/boft-cli
+   boft remote install
+   boft remote start
+   boft remote status
    ```
 
-2. On your local machine, launch Codex Desktop through codexhost and open the SSH workspace.
-3. Pick a Harness from the composer's Agent / Model selector.
+2. On your local machine, launch Codex Desktop through BOFT CLI and open the SSH workspace.
+3. Pick an Agent from the composer's Agent / Model selector.
 
-[SSH setup, diagnostics, and uninstall →](docs/platforms/remote/remote-ssh-host.md)
+[SSH setup, diagnostics and uninstall →](docs/platforms/remote/remote-ssh-host.md)
 
 #### Remote Control (Experimental)
 
-Use Harnesses on a Windows machine from another computer, built on the pairing and sign-in of Codex Desktop's official Remote Control.
+Use Agents on a Windows machine from another computer, built on the pairing and sign-in of Codex Desktop's official Remote Control.
 
-Before you start, make sure official Remote Control can already run Codex tasks. No public services or ports are opened, and Harness credentials never leave the Windows machine.
+Before you start, make sure official Remote Control can already run Codex tasks. No public services or ports are opened, and Agent credentials never leave the Windows machine.
 
-[Remote Control setup, transport boundary, and diagnostics →](docs/platforms/remote/remote-control-host.md)
-
-</details>
-
-<details>
-<summary><h3>How it works</h3></summary>
-
-Most multi-agent clients build their own chat UI and plug Harnesses in through a common protocol.
-
-CodexHost does it differently:
-
-- **Desktop:** extends the official Codex Desktop via CDP / Electron Inspector — no rebuilt chat UI, no patched installer.
-- **Protocol:** a CLI Shim sits in front of the official app-server and passes native Codex requests through untouched.
-- **Harnesses:** each Harness is integrated through its own native interface where one exists (Pi over RPC, Claude Code via the Agent SDK), falling back to [ACP](https://agentclientprotocol.com/) otherwise. Streaming, tool status, diffs, approvals, and questions all render in Codex Desktop's native UI.
-- **Orchestration:** delegated tasks run as independent native sessions in the target Harness; the caller can wait for the result or let it run in the background.
+[Remote Control setup, transport boundary and diagnostics →](docs/platforms/remote/remote-control-host.md)
 
 </details>
 <a id="join-the-community"></a>
@@ -454,3 +466,4 @@ npm start
 - 感谢 [LINUX DO](https://linux.do/) 社区一直以来的支持。
 - 感谢 [Paseo](https://github.com/getpaseo/paseo) 项目在多 Harness 接入思路与架构设计方面带来的启发与参考。
 - 感谢 [Codexhost](https://github.com/BytePioneer-AI/codex-host) 项目带来的启发与参考。
+- 感谢 [DSH（DeepSeek Harness）](https://github.com/deepseek-ai/deepseek-harness)，Web 客户端基于 DSH Web 开发。

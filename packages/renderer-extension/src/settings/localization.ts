@@ -659,6 +659,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   pageLabels: Object.freeze({
     connections: "Agents",
     plugins: "Plugins",
+    "mobile-web": "Phone & browser",
     appearance: "Appearance",
     "remote-connections": "Remote connections",
     accounts: "Accounts",
@@ -994,6 +995,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   pageLabels: Object.freeze({
     connections: "Agents",
     plugins: "插件",
+    "mobile-web": "手机与浏览器",
     appearance: "外观",
     "remote-connections": "远程连接",
     accounts: "账号",

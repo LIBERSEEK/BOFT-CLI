@@ -5,6 +5,7 @@ import {
 } from "../console/pages/usage-statistics.js";
 import { consoleMessages } from "../console/messages.js";
 import { createRemoteConnectionsPage } from "./remote-connections-page.js";
+import { createMobileWebPage } from "./mobile-web-page.js";
 import type { RemoteConnectionsControl } from "../remote-connections-control.js";
 import type {
   UpdateCheckResult,
@@ -96,6 +97,7 @@ function windowsInstallerDownloadUrl(window: Window | null | undefined, version:
 
 export const DEFAULT_RENDERER_SETTINGS_PAGE_IDS = [
   "connections",
+  "mobile-web",
   "remote-connections",
   "accounts",
   "session-import",
@@ -111,6 +113,7 @@ export const RENDERER_SETTINGS_NAV_SECTIONS = [
     id: "connection",
     pageIds: [
       "connections",
+      "mobile-web",
       "remote-connections",
       "accounts",
       "session-import",
@@ -764,18 +767,6 @@ function updatesPage(
         else delete panel.dataset.inline;
         const head = createPanelHead(document, view, title);
         appendServiceStopOutput(result.status);
-        if (actionableStatus?.error) {
-          const error = document.createElement("p");
-          error.className = "settings-update-error";
-          error.textContent = actionableStatus.error;
-          panel.append(error);
-        }
-        if (result.error && result.error !== actionableStatus?.error) {
-          const error = document.createElement("p");
-          error.className = "settings-update-error";
-          error.textContent = result.error;
-          panel.append(error);
-        }
         const buttons: HTMLElement[] = [];
         if (
           result.updateAvailable &&
@@ -862,10 +853,11 @@ export function createDefaultRendererSettingsPages(
       const client = getUpdateClient();
       return client?.openExternalUrl?.bind(client);
     }),
-    createRemoteConnectionsPage(messages, getRemoteConnections, () => {
+    createMobileWebPage(messages, () => {
       const client = getUpdateClient();
       return client?.openWeb?.bind(client);
     }),
+    createRemoteConnectionsPage(messages, getRemoteConnections),
     createAccountsSettingsPage(messages, getAccountClient),
     ...(harnessSchedules ? [createHarnessSchedulesPage(messages, harnessSchedules)] : []),
     createSessionImportSettingsPage(
