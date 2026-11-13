@@ -18,6 +18,7 @@ use codexhost_platform::{
 };
 
 mod desktop_invocation;
+mod invocation_diagnostics;
 mod local_runtime_lease;
 mod process_identity;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -881,6 +882,12 @@ pub fn run_proxy_with_observer(
         && host_runtime_paths_are_configured()
         && !is_managed_remote_listener(arguments)
         && env::var_os(DATA_DIRECTORY_ENV).is_some();
+    invocation_diagnostics::trace_invocation(
+        arguments,
+        desktop_helper,
+        &stock_codex_path,
+        local_host_runtime,
+    );
     let mut local_runtime_lease = if local_host_runtime {
         Some(LocalRuntimeLease::acquire(&PathBuf::from(
             env::var_os(DATA_DIRECTORY_ENV).ok_or("CODEXHOST_DATA_DIR is unavailable")?,
@@ -900,6 +907,11 @@ pub fn run_proxy_with_observer(
         .stderr(Stdio::piped());
     let mut child = spawn_supervised(&mut command)?;
     let child_id = child.id();
+    if local_host_runtime
+        && env::var_os("CODEXHOST_STARTUP_TRACE").as_deref() == Some(OsStr::new("1"))
+    {
+        eprintln!("[codexhost startup] shim: Host Runtime child spawned pid={child_id}");
+    }
     if let Some(lease) = &mut local_runtime_lease
         && let Err(error) = lease.set_child_process_id(child_id)
     {
