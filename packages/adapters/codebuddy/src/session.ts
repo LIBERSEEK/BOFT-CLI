@@ -1,3 +1,8 @@
+import {
+  configureSubagentEvent,
+  configureSubagentSnapshot,
+  type SubagentConfiguration,
+} from "@codexhost/harness-adapter";
 import type {
   HarnessCommandAccepted,
   HarnessCommandCapability,
@@ -194,10 +199,7 @@ export class CodeBuddySession implements HarnessSession {
                 contextWindowTokens: update.size,
                 contextUsagePercent: (update.used / update.size) * 100,
               };
-              this.#emit({
-                type: "session.usage.changed",
-                usage: { ...this.#usage, ...this.#context },
-              });
+              this.#emitUsage();
               void this.refreshUsage();
             }
             this.#active?.output.update(update);
@@ -299,7 +301,16 @@ export class CodeBuddySession implements HarnessSession {
   }
 
   #emit(event: HostEvent) {
+    event = configureSubagentEvent(event, this.#subagentConfiguration());
     this.#channel.emit({ kind: "event", event });
+  }
+
+  #emitUsage() {
+    const usage = { ...this.#usage, ...this.#context };
+    this.#emit({
+      type: "session.usage.changed",
+      usage: Object.keys(usage).length ? usage : null,
+    });
   }
 
   /** Publishes native requests not yet metered; the first read also declares completeness. */
@@ -313,6 +324,15 @@ export class CodeBuddySession implements HarnessSession {
     if (historical || !complete) this.#emit({ type: "usage.history", complete });
   }
   #apply(config: ReturnType<typeof configuration>, emit = true) {
+    // Context belongs to the last confirmed Model. Reconfirming that Model must
+    // preserve usage received after its config update but before the response.
+    if (
+      this.#state.effectiveModel &&
+      this.#state.effectiveModel.id !== config.state.effectiveModel?.id
+    ) {
+      this.#context = {};
+      this.#emitUsage();
+    }
     this.#config = config;
     if (this.#ref && record(this.#ref.locator).codebuddyDerived === 1)
       this.#ref = nativeSessionRefSchema.parse({
@@ -396,7 +416,7 @@ export class CodeBuddySession implements HarnessSession {
         return;
       this.#usage = historyUsage(history);
       this.#meterHistory(history, false);
-      this.#emit({ type: "session.usage.changed", usage: { ...this.#usage, ...this.#context } });
+      this.#emitUsage();
     } catch {
       // The native file may not exist yet or may be mid-append. Telemetry must not fail a Turn;
       // the next native usage notification, explicit refresh or terminal snapshot retries.
@@ -405,7 +425,25 @@ export class CodeBuddySession implements HarnessSession {
     }
   }
 
+  #subagentConfiguration(): SubagentConfiguration {
+    const state = this.#state;
+    const model = state.effectiveModel ? nativeModel(state.effectiveModel) : undefined;
+    return {
+      ...(model ? { model } : {}),
+      ...(state.effectiveThinkingOptionId
+        ? { reasoningEffort: state.effectiveThinkingOptionId }
+        : {}),
+    };
+  }
+
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
+    const result = await this.#readSnapshot();
+    return result.ok
+      ? { ok: true, value: configureSubagentSnapshot(result.value, this.#subagentConfiguration()) }
+      : result;
+  }
+
+  async #readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
     if (this.#closed || this.#fault)
       return failure("invalidState", "Session is closed or faulted", this.profile);
     if (this.#busy || this.#active)
@@ -651,8 +689,7 @@ export class CodeBuddySession implements HarnessSession {
         },
         nativeTurnRef,
       );
-      if (this.#usage)
-        this.#emit({ type: "session.usage.changed", usage: { ...this.#usage, ...this.#context } });
+      if (this.#usage) this.#emitUsage();
     } catch (error) {
       if (!active.done)
         this.#finish(active, { status: "failed", error: nativeError(error, this.profile) });

@@ -114,6 +114,8 @@ import {
 import { installRendererSettingsLifecycle } from "./renderer-settings-lifecycle.js";
 import { installRendererSidebarThreadState } from "./renderer-sidebar-thread-state.js";
 import { createRendererUsageStatisticsSource } from "./renderer-usage-statistics-source.js";
+import { createRendererSkillLibrary, type RendererSkillContext } from "./renderer-skill-library.js";
+import { installRendererSkillReferences } from "./renderer-skill-reference.js";
 import {
   installRendererDelegationMention,
   type RendererDelegationMentionControl,
@@ -1145,6 +1147,33 @@ export function installRendererBindingProbe(
       }
     }
   }
+  const skillContext = (editor: HTMLElement): RendererSkillContext | null => {
+    const composer = composerForElement(editor);
+    const mounted = composer ? mountedByComposer.get(composer) : undefined;
+    if (
+      !mounted ||
+      !editor.isContentEditable ||
+      controller.get(mounted.composer).agent === "codex" ||
+      isOwnershipSubmissionBlocked(mounted.ownershipStatus)
+    )
+      return null;
+    const threadId = threadIdFromComposerModelTarget(mounted.modelTarget);
+    const hostId = threadId ? mounted.hostId : activeModelHostId(mounted.composer);
+    if (hostId !== "local") return null;
+    const client = modelClientForHost(hostId);
+    if (!client) return null;
+    const cwd = draftWorkspaces.get(hostId);
+    return { client, params: threadId ? { threadId } : cwd ? { cwd } : {} };
+  };
+  const skillLibrary = createRendererSkillLibrary({
+    context: skillContext,
+    locale: () => settingsLifecycle.locale,
+    changed: () => delegationMention?.refresh(),
+  });
+  const disposeSkillReferences = installRendererSkillReferences(
+    document,
+    (editor) => skillContext(editor) !== null,
+  );
   /**
    * `keepCurrent` refreshes in place (the `#` menu reopening) instead of
    * clearing first, so an open menu never flickers empty.
@@ -3386,6 +3415,7 @@ export function installRendererBindingProbe(
     const { hostId, cwd } = detail as { hostId?: unknown; cwd?: unknown };
     if (typeof hostId !== "string" || typeof cwd !== "string" || cwd.length === 0) return;
     draftWorkspaces.set(hostId, cwd);
+    delegationMention?.refresh();
     for (const mounted of mountedByComposer.values()) {
       if (
         !threadIdFromComposerModelTarget(mounted.modelTarget) &&
@@ -3405,7 +3435,10 @@ export function installRendererBindingProbe(
   window.addEventListener("codexhost:renderer-adapter-status", onAdapterStatus);
   window.addEventListener("focus", onWindowFocus);
   delegationMention = installRendererDelegationMention(document, {
+    readSkills: (editor) => skillLibrary.read(editor),
+    onClose: () => skillLibrary.close(),
     onOpen: (editor) => {
+      skillLibrary.open(editor);
       const composer = composerForElement(editor);
       const mounted = composer ? mountedByComposer.get(composer) : undefined;
       if (mounted && controller.get(mounted.composer).agent !== "codex") {
@@ -3624,6 +3657,8 @@ export function installRendererBindingProbe(
       mutationObserver.disconnect();
       disposeReasoningSoftWrap();
       delegationMention?.dispose();
+      skillLibrary.dispose();
+      disposeSkillReferences();
       sidebarAgentIcons.dispose();
       stopSidebarExternalPinning();
       sidebarThreadState.dispose();

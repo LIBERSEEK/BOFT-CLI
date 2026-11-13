@@ -2,6 +2,8 @@ import { z } from "zod";
 export * from "./client-channel.js";
 export * from "./thread-catalog.js";
 export * from "./voice.js";
+export * from "./skills.js";
+export * from "./skill-reference.js";
 export * from "./web-access-tokens.js";
 export * from "./delegation-read.js";
 export * from "./credential-imports.js";
@@ -377,6 +379,15 @@ export {
 } from "./delegation-mention.js";
 
 export { desktopImageAttachmentPaths } from "./desktop-attachments.js";
+
+export {
+  THREAD_WATCH_NOTICE_HEADER,
+  THREAD_WATCH_NOTICE_OUTCOMES,
+  formatThreadWatchNotice,
+  parseThreadWatchNotice,
+  type ThreadWatchNoticeEntry,
+  type ThreadWatchNoticeOutcome,
+} from "./thread-watch-notice.js";
 
 export {
   REMOTE_SSH_SETUP_METHOD,

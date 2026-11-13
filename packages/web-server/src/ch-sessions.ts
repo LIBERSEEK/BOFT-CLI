@@ -2,6 +2,7 @@ import { draftPermissionMode, type DraftConfiguration } from "./draft-configurat
 /** CH-backed Web facade: canonical Threads are owned/persisted by CH, Web holds only rendering buffers. */
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
+import { resolve } from "node:path";
 import {
   WEB_FOLLOW_PROJECTION_KEYS,
   webTurnDiffsRequestSchema,
@@ -19,17 +20,20 @@ import type { ChThread } from "./ch-thread-view.ts";
 import type { Inspection } from "./harnesses.ts";
 import { nativePermissionView } from "./session-presentation.ts";
 import { projectGroupRoot } from "./ch-project-groups.ts";
+import { projectRootTitles } from "./workspaces.ts";
 import { threadListTitle } from "./ch-thread-title.ts";
 import { ChThreadHistory } from "./ch-thread-history.ts";
 import { WebThreadStates, type UsageLoad } from "./web-thread-state.ts";
 import { ChHarnessCommands } from "./ch-harness-commands.ts";
+import { WebSkills } from "./skills.ts";
+import { hostThreadIdSchema } from "@codexhost/shared-contracts";
 import { ChThreadEditing } from "./ch-thread-edit.ts";
 import { editedNativeInput } from "./native-user-input.ts";
 import { forkChThread, forkUnavailable } from "./ch-thread-fork.ts";
 import { ChPinnedThreads } from "./ch-pinned-threads.ts";
 import { type WebImages, WEB_IMAGE_INPUT, WEB_IMAGE_LIMITS } from "./web-images.ts";
 import { ChAttachments } from "./ch-attachments.ts";
-import { ChFileInputs } from "./ch-file-inputs.ts";
+import { ChFileInputs, type FileUploadTiming } from "./ch-file-inputs.ts";
 import { WebFileReferences } from "./file-references.ts";
 import { type WebFiles, WEB_FILE_INPUT } from "./web-files.ts";
 import { ChRealtime } from "./ch-realtime.ts";
@@ -89,6 +93,7 @@ export class ChSessions {
   private timer?: NodeJS.Timeout;
   private closed = false;
   private readonly realtime: ChRealtime | undefined;
+  private readonly skills: WebSkills;
   private readonly interactions: ChInteractions | undefined;
   private hostOnline = true;
   private hostEpoch: string | undefined;
@@ -122,6 +127,25 @@ export class ChSessions {
             return id;
           })
         : undefined;
+    this.skills = new WebSkills(host, events, async (sessionId) => {
+      if (this.closed || !this.hostOnline)
+        throw new RpcError("host/offline", "The Host is disconnected.");
+      const id = this.id(sessionId);
+      const draft = this.drafts.get(id);
+      if (draft && !draft.canonicalId) {
+        if (draft.selection.provider === "codex")
+          throw new RpcError("skills/unavailable", "Codex uses its native Skills.");
+        return draft.cwd ? { cwd: draft.cwd } : {};
+      }
+      const owner = await this.owner(id);
+      const row = this.rows.get(id);
+      if (owner.harnessId === "codex" || row?.parentThreadId || row?.canAcceptDirectInput === false)
+        throw new RpcError(
+          "skills/unavailable",
+          "Skills require an editable local external Thread.",
+        );
+      return { threadId: hostThreadIdSchema.parse(id) };
+    });
     this.pins = new ChPinnedThreads(host, workspaces);
     workspaces.setReferenceArchives([]);
     this.interactions = host.realtime
@@ -302,6 +326,7 @@ export class ChSessions {
     timing.measureSync("workspace_sync", () => {
       const groups = new Map<string, string | undefined>();
       const references: Array<{ sessionId: string; cwd: string; title?: string }> = [];
+      const rootTitles = projectRootTitles(projects.projects);
       const projectless = new Set(projects.projectless.filter((id) => !projects.assignments[id]));
       for (const row of this.rows.values()) {
         if (row.workspaceKind === "projectless" && !row.projectId && !projects.assignments[row.id])
@@ -312,7 +337,11 @@ export class ChSessions {
             : undefined;
         groups.set(row.id, root);
         if (root) {
-          const title = projects.projects.find((project) => project.rootPaths.includes(root))?.name;
+          // Only the project's first root keeps the native project name; other
+          // roots fall back to their folder name so titles never duplicate.
+          // Conflicting titles fall back to the full path, matching Workspaces.
+          const project = projects.projects.find((project) => project.rootPaths.includes(root));
+          const title = project === undefined ? undefined : rootTitles.get(resolve(root));
           references.push({
             sessionId: row.id,
             cwd: root,
@@ -727,6 +756,7 @@ export class ChSessions {
     if (this.closed) throw new RpcError("session/closed", "Web sessions are closing.");
     if (this.drafts.has(id)) return this.create(args, configuration);
     this.drafts.set(id, draft);
+    if (cwd && selection.provider !== "codex") this.skills.prepare(cwd);
     if (cwd) this.workspaces.attachReferencedSession(id, cwd);
     this.workspaces.addDraftReference(id, cwd);
     this.events.emit("api-session/added", await this.draftSummary(draft, false));
@@ -849,10 +879,16 @@ export class ChSessions {
     return this.drafts.get(id)?.cwd ?? this.localWorkspaceRoot(id);
   }
 
-  uploadFile(id: string, chunks: AsyncIterable<Uint8Array>, name?: string) {
+  uploadFile(
+    id: string,
+    chunks: AsyncIterable<Uint8Array>,
+    name?: string,
+    imageMediaType?: string,
+    timing?: FileUploadTiming,
+  ) {
     if (!this.fileInputs)
       throw new RpcError("session/attachment-invalid", "File uploads are unavailable.");
-    return this.fileInputs.upload(id, chunks, name);
+    return this.fileInputs.upload(id, chunks, name, imageMediaType, timing);
   }
 
   /** Draft input support for the Web composition; it does not create a Thread. */
@@ -1171,13 +1207,13 @@ export class ChSessions {
       const draft = this.drafts.get(request.sessionId);
       if (!draft || draft.canonicalId) await this.owner(request.sessionId);
       // Validate/save before creating a native Thread. Only native path context crosses the Host channel.
-      const preparedInput = this.fileInputs
+      const prepared = this.fileInputs
         ? await this.fileInputs.prepare(this.id(request.sessionId), request.content)
-        : (this.images?.prepare(request.content) ?? request.content);
-      // Queued entries are presented from path references; base64 would exceed the Host request limit.
-      const presentation = this.images
-        ? this.images.presentation(request.content)
-        : request.content;
+        : {
+            input: this.images?.prepare(request.content) ?? request.content,
+            presentation: this.images?.presentation(request.content) ?? request.content,
+          };
+      const { input: preparedInput, presentation } = prepared;
       // Use native text inputs so Desktop can also render queue entries when
       // connected to an older Host that forwards their shape unchanged.
       const input = preparedInput.map((part) =>
@@ -1479,6 +1515,7 @@ export class ChSessions {
   }
 
   registerCommands(rpc: RpcRegistry): void {
+    this.skills.register(rpc);
     const native = new ChHarnessCommands(this.host, async (sessionId) => {
       const id = this.id(sessionId);
       if (
@@ -1598,6 +1635,7 @@ export class ChSessions {
   }
   async close(): Promise<void> {
     this.fileReferences.close();
+    this.skills.close();
     this.closed = true;
     this.pins.close();
     this.realtime?.close();

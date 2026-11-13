@@ -205,8 +205,10 @@ fn help_prints_usage_to_stdout_and_succeeds() {
         for command in [
             "boft --version",
             "boft desktop-screenshot",
+            "boft host info ...",
+            "boft project list ...",
             "boft harness list|inspect ...",
-            "boft thread send|cancel|read|wait|watch|watches|list ...",
+            "boft thread send|cancel|read|wait|watch|watches|list|file ...",
             "boft broker install|status|stop|uninstall",
             "boft client add|list|remove ...",
             "boft events [--after <id>] [--limit <n>] [--follow true|false]",

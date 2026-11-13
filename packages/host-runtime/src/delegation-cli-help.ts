@@ -1,6 +1,12 @@
 import { consumesNextArgument } from "./delegation-cli-options.js";
 
 const COMMAND_HELP = {
+  "host info": `boft host info [--refresh true|false]
+Read this Host's environment, tools and workspace defaults. Cached observations expire after 60 seconds.`,
+  "project list": `boft project list [--query <text>] [--offset <n>] [--limit <n>] [--refresh true|false]
+Discover projects under this Host's configured roots. Returns live project metadata and pagination; no static project registry is required.`,
+  "thread file": `boft thread file <thread> --path <file> [--offset <n>] [--limit <bytes>] [--revision <revision>]
+Read a file explicitly linked in the latest final report, inside the Thread workspace. Returns a base64 chunk, revision, nextOffset and eof. Continue with the returned revision; restart if it changes. Maximum chunk size is 1 MiB. Read through the execution Host.`,
   "client add": `boft client add <name>
 Register a named external client for HTTP/MCP or a separate CLI identity. Normal same-user CLI calls authenticate automatically and do not need registration. Prints the client token once; it is not stored in a readable form and cannot be shown again.
 The client sets CODEXHOST_CLIENT_TOKEN (or CODEXHOST_CLIENT_TOKEN_FILE) and then uses the same delegate, thread and harness commands, or the MCP endpoint, against the external client listener (127.0.0.1:4398 unless CODEXHOST_EXTERNAL_CLIENT_PORT says otherwise).
@@ -52,7 +58,7 @@ Message pagination uses --view messages, default limit 25, maximum 100. hasMore 
   "thread watch": `boft thread watch <thread> [--notify <thread>] [--timeout-ms <n>] [--format json|compact]
 Ask the Host to notify one Thread, once, when the watched Thread stops. Returns immediately; no waiting or polling by the caller is needed, and the caller may end its Turn.
 --notify defaults to the calling Thread when it is identified (CODEXHOST_THREAD_ID, or CODEX_THREAD_ID in native Codex); for an external client it defaults to the client, and the notification becomes an event in its log (see boft events). Otherwise it is required. delegate start reports the caller as its parent.
-The notification starts a new Turn in the notified Thread with the watched Thread's link and outcome: completed, failed, interrupted, timedOut, unreadable, or notFound; a terminal outcome names the Turn it came from. It reports execution state only; read the Thread to judge the work.
+The notification starts a new Turn in the notified Thread with the watched Thread's link and outcome: completed, failed, interrupted, timedOut, unreadable, or notFound; a terminal outcome names the Turn it came from. It reports execution state only and asks the notified agent to read each Thread's result before continuing.
 --timeout-ms defaults to 1740000 (29 min). timedOut means the Thread had not reached a terminal state, which also covers a Harness that stopped without reporting it; watch again to keep waiting. unreadable means reads failed for 60 s, so the state is unknown.
 state=watching means registered. state=alreadyTerminal means the Thread was not running: nothing was registered and nothing will be sent.
 A busy notified Thread is notified after its Turn ends (retried for up to 6 hours); notifications due together arrive as one message. THREAD_BUSY is never treated as delivered.
@@ -76,6 +82,9 @@ read/wait are non-consuming. Native Codex callers need local Runtime access; RUN
 Native Codex shell commands also need the Host-provided CODEXHOST_* environment variables. If shell_environment_policy filters them, prefer inherit = "all" with ignore_default_excludes = true and a narrow include_only containing "CODEXHOST_RUNTIME_ENDPOINT" and "CODEXHOST_RUNTIME_TOKEN" plus the variables required by the platform and invoked tools. Avoid unconstrained inherit = "all", which forwards unrelated ambient variables.`;
 
 export const DELEGATION_HELP = `usage:
+  boft host info
+  boft project list
+  boft thread file <thread> --path <file>
   boft harness list
   boft harness inspect <harness>
   boft delegate start --harness <id> --task <text>
@@ -110,7 +119,13 @@ export function delegationCliHelp(arguments_: readonly string[]): string | undef
     return `${COMMAND_HELP.events}\n\n${COMMON_HELP}\n`;
   if (!command || command === "--help" || command === "-h" || command === "help") {
     if (group === "delegate") return DELEGATION_HELP;
-    if (group === "harness" || group === "thread" || group === "client") {
+    if (
+      group === "host" ||
+      group === "project" ||
+      group === "harness" ||
+      group === "thread" ||
+      group === "client"
+    ) {
       const usages = Object.entries(COMMAND_HELP)
         .filter(([name]) => name.startsWith(`${group} `))
         .map(([, help]) => help.split("\n")[0]);
