@@ -100,6 +100,7 @@ fn sanitized_argument_shape(arguments: &[OsString]) -> String {
 #[cfg(test)]
 mod tests {
     use super::sanitized_argument_shape;
+    #[cfg(unix)]
     use std::ffi::OsString;
 
     #[test]
