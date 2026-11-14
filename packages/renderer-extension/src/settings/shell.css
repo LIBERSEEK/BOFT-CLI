@@ -167,12 +167,6 @@
   color: var(--settings-text);
 }
 
-.settings-brand__mark .codexhost-settings-icon {
-  width: 24px;
-  height: 24px;
-  object-fit: contain;
-}
-
 .settings-brand__copy {
   display: flex;
   min-width: 0;
@@ -1141,12 +1135,37 @@
   line-height: 18px;
 }
 
-.settings-connection-version-available {
+.settings-connection-install-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
   flex: none;
-  color: var(--settings-muted);
-  font-size: 10px;
-  line-height: 16px;
-  white-space: nowrap;
+  padding: 0;
+  color: #fff;
+  background: #1688f5;
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+  transition:
+    background-color 120ms ease,
+    transform 120ms ease;
+}
+
+.settings-connection-install-link:hover:not(:disabled) {
+  background: #0877e3;
+  transform: translateY(-1px);
+}
+
+.settings-connection-install-link:focus-visible {
+  outline: 2px solid var(--settings-focus);
+  outline-offset: 2px;
+}
+
+.settings-connection-install-link:disabled {
+  cursor: wait;
+  opacity: 0.6;
 }
 
 .settings-connection-row__status::before {

@@ -55,11 +55,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Parses an append-only Claude transcript file body into every persisted
- * user/assistant record in file order, stamping the owning `session_id`. No
- * parentUuid branch is followed, so records the SDK's branch walker would drop
- * (a later prompt attached before the prior assistant terminal, or attachment
- * records interleaved between messages) survive in transcript order.
+ * Parses persisted user, assistant and attachment records in file order, stamping
+ * the owning session_id. Repeated UUIDs use their last record and metadata while
+ * retaining first-seen order. No parentUuid branch is followed.
  */
 function parseTranscriptRecords(contents: string, sessionId: string): unknown[] {
   const messages = new Map<string, Record<string, unknown>>();
@@ -73,9 +71,9 @@ function parseTranscriptRecords(contents: string, sessionId: string): unknown[] 
     }
     if (
       !isRecord(entry) ||
-      (entry.type !== "user" && entry.type !== "assistant") ||
+      (entry.type !== "user" && entry.type !== "assistant" && entry.type !== "attachment") ||
       typeof entry.uuid !== "string" ||
-      !isRecord(entry.message)
+      (entry.type !== "attachment" && !isRecord(entry.message))
     ) {
       continue;
     }
@@ -125,5 +123,7 @@ export async function readClaudeSubagentTranscript(input: {
   );
   const transcript = await findTranscriptFile(input.environment, input.cwd, relativeName);
   if (!transcript) return null;
-  return parseTranscriptRecords(await readFile(transcript, "utf8"), input.sessionId);
+  return parseTranscriptRecords(await readFile(transcript, "utf8"), input.sessionId).filter(
+    (entry) => isRecord(entry) && (entry.type === "user" || entry.type === "assistant"),
+  );
 }

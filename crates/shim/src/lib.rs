@@ -18,10 +18,13 @@ use codexhost_platform::{
 };
 
 mod desktop_invocation;
+mod invocation_diagnostics;
 mod local_runtime_lease;
 mod process_identity;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod remote_lifecycle;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod remote_listener_process;
 
 use local_runtime_lease::LocalRuntimeLease;
 
@@ -34,8 +37,6 @@ const DATA_DIRECTORY_ENV: &str = "CODEXHOST_DATA_DIR";
 const LAUNCHER_PID_ENV: &str = "CODEXHOST_LAUNCHER_PID";
 #[cfg(target_os = "windows")]
 const LOCAL_APP_DATA_ENV: &str = "LOCALAPPDATA";
-const NPM_NODE_PATH_ENV: &str = "CODEXHOST_NPM_NODE_PATH";
-const NPM_PACKAGE_ROOT_ENV: &str = "CODEXHOST_NPM_PACKAGE_ROOT";
 const REMOTE_LISTENER_CHILD_ENV: &str = "CODEXHOST_REMOTE_LISTENER_CHILD";
 const INTERNAL_ORIGINATOR_OVERRIDE_ENV: &str = "CODEX_INTERNAL_ORIGINATOR_OVERRIDE";
 const DESKTOP_ORIGINATOR: &str = "Codex Desktop";
@@ -590,7 +591,8 @@ fn stop_detached_listener(child: &mut std::process::Child) {
     };
     let process_id = Pid::from_raw(raw_process_id);
     let _ = kill(process_id, Signal::SIGTERM);
-    let deadline = Instant::now() + Duration::from_secs(2);
+    // The listener supervisor needs its own two-second grace to kill descendants.
+    let deadline = Instant::now() + Duration::from_secs(5);
     while child.try_wait().ok().flatten().is_none() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(20));
     }
@@ -614,13 +616,9 @@ fn launch_detached_remote_listener(arguments: &[OsString]) -> ShimResult<i32> {
         let stock_codex_path = env::var_os(STOCK_CODEX_PATH_ENV)
             .map(PathBuf::from)
             .ok_or_else(|| format!("{STOCK_CODEX_PATH_ENV} is required"))?;
-        let launcher_managed = env::var_os(LAUNCHER_PID_ENV).is_some();
-        let (node_path, host_runtime_path) = select_host_paths(
+        let (node_path, host_runtime_path) = (
             env::var_os(HOST_NODE_PATH_ENV),
             env::var_os(HOST_RUNTIME_PATH_ENV),
-            launcher_managed,
-            env::var_os(NPM_NODE_PATH_ENV),
-            env::var_os(NPM_PACKAGE_ROOT_ENV),
         );
         let node_path = node_path.as_deref().map(Path::new);
         let host_runtime_path = host_runtime_path.as_deref().map(Path::new);
@@ -654,7 +652,7 @@ fn launch_detached_remote_listener(arguments: &[OsString]) -> ShimResult<i32> {
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     configure_background_command(&mut command);
-    let mut child = command.spawn()?;
+    let mut child = remote_listener_process::RemoteListenerProcess::spawn(&mut command)?;
     let deadline = Instant::now() + STARTUP_TIMEOUT;
     loop {
         if let Some(status) = child.try_wait()? {
@@ -671,10 +669,10 @@ fn launch_detached_remote_listener(arguments: &[OsString]) -> ShimResult<i32> {
                     format!("managed remote listener exited after readiness: {status}").into(),
                 );
             }
+            child.detach();
             return Ok(0);
         }
         if Instant::now() >= deadline {
-            stop_detached_listener(&mut child);
             return Err(format!(
                 "managed remote listener did not become ready at {} within {} seconds",
                 socket_path.display(),
@@ -684,27 +682,6 @@ fn launch_detached_remote_listener(arguments: &[OsString]) -> ShimResult<i32> {
         }
         thread::sleep(POLL_INTERVAL);
     }
-}
-
-fn select_host_paths(
-    configured_node: Option<OsString>,
-    configured_runtime: Option<OsString>,
-    launcher_managed: bool,
-    npm_node: Option<OsString>,
-    npm_package_root: Option<OsString>,
-) -> (Option<OsString>, Option<OsString>) {
-    if launcher_managed && let (Some(node), Some(package_root)) = (npm_node, npm_package_root) {
-        return (
-            Some(node),
-            Some(
-                PathBuf::from(package_root)
-                    .join("app")
-                    .join("host-runtime.mjs")
-                    .into_os_string(),
-            ),
-        );
-    }
-    (configured_node, configured_runtime)
 }
 
 #[must_use]
@@ -723,14 +700,10 @@ fn is_managed_remote_listener(arguments: &[OsString]) -> bool {
 
 #[must_use]
 fn host_runtime_paths_are_configured() -> bool {
-    let launcher_managed = env::var_os(LAUNCHER_PID_ENV).is_some();
     matches!(
-        select_host_paths(
+        (
             env::var_os(HOST_NODE_PATH_ENV),
             env::var_os(HOST_RUNTIME_PATH_ENV),
-            launcher_managed,
-            env::var_os(NPM_NODE_PATH_ENV),
-            env::var_os(NPM_PACKAGE_ROOT_ENV),
         ),
         (Some(_), Some(_))
     )
@@ -745,12 +718,11 @@ fn child_command(
     let launcher_managed = env::var_os(LAUNCHER_PID_ENV).is_some();
     let inherited_remote_profile = launcher_managed
         && env::var_os(REMOTE_SSH_MANAGED_ENV).as_deref() == Some(std::ffi::OsStr::new("1"));
-    let host_paths = select_host_paths(
+    // Local Launcher or remote installation owns this pair. npm paths describe
+    // the updater's runtime, not a replacement for the selected Host runtime.
+    let host_paths = (
         env::var_os(HOST_NODE_PATH_ENV),
         env::var_os(HOST_RUNTIME_PATH_ENV),
-        launcher_managed,
-        env::var_os(NPM_NODE_PATH_ENV),
-        env::var_os(NPM_PACKAGE_ROOT_ENV),
     );
     let remote_proxy_environment =
         if env::var_os(REMOTE_SSH_MANAGED_ENV).as_deref() == Some(std::ffi::OsStr::new("1")) {
@@ -766,6 +738,9 @@ fn child_command(
         remote_proxy_environment
     };
     if !desktop_helper && should_start_host_runtime(arguments) {
+        if inherited_remote_profile {
+            return Err("local Desktop inherited remote Host bootstrap; restart through codexhost with a clean local environment".into());
+        }
         match host_paths {
             (Some(node_path), Some(runtime_path)) => {
                 let node_path =
@@ -781,9 +756,6 @@ fn child_command(
                     .env_remove(CODEX_CLI_PATH_ENV)
                     .env_remove(REMOTE_SSH_MANAGED_ENV)
                     .env_remove(REMOTE_LISTENER_CHILD_ENV);
-                if inherited_remote_profile {
-                    command.env_remove(DATA_DIRECTORY_ENV);
-                }
                 command.envs(remote_proxy_environment);
                 configure_background_command(&mut command);
                 return Ok(command);
@@ -910,6 +882,12 @@ pub fn run_proxy_with_observer(
         && host_runtime_paths_are_configured()
         && !is_managed_remote_listener(arguments)
         && env::var_os(DATA_DIRECTORY_ENV).is_some();
+    invocation_diagnostics::trace_invocation(
+        arguments,
+        desktop_helper,
+        &stock_codex_path,
+        local_host_runtime,
+    );
     let mut local_runtime_lease = if local_host_runtime {
         Some(LocalRuntimeLease::acquire(&PathBuf::from(
             env::var_os(DATA_DIRECTORY_ENV).ok_or("CODEXHOST_DATA_DIR is unavailable")?,
@@ -929,6 +907,11 @@ pub fn run_proxy_with_observer(
         .stderr(Stdio::piped());
     let mut child = spawn_supervised(&mut command)?;
     let child_id = child.id();
+    if local_host_runtime
+        && env::var_os("CODEXHOST_STARTUP_TRACE").as_deref() == Some(OsStr::new("1"))
+    {
+        eprintln!("[codexhost startup] shim: Host Runtime child spawned pid={child_id}");
+    }
     if let Some(lease) = &mut local_runtime_lease
         && let Err(error) = lease.set_child_process_id(child_id)
     {
@@ -970,7 +953,12 @@ pub fn run_proxy_with_observer(
     if let Some(signal) = outcome.forwarded_signal {
         eprintln!("codexhost shim: forwarded shutdown signal {signal}");
     }
-    if outcome.terminated_descendants {
+    // Normal cleanup must not replace a failed child's last stderr line with a success notice.
+    let preserve_child_error = outcome.status.code().is_some_and(|code| code != 0)
+        && outcome.forwarded_signal.is_none()
+        && !outcome.desktop_input_closed
+        && !outcome.forced;
+    if outcome.terminated_descendants && !preserve_child_error {
         eprintln!("codexhost shim: terminated official CLI descendants after root exit");
     }
     if outcome.desktop_input_closed {
@@ -995,6 +983,16 @@ pub fn run_proxy(arguments: &[OsString]) -> ShimResult<i32> {
 
 pub fn run_from_environment() -> ShimResult<i32> {
     let arguments = env::args_os().skip(1).collect::<Vec<_>>();
+    #[cfg(target_os = "macos")]
+    if arguments.first().and_then(|argument| argument.to_str())
+        == Some(codexhost_platform::AQUA_SPAWN_ARGUMENT)
+    {
+        if arguments.len() != 2 {
+            return Err("Aqua spawn helper requires exactly one private socket path".into());
+        }
+        codexhost_platform::run_aqua_spawn_helper(Path::new(&arguments[1]))?;
+        return Ok(0);
+    }
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     if arguments.first().and_then(|argument| argument.to_str())
         == Some("--codexhost-remote-terminate")
@@ -1028,8 +1026,8 @@ mod tests {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     use super::{PROCESS_TREE_REFRESH_INTERVAL, ShutdownSignals, process_tree_refresh_due};
     use super::{
-        app_server_subcommand_index, is_default_remote_unix_listener, select_host_paths,
-        should_start_host_runtime, should_start_host_runtime_for_originator,
+        app_server_subcommand_index, is_default_remote_unix_listener, should_start_host_runtime,
+        should_start_host_runtime_for_originator,
     };
 
     fn arguments(values: &[&str]) -> Vec<OsString> {
@@ -1162,28 +1160,6 @@ mod tests {
             &arguments,
             Some(std::ffi::OsStr::new("Codex Desktop")),
         ));
-    }
-
-    #[test]
-    fn local_launcher_paths_win_over_remote_profile_bootstrap_paths() {
-        let selected = select_host_paths(
-            Some(OsString::from("/remote/node")),
-            Some(OsString::from("/remote/runtime/host-runtime.mjs")),
-            true,
-            Some(OsString::from("/local/node")),
-            Some(OsString::from("/local/npm-package")),
-        );
-
-        assert_eq!(selected.0, Some(OsString::from("/local/node")));
-        assert_eq!(
-            selected.1,
-            Some(
-                std::path::PathBuf::from("/local/npm-package")
-                    .join("app")
-                    .join("host-runtime.mjs")
-                    .into_os_string()
-            )
-        );
     }
 
     #[test]

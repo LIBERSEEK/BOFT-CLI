@@ -25,6 +25,7 @@ describe("Renderer settings foundation", () => {
     expect(pages.map(({ id }) => id)).toEqual(DEFAULT_RENDERER_SETTINGS_PAGE_IDS);
     expect(pages.map(({ label }) => label)).toEqual([
       "Agents",
+      "Phone & browser",
       "Remote connections",
       "Accounts",
       "Sessions",
@@ -36,6 +37,7 @@ describe("Renderer settings foundation", () => {
     ]);
     expect(pages.map(({ icon }) => icon)).toEqual([
       "connections",
+      "mobile",
       "gateway",
       "accounts",
       "session-import",
@@ -49,7 +51,14 @@ describe("Renderer settings foundation", () => {
     expect(RENDERER_SETTINGS_NAV_SECTIONS.map(({ id, pageIds }) => [id, [...pageIds]])).toEqual([
       [
         "connection",
-        ["connections", "remote-connections", "accounts", "session-import", "usage-statistics"],
+        [
+          "connections",
+          "mobile-web",
+          "remote-connections",
+          "accounts",
+          "session-import",
+          "usage-statistics",
+        ],
       ],
       ["general", ["appearance", "plugins", "updates"]],
       ["other", ["about"]],
@@ -67,6 +76,7 @@ describe("Renderer settings foundation", () => {
 
     expect(pages.map(({ id }) => id)).toEqual([
       "connections",
+      "mobile-web",
       "remote-connections",
       "accounts",
       "session-import",

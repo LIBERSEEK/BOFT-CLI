@@ -5,6 +5,7 @@ import {
 } from "../console/pages/usage-statistics.js";
 import { consoleMessages } from "../console/messages.js";
 import { createRemoteConnectionsPage } from "./remote-connections-page.js";
+import { createMobileWebPage } from "./mobile-web-page.js";
 import type { RemoteConnectionsControl } from "../remote-connections-control.js";
 import type {
   UpdateCheckResult,
@@ -59,6 +60,8 @@ import {
   runBoundedRendererUpdateRequest,
 } from "./update-request.js";
 import liberseekLogoVideoUrl from "../assets/logo-animated.mp4";
+import { createRendererUpdateStatusPoll } from "./update-status-poll.js";
+import { RendererRequestTransportError } from "../renderer-request-sender.js";
 
 export const CODEXHOST_GITHUB_REPOSITORY_URL = "https://github.com/LIBERSEEK/BOFT-CLI";
 export const CODEXHOST_RELEASES_LATEST_URL = `${CODEXHOST_GITHUB_REPOSITORY_URL}/releases/latest`;
@@ -94,6 +97,7 @@ function windowsInstallerDownloadUrl(window: Window | null | undefined, version:
 
 export const DEFAULT_RENDERER_SETTINGS_PAGE_IDS = [
   "connections",
+  "mobile-web",
   "remote-connections",
   "accounts",
   "session-import",
@@ -109,6 +113,7 @@ export const RENDERER_SETTINGS_NAV_SECTIONS = [
     id: "connection",
     pageIds: [
       "connections",
+      "mobile-web",
       "remote-connections",
       "accounts",
       "session-import",
@@ -146,6 +151,7 @@ export interface RendererUpdateClient {
   openConsole?(): Promise<unknown>;
   /** Opens an http(s) URL in the OS browser; absent when the Host cannot. */
   openExternalUrl?(url: string): Promise<void>;
+  openWeb?(): Promise<unknown>;
 }
 
 function panelIconName(view: string): RendererSettingsIconName {
@@ -569,16 +575,24 @@ function updatesPage(
           ? "settings-update-manual-description is-fallback"
           : "settings-update-manual-description";
       };
-      let pollTimer: number | undefined;
-      let pollAttempts = 0;
       let pending = false;
-
-      const clearPoll = (): void => {
-        if (pollTimer !== undefined) {
-          document.defaultView?.clearTimeout(pollTimer);
-          pollTimer = undefined;
-        }
-      };
+      let checkedStatus: UpdateStatus | null = null;
+      const statusPoll = createRendererUpdateStatusPoll(context, {
+        status(status) {
+          const message = statusMessage(status, messages);
+          if (message) renderPendingStatus(status, message);
+          if (status?.phase === "succeeded") {
+            currentVersionValue.textContent = `v${status.version}`;
+            latestVersionValue.className = "";
+          }
+        },
+        reconnecting() {
+          renderPendingStatus(null, messages.updateReconnecting);
+        },
+        unavailable() {
+          renderPendingStatus(null, messages.updateResultUnavailable, "unavailable");
+        },
+      });
 
       // Unavailable can follow a rendered check (Retry after an error), so it
       // restores the metadata and manual controls to their unchecked state.
@@ -605,8 +619,8 @@ function updatesPage(
       };
 
       // Failed requests point at the manual download without exposing internal
-      // detail. A start timeout is handled separately: the Host may still be
-      // updating, so continue reading status rather than retrying the start.
+      // detail. An interrupted start response cannot establish the outcome;
+      // status reads can recover it without submitting another update.
       const renderRequestFailure = (error: unknown): void => {
         console.error("codexhost update request failed", error);
         renderPendingStatus(
@@ -618,46 +632,24 @@ function updatesPage(
         );
       };
 
-      const scheduleStatusPoll = (client: RendererUpdateClient, resetAttempts = false): void => {
-        clearPoll();
-        if (resetAttempts) pollAttempts = 0;
-        if (pollAttempts >= 320) {
-          renderPendingStatus(null, messages.updateRequestTimeout, "failed");
-          return;
-        }
-        pollAttempts += 1;
-        pollTimer = document.defaultView?.setTimeout(() => {
-          void context.runLatest(
-            (signal) => runBoundedRendererUpdateRequest(() => client.readUpdateStatus(), signal),
-            {
-              success(result) {
-                const message = statusMessage(result.status, messages);
-                if (message) renderPendingStatus(result.status, message);
-                if (result.status === null || isPendingStatus(result.status)) {
-                  scheduleStatusPoll(client);
-                }
-              },
-              failure(error) {
-                if (error instanceof RendererUpdateRequestTimeoutError) {
-                  scheduleStatusPoll(client);
-                } else {
-                  renderRequestFailure(error);
-                }
-              },
-            },
-          );
-        }, 750);
+      const appendServiceStopOutput = (status: UpdateStatus | null): void => {
+        if (!status?.serviceStopOutput) return;
+        const output = document.createElement("pre");
+        output.className = "settings-update-service-stop-output";
+        output.textContent = status.serviceStopOutput;
+        panel.append(output);
       };
 
       const renderPendingStatus = (
         status: UpdateStatus | null,
         message: string,
-        viewPhase: UpdateStatus["phase"] | "pending" = status?.phase ?? "pending",
+        viewPhase: UpdateStatus["phase"] | "pending" | "unavailable" = status?.phase ?? "pending",
       ): void => {
         panel.dataset.updateState = viewPhase;
         delete panel.dataset.inline;
         panel.replaceChildren();
         const head = createPanelHead(document, viewPhase, message);
+        appendServiceStopOutput(status);
         setManualFallback(viewPhase === "failed");
         panel.append(head);
         if (
@@ -684,6 +676,7 @@ function updatesPage(
       const start = (client: RendererUpdateClient): void => {
         if (pending) return;
         pending = true;
+        const previousStatus = checkedStatus;
         renderPendingStatus(null, messages.updatePreparing);
         void context.runLatest(
           (signal) => runBoundedRendererUpdateRequest(() => client.startUpdate(), signal),
@@ -694,12 +687,16 @@ function updatesPage(
                 result.status,
                 statusMessage(result.status, messages) ?? messages.updatePreparing,
               );
-              if (isPendingStatus(result.status)) scheduleStatusPoll(client, true);
+              if (isPendingStatus(result.status)) statusPoll.start(() => client.readUpdateStatus());
             },
             failure(error) {
               pending = false;
-              if (error instanceof RendererUpdateRequestTimeoutError) {
-                scheduleStatusPoll(client, true);
+              if (
+                error instanceof RendererUpdateRequestTimeoutError ||
+                error instanceof RendererRequestTransportError
+              ) {
+                renderPendingStatus(null, messages.updateReconnecting);
+                statusPoll.start(() => client.readUpdateStatus(), previousStatus);
               } else {
                 renderRequestFailure(error);
               }
@@ -716,6 +713,7 @@ function updatesPage(
           renderUnavailable(messages.runtimeCapabilityNotInstalled);
           return;
         }
+        checkedStatus = result.status;
         currentVersionValue.textContent = `v${result.currentVersion}`;
         latestVersionValue.textContent = result.latestVersion ? `v${result.latestVersion}` : "-";
         latestVersionValue.className = result.updateAvailable
@@ -737,7 +735,7 @@ function updatesPage(
         const operationMessage = statusMessage(result.status, messages);
         if (isPendingStatus(result.status)) {
           renderPendingStatus(result.status, operationMessage ?? messages.updatePreparing);
-          scheduleStatusPoll(client, true);
+          statusPoll.start(() => client.readUpdateStatus());
           return;
         }
         const failedLatest =
@@ -768,6 +766,7 @@ function updatesPage(
         if (inlineUpdate) panel.dataset.inline = "";
         else delete panel.dataset.inline;
         const head = createPanelHead(document, view, title);
+        appendServiceStopOutput(result.status);
         const buttons: HTMLElement[] = [];
         if (
           result.updateAvailable &&
@@ -829,7 +828,7 @@ function updatesPage(
       };
 
       void load();
-      return clearPoll;
+      return () => statusPoll.dispose();
     },
   });
 }
@@ -853,6 +852,10 @@ export function createDefaultRendererSettingsPages(
     createConnectionsSettingsPage(messages, getDiagnostics, undefined, getRemoteConnections, () => {
       const client = getUpdateClient();
       return client?.openExternalUrl?.bind(client);
+    }),
+    createMobileWebPage(messages, () => {
+      const client = getUpdateClient();
+      return client?.openWeb?.bind(client);
     }),
     createRemoteConnectionsPage(messages, getRemoteConnections),
     createAccountsSettingsPage(messages, getAccountClient),

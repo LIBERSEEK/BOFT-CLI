@@ -405,9 +405,9 @@ export interface HostSubagentState {
   nativeSubagentId?: string;
   description: string;
   role?: string;
-  /** Native child Model ID, when explicitly supplied or reported; not a display label. */
+  /** Native child Model ID, or the parent selection when the CLI does not report one. */
   model?: string;
-  /** Native child reasoning effort, when known; do not infer from parent settings. */
+  /** Native child reasoning effort; falls back to the parent selection when unreported. */
   reasoningEffort?: string;
   background: boolean;
   status: HostSubagentStatus;
@@ -667,11 +667,26 @@ export interface HarnessSessionImportSource {
   nativeRef: NativeSessionRef;
 }
 
+/** Confirmed import destination, with its live Session when initialization succeeded. */
+export interface HarnessSessionImportPrepared {
+  nativeRef: NativeSessionRef;
+  session?: HarnessSession;
+}
+
 /** Optional discovery of existing Native Sessions that codexhost can map and resume. */
 export interface HarnessSessionImportCapability {
   listCandidates(): Promise<HarnessResult<readonly HarnessSessionImportCandidate[]>>;
   /** Read-only revalidation. Omission keeps older discovery-only plugins valid, not importable. */
   resolveCandidate?(nativeSessionId: string): Promise<HarnessResult<HarnessSessionImportSource>>;
+  /** Prepare an import, optionally deriving a different Native Session. A failure result confirms
+   * that no derived Session was created; reject when the outcome is unconfirmed. Any known new
+   * nativeRef must be returned successfully, even without a usable Session. The Host owns a
+   * returned Session and persists the destination before reading its snapshot.
+   */
+  prepareImport?(input: {
+    source: HarnessSessionImportSource;
+    environment?: Record<string, string | undefined>;
+  }): Promise<HarnessResult<HarnessSessionImportPrepared>>;
 }
 
 export interface HarnessAdapter {

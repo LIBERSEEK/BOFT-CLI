@@ -13,9 +13,15 @@ import {
   type NativeSessionRef,
 } from "@codexhost/shared-contracts";
 
-import { copyNativeBrainDirIfExists, copyNativeConversationDbIfExists } from "./fork.js";
+import {
+  copyNativeBrainDirIfExists,
+  copyNativeConversationDbIfExists,
+  nativeConversationDbPath,
+} from "./fork.js";
 import { AntigravityHistory, type AntigravityTurn } from "./history.js";
+import { nativeTurnBoundaryError } from "./native-turn-boundaries.js";
 import type { AntigravityPermissionMode } from "./permission-modes.js";
+import { antigravityHome } from "./usage-statistics.js";
 
 export interface RollbackAntigravityLastTurnOptions {
   harnessId: HarnessId;
@@ -101,6 +107,13 @@ export async function rollbackAntigravityLastTurn(
     };
   }
 
+  const homedir = antigravityHome(sessionEnvironment);
+  const boundaryError = await nativeTurnBoundaryError(
+    nativeConversationDbPath(sourceRef.nativeSessionId, homedir),
+    sourceTurns.length,
+  );
+  if (boundaryError) return { ok: false, error: boundaryError };
+
   const truncatedTurns = sourceTurns.slice(0, -1);
   const derivedNativeSessionId = randomUUID();
   const mappedTurns: AntigravityTurn[] = truncatedTurns.map((turn) => ({
@@ -123,6 +136,25 @@ export async function rollbackAntigravityLastTurn(
   const thinkingOptionId = sourceSession?.thinkingOptionId ?? sourceHistory.thinkingOptionId;
   const permissionMode = sourceSession?.permissionMode ?? "dangerously-skip-permissions";
 
+  try {
+    await copyNativeConversationDbIfExists(
+      sourceRef.nativeSessionId,
+      derivedNativeSessionId,
+      mappedTurns.length,
+      homedir,
+    );
+  } catch (error) {
+    return {
+      ok: false,
+      error: {
+        code: "nativeFailure",
+        message: error instanceof Error ? error.message : String(error),
+        retryable: false,
+      },
+    };
+  }
+  await copyNativeBrainDirIfExists(sourceRef.nativeSessionId, derivedNativeSessionId, homedir);
+
   const rolledBackHistory = await AntigravityHistory.createDerived({
     environment: sessionEnvironment,
     nativeSessionId: derivedNativeSessionId,
@@ -130,15 +162,6 @@ export async function rollbackAntigravityLastTurn(
     ...(model ? { model } : {}),
     ...(thinkingOptionId ? { thinkingOptionId } : {}),
   });
-
-  await Promise.all([
-    copyNativeConversationDbIfExists(
-      sourceRef.nativeSessionId,
-      derivedNativeSessionId,
-      mappedTurns.length,
-    ),
-    copyNativeBrainDirIfExists(sourceRef.nativeSessionId, derivedNativeSessionId),
-  ]);
 
   const derivedNativeRef: NativeSessionRef = {
     harnessId,

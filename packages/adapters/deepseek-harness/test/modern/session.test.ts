@@ -1407,6 +1407,61 @@ describe("DeepSeek Harness Modern Session", () => {
     await test.session.close();
   });
 
+  it("keeps a live Turn healthy through DSH 0.2.2-rc.2 named children and Team records", async () => {
+    const test = setup([() => accepted()], [], ["request-1"]);
+    const outputs = lifecycleOutputs(test.session);
+    const id = turnId("host-turn-1");
+    await test.session.execute({
+      type: "turn.start",
+      turnId: id,
+      input: [{ type: "text", text: "delegate" }],
+    });
+    test.feed.push(event(0, "team/mode", { enabled: true }));
+    test.feed.push(event(1, "turn/start", { turn: 1 }));
+    test.feed.push(event(2, "step/start", { turn: 1, step: 1 }));
+    test.feed.push(userMessage(3, "delegate", "request-1"));
+    expect(await nextEvent(outputs)).toEqual({ type: "turn.started", turnId: id });
+    test.feed.push(
+      event(4, "subagent/catalog", {
+        version: 3,
+        childId: "child",
+        childCreatedAt: 1,
+        mode: "continuable",
+        label: "review",
+        name: "reviewer",
+      }),
+    );
+    test.feed.push(
+      event(5, "team/task", {
+        version: 2,
+        teamId: SESSION_ID,
+        task: {
+          id: "task-1",
+          revision: 2,
+          subject: "review",
+          description: "review the change",
+          status: "in_progress",
+          ownerId: "child",
+          ownerName: "reviewer",
+          blockedBy: [],
+          writeScopes: [],
+        },
+      }),
+    );
+    test.feed.push(finalAssistantMessage(6, 1, "delegated", "think"));
+    test.feed.push(event(7, "step/end", { turn: 1, step: 1 }));
+    test.feed.push(event(8, "turn/end", { turn: 1, reason: { kind: "completed" } }));
+
+    const emitted = await eventsThrough(outputs, "turn.completed");
+    expect(emitted.some((item) => item.type === "session.faulted")).toBe(false);
+    expect(emitted.at(-1)).toMatchObject({
+      type: "turn.completed",
+      turnId: id,
+      outcome: { status: "succeeded", checkpoint: { checkpointId: "v4-turn-end:8" } },
+    });
+    await test.session.close();
+  });
+
   it("streams relative local media as absolute paths, live and in history", async () => {
     const workspace = await mkdtemp(path.join(os.tmpdir(), "codexhost-dsh-media-"));
     const shots = path.join(workspace, "shots");
@@ -4115,6 +4170,13 @@ describe("DeepSeek Harness Modern Session", () => {
               options: [{ label: "Apply" }, { label: "Revise" }],
               intent: { kind: "plan-review", approve: "Apply" },
             },
+            {
+              id: "consent",
+              question: "Allow Calculator?",
+              detail: "Calculator: view and control",
+              options: [{ label: "Allow" }, { label: "Deny" }],
+              intent: { kind: "approval", approve: "Allow", reject: "Deny" },
+            },
           ],
         },
         respond,
@@ -4188,6 +4250,18 @@ describe("DeepSeek Harness Modern Session", () => {
           allowOther: false,
           optional: false,
         },
+        {
+          id: "consent",
+          type: "choice",
+          prompt: "Allow Calculator?\n\nCalculator: view and control",
+          options: [
+            { value: "Allow", label: "Allow" },
+            { value: "Deny", label: "Deny" },
+          ],
+          multiple: false,
+          allowOther: false,
+          optional: false,
+        },
       ],
     });
     await expect(
@@ -4202,6 +4276,7 @@ describe("DeepSeek Harness Modern Session", () => {
             multi: ["Tests", "Docs"],
             custom: ["Elsewhere"],
             plan: ["Apply"],
+            consent: ["Deny"],
           },
         },
       }),
@@ -4213,6 +4288,7 @@ describe("DeepSeek Harness Modern Session", () => {
         { id: "multi", selected: ["Tests", "Docs"] },
         { id: "custom", selected: [], custom: "Elsewhere" },
         { id: "plan", selected: ["Apply"] },
+        { id: "consent", selected: ["Deny"] },
       ],
     });
     expect(await nextEvent(outputs)).toMatchObject({

@@ -44,6 +44,7 @@ export type {
   HarnessSessionCapabilities,
   HarnessSessionImportCandidate,
   HarnessSessionImportCapability,
+  HarnessSessionImportPrepared,
   HarnessSessionImportSource,
   HarnessSubagentCapability,
   HarnessWebUiAction,
@@ -134,3 +135,11 @@ export {
   type LiveCommandExclusions,
   type LiveHarnessCommand,
 } from "./live-command-catalog.js";
+
+export {
+  subagentConfiguration,
+  inheritSubagentConfiguration,
+  configureSubagentEvent,
+  configureSubagentSnapshot,
+  type SubagentConfiguration,
+} from "./subagent-configuration.js";

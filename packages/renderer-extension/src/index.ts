@@ -240,11 +240,13 @@ export {
   SETTINGS_TRIGGER_ATTRIBUTE,
   inspectRendererSettingsContract,
   installRendererSettingsHeaderTrigger,
+  installRendererSettingsRailTrigger,
   mountRendererSettingsTrigger,
 } from "./settings/trigger.js";
 export type {
   RendererSettingsContractInspection,
   RendererSettingsHeaderTriggerControl,
+  RendererSettingsRailTriggerControl,
   RendererSettingsTriggerControl,
 } from "./settings/trigger.js";
 export {

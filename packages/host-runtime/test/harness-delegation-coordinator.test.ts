@@ -220,6 +220,49 @@ describe("HarnessDelegationCoordinator", () => {
     }
   });
 
+  it.each([
+    { title: "", preview: "  现在有一个问题，\n帮我理解  ", expected: "现在有一个问题， 帮我理解" },
+    { title: " \n ", preview: "First message", expected: "First message" },
+    { title: undefined, preview: "First message", expected: "First message" },
+    { title: "Named parent", preview: "First message", expected: "Named parent" },
+    { title: "", preview: " \n ", expected: "Untitled Thread" },
+    { title: "", preview: undefined, expected: "Untitled Thread" },
+  ])(
+    "uses the parent preview only when its saved title is blank ($title, $preview)",
+    async ({ title, preview, expected }) => {
+      const value = await fixture();
+      try {
+        const parent = await value.repository.createProvisional({
+          hostThreadId: hostThreadIdSchema.parse("preview-parent"),
+          createRequestId: "preview-parent",
+          harnessId: harnessIdSchema.parse("pi"),
+          cwd: "/synthetic",
+          ...(title !== undefined ? { title } : {}),
+          transportModelId: "codexhost/pi-native",
+          ephemeral: false,
+          historyMode: "paginated",
+        });
+        if (preview !== undefined) {
+          await value.repository.updateMetadata(parent.hostThreadId, { preview });
+        }
+        const result = await value.coordinator.start({
+          harnessId: "pi",
+          task: "Full task instructions",
+          taskName: "删除 Skill 命令链路",
+          parentThreadId: parent.hostThreadId,
+        });
+        const childTitle = `删除 Skill 命令链路 · ${expected}`;
+        expect(result.title).toBe(childTitle);
+        expect(await value.repository.find(result.threadId)).toMatchObject({ title: childTitle });
+        expect(value.notifications[0]).toMatchObject({ name: childTitle });
+        expect((await value.repository.find(parent.hostThreadId))?.title).toBe(parent.title);
+        expect(value.delivered).toEqual(["Full task instructions"]);
+      } finally {
+        await value.close();
+      }
+    },
+  );
+
   it("uses native parent metadata and keeps the subtask name first for long Unicode titles", async () => {
     const value = await fixture(undefined, async () => ({ title: "🐙".repeat(150) }));
     try {
@@ -712,6 +755,61 @@ describe("HarnessDelegationCoordinator", () => {
     }
   });
 
+  it.each(["result", "messages"] as const)(
+    "preserves history recovery errors when reading %s",
+    async (view) => {
+      const value = await fixture();
+      try {
+        const started = await value.coordinator.start({
+          harnessId: "pi",
+          task: "synthetic history recovery",
+          parentThreadId: "parent",
+        });
+        const session = value.adapter.sessions[0];
+        if (!session) throw new Error("Missing delegated Session");
+        session.succeedTurn();
+        const message = "Synthetic history active branch references a missing Entry";
+        vi.spyOn(session, "readSnapshot").mockResolvedValue({
+          ok: false,
+          error: { code: "nativeFailure", message, retryable: true },
+        });
+        value.runtime.clear();
+        await expect(value.repository.find(started.threadId)).resolves.toMatchObject({
+          state: "ready",
+        });
+        const recoveryError = {
+          code: "INTERNAL_ERROR",
+          message: "External Thread read failed",
+        };
+        await expect(
+          value.coordinator.read({ threadId: started.threadId, view }),
+        ).rejects.toMatchObject(recoveryError);
+        await expect(
+          value.coordinator.wait({ threadId: started.threadId, view, timeoutMs: 100 }),
+        ).rejects.toMatchObject(recoveryError);
+      } finally {
+        await value.close();
+      }
+    },
+  );
+
+  it("retains a missing-Thread error if an external mapping vanishes during resolution", async () => {
+    const value = await fixture();
+    try {
+      const started = await value.coordinator.start({
+        harnessId: "pi",
+        task: "synthetic missing mapping",
+        parentThreadId: "parent",
+      });
+      vi.spyOn(value.runtime, "resolve").mockResolvedValue({ kind: "official" });
+      await expect(
+        value.coordinator.read({ threadId: started.threadId, view: "result" }),
+      ).rejects.toMatchObject({ code: "THREAD_NOT_FOUND", message: "Thread was not found" });
+    } finally {
+      await value.close();
+    }
+  });
+
   it("reads the projected terminal Turn when a dead Harness cannot serve its history", async () => {
     const value = await fixture();
     try {
@@ -789,6 +887,49 @@ describe("HarnessDelegationCoordinator", () => {
       await expect(
         value.repository.getDelegationByChild(hostThreadIdSchema.parse(started.threadId)),
       ).resolves.toMatchObject({ status: "running" });
+    } finally {
+      await value.close();
+    }
+  });
+  it("starts work for an external client as its own origin and lists it by that origin", async () => {
+    const metadata = vi.fn(async () => undefined);
+    const value = await fixture(undefined, metadata);
+    try {
+      await expect(
+        value.coordinator.start({
+          harnessId: "pi",
+          task: "triage",
+          parentThreadId: "client:grok-bot",
+        }),
+      ).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: expect.stringContaining("--cwd"),
+      });
+
+      const input = {
+        harnessId: "pi" as const,
+        task: "triage issue 12",
+        cwd: "/synthetic",
+        parentThreadId: "client:grok-bot",
+      };
+      const result = await value.coordinator.start(input);
+      expect(result).toMatchObject({ parentThreadId: "client:grok-bot", status: "running" });
+      // No parent title exists, so the client's name takes its place.
+      await expect(value.repository.find(result.threadId)).resolves.toMatchObject({
+        title: "triage issue 12 · grok-bot",
+      });
+      expect(metadata).not.toHaveBeenCalled();
+      // A retry from the same client within the window returns the same child.
+      await expect(value.coordinator.start(input)).resolves.toMatchObject({
+        threadId: result.threadId,
+      });
+      await expect(
+        value.coordinator.list({
+          parentThreadId: "client:grok-bot",
+          limit: 25,
+          sort: "created-desc",
+        }),
+      ).resolves.toMatchObject({ threads: [{ threadId: result.threadId }] });
     } finally {
       await value.close();
     }

@@ -34,6 +34,10 @@ fn production_launcher_uses_the_three_state_running_desktop_flow() {
     assert!(source.contains("acquire_launcher_ownership"));
     assert!(source.contains("completely quit it before starting boft"));
     assert!(!source.contains("attach_unmanaged_desktop"));
+    assert!(source.contains("RunningDesktopChoice::Cancel => return Ok(())"));
+    assert!(source.contains(
+        "let result = launch_gui(options, installation, interactive);\n    services::finish_launch(false);\n    result"
+    ), "every GUI outcome, including cancellation, must join Web before returning");
 }
 
 #[test]
@@ -84,6 +88,10 @@ fn production_launcher_resolves_resources_beside_its_installed_location() {
     let output = output_of_copied_binary(
         Command::new(&installed)
             .args(["launch"])
+            .env("HOME", &root)
+            .env("USERPROFILE", &root)
+            .env("LOCALAPPDATA", &root)
+            .env("CODEXHOST_WEB_SERVICE", "0")
             .env("CODEXHOST_DATA_DIR", root.join("data"))
             .env("CODEXHOST_CONSOLE", "0")
             .env("CODEXHOST_INSTALL_ROOT", root.join("missing-desktop")),
@@ -99,82 +107,6 @@ fn production_launcher_resolves_resources_beside_its_installed_location() {
     assert!(!stderr.contains("--shim is required"));
 }
 
-#[cfg(unix)]
-#[test]
-fn console_starts_before_missing_desktop_resources_are_rejected() {
-    use std::os::unix::fs::PermissionsExt;
-
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("codexhost early console {unique}"));
-    fs::create_dir_all(root.join("bin")).expect("create bin");
-    fs::create_dir_all(root.join("runtime")).expect("create runtime");
-    fs::create_dir_all(root.join("app")).expect("create app");
-    let installed = root.join("bin/codexhost");
-    fs::copy(launcher_path(), &installed).expect("copy launcher");
-    fs::write(root.join("app/console-server.mjs"), "fixture").expect("console entry");
-    let node = root.join("runtime/node");
-    // No real server or browser: record the native launch order only.
-    fs::write(&node, "#!/bin/sh\nprintf '%s\\n' \"$3\" >> \"$CODEXHOST_DATA_DIR/calls\"\nif [ \"$3\" = open ]; then\n  echo 'codexhost console: http://127.0.0.1:26339/'\nfi\n")
-        .expect("fake Node");
-    fs::set_permissions(&node, fs::Permissions::from_mode(0o755)).expect("make executable");
-    let output = output_of_copied_binary(
-        Command::new(&installed)
-            .arg("launch")
-            .env("CODEXHOST_CONSOLE", "1")
-            .env("CODEXHOST_DATA_DIR", &root),
-    )
-    .expect("run launcher");
-    let calls = fs::read_to_string(root.join("calls")).unwrap_or_default();
-    fs::remove_dir_all(&root).expect("remove fixture");
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("bundled Shim"), "{stderr}");
-    assert_eq!(calls, "ensure\nopen\n");
-    assert!(stderr.contains("codexhost console: http://127.0.0.1:26339/"));
-}
-
-#[cfg(unix)]
-#[test]
-fn application_launch_opens_the_console_only_after_startup_fails() {
-    use std::os::unix::fs::PermissionsExt;
-
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("codexhost app console {unique}"));
-    fs::create_dir_all(root.join("bin")).expect("create bin");
-    fs::create_dir_all(root.join("runtime")).expect("create runtime");
-    fs::create_dir_all(root.join("app")).expect("create app");
-    let installed = root.join("bin/codexhost");
-    fs::copy(launcher_path(), &installed).expect("copy launcher");
-    fs::write(root.join("app/console-server.mjs"), "fixture").expect("console entry");
-    let node = root.join("runtime/node");
-    // Exit before printing an address so the failure path does not open a browser.
-    fs::write(
-        &node,
-        "#!/bin/sh\nprintf '%s\\n' \"$3\" >> \"$CODEXHOST_DATA_DIR/calls\"\nexit 1\n",
-    )
-    .expect("fake Node");
-    fs::set_permissions(&node, fs::Permissions::from_mode(0o755)).expect("make executable");
-    let output = output_of_copied_binary(
-        Command::new(&installed)
-            .env("CODEXHOST_CONSOLE", "1")
-            .env("CODEXHOST_DATA_DIR", &root),
-    )
-    .expect("run launcher");
-    let calls = fs::read_to_string(root.join("calls")).unwrap_or_default();
-    fs::remove_dir_all(&root).expect("remove fixture");
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("bundled Shim"), "{stderr}");
-    assert_eq!(calls, "open\n");
-    assert!(!stderr.contains("codexhost console: http://127.0.0.1:26339/"));
-}
-
 #[cfg(target_os = "macos")]
 #[test]
 fn finder_launch_resolves_standard_app_resources_and_defaults_to_codex() {
@@ -188,11 +120,13 @@ fn finder_launch_resolves_standard_app_resources_and_defaults_to_codex() {
     ));
     let macos = root.join("codexhost.app/Contents/MacOS");
     fs::create_dir_all(&macos).expect("create app executable directory");
-    let installed = macos.join("boft");
+    let installed = macos.join("codexhost");
     fs::copy(launcher_path(), &installed).expect("copy app launcher");
 
     let output = output_of_copied_binary(
         Command::new(&installed)
+            .env("HOME", &root)
+            .env("CODEXHOST_WEB_SERVICE", "0")
             .env("CODEXHOST_DATA_DIR", root.join("data"))
             .env("CODEXHOST_CONSOLE", "0")
             .env("CODEXHOST_INSTALL_ROOT", root.join("missing-desktop")),
@@ -207,48 +141,6 @@ fn finder_launch_resolves_standard_app_resources_and_defaults_to_codex() {
     assert!(!stderr.contains("invalid launcher arguments"));
 }
 
-#[cfg(unix)]
-#[test]
-fn update_runs_packaged_console_without_launching_desktop() {
-    use std::os::unix::fs::PermissionsExt;
-
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("codexhost update {unique}"));
-    for directory in ["bin", "runtime", "app"] {
-        fs::create_dir_all(root.join(directory)).unwrap();
-    }
-    let installed = root.join("bin/codexhost");
-    fs::copy(launcher_path(), &installed).unwrap();
-    fs::write(root.join("app/console-server.mjs"), "fixture").unwrap();
-    let node = root.join("runtime/node");
-    fs::write(
-        &node,
-        "#!/bin/sh\nprintf '%s\\n' \"$3\"\nexit \"$TEST_UPDATE_EXIT\"\n",
-    )
-    .unwrap();
-    fs::set_permissions(&node, fs::Permissions::from_mode(0o755)).unwrap();
-    for code in ["0", "7"] {
-        let output = output_of_copied_binary(
-            Command::new(&installed)
-                .arg("update")
-                .env("TEST_UPDATE_EXIT", code),
-        )
-        .unwrap();
-        assert_eq!(output.status.success(), code == "0");
-        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "update");
-    }
-    let output = Command::new(&installed)
-        .args(["update", "extra"])
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("update accepts no arguments"));
-    fs::remove_dir_all(root).unwrap();
-}
-
 #[cfg(target_os = "macos")]
 #[test]
 fn npm_launch_starts_recovery_console_without_desktop_or_bundled_node() {
@@ -258,11 +150,13 @@ fn npm_launch_starts_recovery_console_without_desktop_or_bundled_node() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let root =
-        std::env::temp_dir().join(format!("boft npm console {} {unique}", std::process::id()));
+    let root = std::env::temp_dir().join(format!(
+        "codexhost npm console {} {unique}",
+        std::process::id()
+    ));
     let bin = root.join("bin");
     fs::create_dir_all(&bin).unwrap();
-    let installed = bin.join("boft");
+    let installed = bin.join("codexhost");
     fs::copy(launcher_path(), &installed).unwrap();
     let host_runtime = root.join("host-runtime.mjs");
     fs::write(&host_runtime, "fixture").unwrap();
@@ -276,6 +170,8 @@ fn npm_launch_starts_recovery_console_without_desktop_or_bundled_node() {
         Command::new(&installed)
             .args(["launch", "--host-runtime"])
             .arg(&host_runtime)
+            .env("HOME", &root)
+            .env("CODEXHOST_WEB_SERVICE", "0")
             .env("CODEXHOST_DATA_DIR", root.join("data"))
             .env("CODEXHOST_INSTALL_ROOT", root.join("missing-desktop"))
             .env("CODEXHOST_CONSOLE", "1")
@@ -308,13 +204,31 @@ fn help_prints_usage_to_stdout_and_succeeds() {
         assert!(stdout.starts_with("usage:\n"), "{argument}");
         for command in [
             "boft --version",
+            "boft desktop-screenshot",
+            "boft host info ...",
+            "boft project list ...",
             "boft harness list|inspect ...",
-            "boft thread send|cancel|read|wait|watch|watches|list ...",
+            "boft thread send|cancel|read|wait|watch|watches|list|file ...",
             "boft broker install|status|stop|uninstall",
+            "boft client add|list|remove ...",
+            "boft events [--after <id>] [--limit <n>] [--follow true|false]",
         ] {
             assert!(stdout.contains(command), "{argument}: {command}");
         }
     }
+}
+
+#[test]
+fn desktop_screenshot_rejects_arguments_before_capturing() {
+    let output = Command::new(launcher_path())
+        .args(["desktop-screenshot", "--output", "untrusted.png"])
+        .output()
+        .expect("run launcher");
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("desktop-screenshot accepts no arguments")
+    );
 }
 
 #[test]
@@ -353,7 +267,7 @@ fn broker_without_a_subcommand_prints_broker_usage() {
             assert!(output.status.success(), "{user:?} {with_injected}");
             let stdout = String::from_utf8_lossy(&output.stdout);
             assert!(
-                stdout.starts_with("usage: codexhost broker install|status|stop|uninstall"),
+                stdout.starts_with("usage: boft broker install|status|stop|uninstall"),
                 "{user:?} {with_injected}"
             );
         }

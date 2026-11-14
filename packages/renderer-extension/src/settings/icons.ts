@@ -1,5 +1,6 @@
 import type { IconNode } from "lucide";
 import createElement from "lucide/dist/esm/createElement.mjs";
+import Smartphone from "lucide/dist/esm/icons/smartphone.mjs";
 import Boxes from "lucide/dist/esm/icons/boxes.mjs";
 import CalendarClock from "lucide/dist/esm/icons/calendar-clock.mjs";
 import Check from "lucide/dist/esm/icons/circle-check.mjs";
@@ -60,6 +61,7 @@ export const RENDERER_SETTINGS_ICON_NAMES = [
   "model-pool",
   "routes",
   "gateway",
+  "mobile",
   "updates",
   "schedules",
   "about",
@@ -120,6 +122,7 @@ const iconNodes = {
   "model-pool": Boxes,
   routes: Route,
   gateway: Network,
+  mobile: Smartphone,
   updates: CircleArrowUp,
   schedules: CalendarClock,
   about: Info,
@@ -202,4 +205,37 @@ export function createRendererSettingsGitHubIcon(size = 14): SVGElement {
   path.setAttribute("d", GITHUB_MARK_PATH);
   icon.append(path);
   return icon;
+}
+
+const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
+
+/**
+ * Historical rail-v1 geometry in currentColor, with a lighter C ring.
+ * The 40-unit viewBox gives a 1.6px ring at 20px and a 1.76px ring at the rail's 22px.
+ */
+export function createRendererSettingsBrandGlyph(size = 20): SVGElement {
+  const svg = document.createElementNS(SVG_NAMESPACE, "svg");
+  svg.setAttribute("viewBox", "12.8 12.2 40 40");
+  svg.setAttribute("width", String(size));
+  svg.setAttribute("height", String(size));
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("focusable", "false");
+  svg.setAttribute("data-codexhost-mark", "ch-navigation");
+  const ring = document.createElementNS(SVG_NAMESPACE, "path");
+  ring.setAttribute("d", "M 44.55 23.97 A 14.35 14.35 0 1 0 44.55 40.43");
+  ring.setAttribute("fill", "none");
+  ring.setAttribute("stroke", "currentColor");
+  ring.setAttribute("stroke-width", "3.2");
+  ring.setAttribute("stroke-linecap", "round");
+  const module = document.createElementNS(SVG_NAMESPACE, "rect");
+  module.setAttribute("x", "27.6");
+  module.setAttribute("y", "27");
+  module.setAttribute("width", "10.4");
+  module.setAttribute("height", "10.4");
+  module.setAttribute("rx", "2.4");
+  module.setAttribute("fill", "currentColor");
+  module.setAttribute("stroke", "none");
+  svg.append(ring, module);
+  svg.classList.add("codexhost-settings-icon");
+  return svg;
 }

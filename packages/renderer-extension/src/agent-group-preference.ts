@@ -73,7 +73,6 @@ export const DEFAULT_MAIN_EXTERNAL_AGENTS = [
 export function defaultAgentGroupSection(agent: ExternalRendererAgent): AgentGroupSection {
   return (DEFAULT_MAIN_EXTERNAL_AGENTS as readonly string[]).includes(agent) ? "main" : "more";
 }
-
 function safeLocalStorage(): Storage | null {
   try {
     return typeof window !== "undefined" ? window.localStorage : null;

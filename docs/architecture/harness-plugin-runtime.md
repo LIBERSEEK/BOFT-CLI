@@ -1,14 +1,14 @@
 # Harness 插件运行时：动态加载与预装发行
 
-> 状态：17 个预装 Harness 和用户目录插件统一动态加载，Host 使用 Cordis 管理插件生命周期，Renderer 按目标 Host 目录展示；**完整周边去专属化及原生验收尚未完成**。本文描述当前代码，不替代[架构与迁移方案](harness-plugin-architecture.md)。
+> 状态：16 个预装 Harness 和用户目录插件统一动态加载，Host 使用 Cordis 管理插件生命周期，Renderer 按目标 Host 目录展示；**完整周边去专属化及原生验收尚未完成**。本文描述当前代码，不替代[架构与迁移方案](harness-plugin-architecture.md)。
 
 ## 当前范围
 
 当前源码启动路径可以加载原先不认识的外部 Harness ID，通过 `codexhost/harness/plugins/list` 返回描述，并通过公共 Harness 检查接口和 `thread/start` 调用该插件。
 
-17 个预装 Adapter 通过同样的 `manifest.json` 和 `createHarnessAdapter` 工厂加载；`adapter-composition.ts` 已删除，Host 源码、包依赖和 TypeScript references 不再直接引用具体 Adapter 包。预装集合仅由发行清单 [`scripts/release/harness-plugins.json`](../../scripts/release/harness-plugins.json) 决定。原生构造参数、预取和 Claude Code 的直接/Broker 选择仍由相应插件负责。
+预装 Adapter 通过同样的 `manifest.json` 和 `createHarnessAdapter` 工厂加载；`adapter-composition.ts` 已删除，Host 源码、包依赖和 TypeScript references 不再直接引用具体 Adapter 包。预装集合仅由发行清单 [`scripts/release/harness-plugins.json`](../../scripts/release/harness-plugins.json) 决定。原生构造参数、预取和 Claude Code 的直接/Broker 选择仍由相应插件负责。
 
-本地会话导入已使用公共 `sessionImport` 契约、Host 映射事务与动态设置页；Claude Code、Pi、Hermes 和 DSH 已提供实际实现。DSH 通过本机托管 Web 接入，只对接 V4；`0.1.7-rc.1` / `0.1.7-rc.2` / `0.2.0-rc.1` / `0.2.0-rc.2` / `0.2.1-rc.1` / `0.2.1-rc.2` 已通过对应验证，低于 `0.1.7-rc.1` 的版本明确拒绝，其他 SemVer 版本可尝试连接，但仍须通过原生协议校验。Legacy 协议与 V0/V3 已移除。完整原生引用只在 Adapter 与 Host 间流转，详见[会话导入](harness-session-import.md)。普通 Agent Picker、Sidebar 和连接设置也读取同一 Host 的插件描述，不再内置外部 Harness 名单或图标。
+本地会话导入已使用公共 `sessionImport` 契约、Host 映射事务与动态设置页；Claude Code、Pi、Hermes 和 DSH 已提供实际实现。DSH 通过本机托管 Web 接入，只对接 V4；`0.1.7-rc.1` / `0.1.7-rc.2` / `0.2.0-rc.1` / `0.2.0-rc.2` / `0.2.1-rc.1` / `0.2.1-rc.2` / `0.2.1-rc.3` / `0.2.1-rc.4` / `0.2.1-rc.5` / `0.2.2-rc.1` / `0.2.2-rc.2` 已通过对应验证，低于 `0.1.7-rc.1` 的版本明确拒绝，其他 SemVer 版本可尝试连接，但仍须通过原生协议校验。Legacy 协议与 V0/V3 已移除。完整原生引用只在 Adapter 与 Host 间流转，详见[会话导入](harness-session-import.md)。普通 Agent Picker、Sidebar 和连接设置也读取同一 Host 的插件描述，不再内置外部 Harness 名单或图标。
 
 尚未实现的目标包括：
 
@@ -54,7 +54,13 @@ plugins/
 }
 ```
 
-每个根目录都有自己的 `enabled.json`。发行版生成预装目录的启用文件，作为对随包交付插件的显式信任；用户目录由用户配置。发现但未启用的插件不执行，也不进入目录查询结果。缺少某个根目录或其 `enabled.json` 时不加载该根目录插件；配置无效时拒绝该根目录，不回退到硬编码内置实现。不扫描项目目录，不自动安装或下载依赖，不热替换。
+默认启用配置来自每个根目录的 `enabled.json`。发行版生成预装目录的启用文件，作为对随包交付插件的显式信任；用户目录由用户配置。发现但未启用的插件不执行，也不进入目录查询结果。缺少某个根目录或其 `enabled.json` 时不加载该根目录插件；配置无效时拒绝该根目录，不回退到硬编码内置实现。不扫描项目目录，不自动安装或下载依赖，不热替换。
+
+服务端装配的 owner 也可以通过公共 Loader 的 `enabledIds` 提供显式启用集合，替代读取这些根目录的 `enabled.json`；该集合不是浏览器参数，不写回 external 配置。此路径仍复用公共发现、校验、超时、工厂调用和 Registry 关闭机制。
+
+启用许可与运行时所有权是两个条件。公共 Manifest、配置和通用描述可以使用 `codex` ID；Desktop / CH Host 加载器和 Registry 只使用 `external` 范围，在模块导入、工厂和预取之前排除 `codex`。`onlyIds`、`enabled.json` 或显式启用集合都不能扩大这个范围，也没有第二个执行范围。范围由服务端装配决定，不由浏览器请求或插件自行声明。
+
+Desktop / CH 的公开插件目录、外部 Harness 路由、Broker 和会话导入仍拒绝 `codex`。GUI 原生 Codex 不注册成 external Thread，也不通过这个执行插件创建、恢复或操作会话；是否共用进程不改变这些边界。
 
 用户目录不是覆盖层；两个根目录出现相同 ID 时，两份候选都拒绝加载。用户 `enabled.json` 也不用于修改预装根目录的启用集合。
 
@@ -80,7 +86,7 @@ plugins/
 }
 ```
 
-- ID 为最长 128 字符的小写可移植标识；`codex` 保留给官方路径。
+- ID 为最长 128 字符的小写可移植标识；通用安装身份允许 `codex`，外部 Harness 身份仍将其保留给 GUI 官方路径。
 - `manifestVersion` 当前为 `1`；`adapterApiVersion` 与 Host 的整数 API 版本精确匹配。尚未采用版本范围协商。
 - `entry` 是插件内的 `.js` 或 `.mjs` ESM 文件；`.js` 需要按 Node.js ESM 规则声明所属包。Manifest 不负责安装依赖。
 - 资源只能是插件内部相对路径；拒绝目录遍历和解析后逃出根目录的符号链接。
@@ -113,7 +119,7 @@ Context 包含环境变量快照、平台、是否为受管远程 Host，以及�
 
 这类插件复用同一可信目录、显式启用、身份校验、加载超时、失败隔离和关闭流程；目录描述保留 `kind: "usage"`。Registry 将其与可创建 Session 的 Adapter 分开，Host 把统计能力接入公共全局统计，可选的 `sessionUsage` 能力接入会话浮窗，不将它加入聊天、模型选择、会话导入或委派路由。加载失败通过统计失败信息报告，不伪造空结果或 Session 方法。
 
-预装的 `codex-usage`（显示名 Codex）是这种插件，实现在 `packages/adapters/codex-usage`。官方 `codex` 身份仍保留给原生路径；插件只读 rollout，并观察现有官方连接的会话用量与轮次通知，不改变 Codex 的聊天、分叉和恢复操作，也不读取账户配额。统计插件可以脱离 Desktop 加载，私有解析与公共 Host 汇总分离，详见[全局用量统计](../product/usage-statistics.md)。
+预装的 `codex-usage`（显示名 Codex）是这种插件，实现在 `packages/adapters/codex-usage`。官方 `codex` 身份属于 Web 与 Desktop 共用的原生路径，不是执行插件。统计插件只读 rollout，并观察现有官方连接的会话用量与轮次通知，不改变 Codex 的聊天、分叉和恢复操作，也不读取账户配额。统计插件可以脱离 Desktop 加载，私有解析与公共 Host 汇总分离，详见[全局用量统计](../product/usage-statistics.md)。
 
 ### 可选的独立会话用量
 
@@ -145,7 +151,7 @@ Codex 的会话用量解析已从公共协议层迁入 `codex-usage`，账户配
 
 ## Harness CLI 版本与更新
 
-设置 → 连接在已安装 Harness 的列表中自动检查版本；进入连接页、切换 Host 或完成诊断后，对当前 Host 上符合条件的 Harness 检查一次。有新版本时在列表操作区显示提示，支持自动更新的项目可直接启动更新；单项与批量任务均由目标 Host 执行，详情显示版本与更新状态，不提供手动检查按钮，也不回退更新本机的另一份安装。未安装时，本地 Host 通过行内下载入口启动支持的自动安装；详情仍提供官方安装命令、复制 Prompt、官方安装页链接和重新检测。远程 Host 不提供一键安装。WorkBuddy 继续通过官网手动下载安装桌面应用。BOFT 的 Claude Code 详情还保留长上下文设置；未支持版本管理能力的插件、旧 Host 和 Broker 路径显示不可用。
+设置 → 连接，在已安装 Harness 的右侧详情展示「Harness CLI 版本」、当前版本、最新版本与更新按钮。进入连接页或切换 Host 时，自动检查当前 Host 列表中已安装且不在安装、检测中的 Harness，无须先选择详情；诊断完成后符合条件的 Harness 也会自动检查。有新版本时，列表操作区显示灰色「有更新」小字，悬停展示当前与最新版本；支持自动更新时在小字右侧提供更新按钮，点击后才调用该 Host 的原生更新能力，更新期间禁用重复操作。仅支持手动更新的安装保留「有更新」小字及详情中的原安装方式提示。不提供手动检查更新按钮；后台诊断刷新和切换列表不会丢弃该页按 Host/Harness 保存的检查结果或重复启动更新。重新打开连接页后再次自动检查。所选 Harness 的详情卡片标题旁提供官网外链图标，列表行及详情正文不重复提供通用官网或安装说明链接。未安装且有自动安装入口时显示下载图标；点击显式发起 CLI 安装，点击行本身查看手动安装命令、复制按钮、接入提示和「重新检测」，正文不提供额外的通用安装指南跳转入口。WorkBuddy 在详情正文提供一个「下载」按钮，跳转官网首页，并提示下载安装桌面应用，不提供分系统的安装指南链接。未支持版本管理能力的插件、旧 Host 和 Broker 路径显示不可用，不回退更新本机的另一份安装。
 
 Host 切换栏右侧提供「全部更新（数量）」，仅统计当前 Host 中检查结果已确认有新版本且支持自动更新的 Harness，包含「更多」分组；不安装缺失的 CLI，不纳入仅支持手动更新的安装。点击时固定本批次的 Host 与条目，同时调用各条目的同一更新入口，不设置并发上限，显示已完成数/总数，每项独立结算，失败不影响其他更新。单项与批量请求复用同一条目的进行中任务；存在单项更新时仍可启动批量更新。批量操作期间禁用该 Host 的重复批量操作，完成后按 Host 显示成功/失败数量，具体失败信息保留在各条目详情。切换 Host 不改变已开始批次的目标；关闭连接页停止页面反馈，Host 已接受的更新继续运行。
 
@@ -159,12 +165,12 @@ DSH 的 npx 更新只在显式点击更新时执行 `npx --yes --prefer-online @
 
 ### 首次安装
 
-RPC 的 `action: "install"` 调用可选 `HarnessAdapter.install()`，不会把 `install` 传给旧插件的 `installation()`。Host 先刷新检查，只有 `notInstalled` 才安装，避免把未登录或不可用误认为未安装；安装后通过 `installation("check")` 回读 CLI 版本。安装失败或版本无法确认都不报告成功，原生异常脱敏后显示在展开的连接详情中。
+RPC 的 `action: "install"` 调用可选 `HarnessAdapter.install()`，不会把 `install` 传给旧插件的 `installation()`。Host 先刷新检查，只有 `notInstalled` 才安装，避免把未登录或不可用误认为未安装；安装后通过 `installation("check")` 回读 CLI 版本。安装失败或版本无法确认都不报告成功，原生异常脱敏后显示在右侧详情。
 
 - DeepSeek Harness（`@deepseek-ai/dsh@latest`，安装时跟随 npm `latest` 标签；不代表该版本已验证兼容，连接仍须通过原生协议校验）、OpenCode、Grok、CodeBuddy 使用官方 npm 包；需要已有 Node.js/npm；npm 在 PATH 未命中时继续搜索版本管理器与标准安装位置，适配 Desktop 的精简 GUI 环境。Grok 保留 npm 安装脚本允许项。
 - Pi、Claude Code、OMP、Antigravity、Kiro CLI、Cursor CLI、Hermes、Qoder 两版和 Kimi Code 使用各自 Adapter 固定的官方 HTTPS 安装脚本，按 Host OS 选择 Shell/PowerShell。脚本下载到临时目录，执行后清理；安装命令最多 10 分钟，不自动提权，不自动安装系统依赖，安装器不能依赖交互输入。
 - WorkBuddy 仍引导安装桌面应用。旧插件、旧 Host 和未转发能力的 Broker 返回不支持，不回退到本机安装。
-- Host 按 Adapter 合并并发安装，安装期间的检查/更新等待同一结果。Renderer 按连接及 Host/Harness 保存安装状态：展开详情中显示安装中、检测中或错误，安装时禁用一键安装按钮，错误保留在该详情中并允许重试。行上的下载图标仍只负责展开，不发起安装。切换行、Host 或关闭再打开设置不会取消操作；Host/连接进程重启后不恢复任务。
+- Host 按 Adapter 合并并发安装，安装期间的检查/更新等待同一结果。Renderer 按连接及 Host/Harness 保存安装状态：列表中显示安装中、检测中或错误，安装时禁用下载按钮，错误保留在右侧并允许重试。切换行、Host 或关闭再打开设置不会取消操作；Host/连接进程重启后不恢复任务。
 - 成功和失败后均只重新诊断所选 Host：先等待该 Host 已有诊断结束，再发起安装完成后的新诊断，不能复用安装前的结果；普通后台刷新仍合并并发请求。CLI 安装完成不意味着登录、Provider 配置或所有 Adapter 能力可用。检测结果才决定最终连接状态：即使版本回读失败，只要同一 Host/Harness 的本次重新诊断确认 `ready`，就清除安装失败覆盖状态；其他 Host 的状态或刷新失败后的旧快照不能清除错误。版本回读还可能依赖更新源网络；版本检查失败时应先重新诊断，不盲目重装。
 
 安装路径来自仓库维护的官方指引，并非所有系统/架构已通过真实安装验收。前置依赖、网络、官方安装器交互和平台支持仍影响结果；模拟测试不代表真实安装成功。
@@ -218,6 +224,7 @@ Mapping Store 使用 `store.lock` 限制同一目录只有一个写入实例。W
 - 诊断仅包含稳定错误码和公开 ID，不透传插件抛出的路径、环境值或异常正文。
 - Manifest 最大 32 KiB，图标最大 128 KiB，总候选插件最多 128；加载器 API 最多接受 8 个根目录，当前启动组合使用预装和用户两个根目录。
 - 最多 4 个加载 worker；每个插件的异步导入和工厂有独立的默认 10 秒超时，后加载的插件不会分到前一个插件剩下的时间。文件系统发现、同步代码和关闭操作不保证可被超时中断。
+- 插件模块导入在同步求值，worker 之间逐个执行导入，每次导入前先让出一次事件循环，使后台加载期间最长停顿限于单个插件，Host 端点仍能响应健康检查；工厂与预取仍并发。排队时间计入该插件的超时，超时或取消的插件轮到时不再执行其模块。客户端健康检查的 5 秒上限与事件通道连接期限一致：已停止的 Host 会立即拒绝连接，上限只约束仍在启动的繁忙 Host。
 - Host 先初始化官方 app-server，再后台整体加载已启用插件。涉及外部 Harness 的查询、创建、恢复及委派等待同一批加载完成，不采用按需加载或按 Harness 独立等待，原有同步 Adapter 注册表保持不变。
 - Desktop 请求在读取循环之外派发，同 Thread 的请求路由和 Session 打开按接收顺序执行；不同 Thread 及无 Thread 的请求独立处理。命令列表、创建或恢复等待插件时，不阻塞后续官方请求。官方初始化仍在读取循环内完成；运行中 Turn、命令及中断维持原有异步处理方式，不把整个 Turn 串行排队。
 - 关闭或 Desktop 输入 EOF 时先取消插件加载，再等待已接收的路由和 Session 打开任务完成，最后取 Session 快照并关闭资源，避免遗漏迟到的 Session。取消后迟到的 Adapter 仍会关闭；未加载或不可用的外部 Harness 不回退到官方 Codex。
@@ -277,13 +284,13 @@ Composer 配置按动态插件 ID 存储，不再为每个 Harness 增加字段�
 
 ## 插件拥有的展示元数据
 
-权限模式和命令目录可提供 `localizations: { [locale]: { label?, description? } }`。公共 `localizeHarnessPresentation` 按精确 locale、语言、原文逐字段回退；不根据模式 ID、英文文案或 `/compact` 推断语义。插件拥有翻译、原生动态目录的已知文案映射及版本兼容，未知原生文案保留原样。BOFT Desktop 对未提供本地化元数据的旧目录保留已知权限文案和 `/compact` 的显示翻译；插件提供元数据时优先使用插件文案。元数据不允许覆盖 ID、危险标记、参数或执行行为，限制 locale 数量、键和文本长度。`atCreate` 的锁定提示属于通用能力说明，不点名某个 Harness。
+权限模式和命令目录可提供 `localizations: { [locale]: { label?, description? } }`。公共 `localizeHarnessPresentation` 按精确 locale、语言、原文逐字段回退；不根据模式 ID、英文文案或 `/compact` 推断语义。插件拥有翻译、原生动态目录的已知文案映射及版本兼容，未知原生文案保留原样。元数据不允许覆盖 ID、危险标记、参数或执行行为，限制 locale 数量、键和文本长度。`atCreate` 的锁定提示属于通用能力说明，不点名某个 Harness。
 
 Thread 用量快照可选提供 `composerIndicators`（最多 2 个、ID 唯一），目前只支持 `{ kind: "countdown", id, expiresAtUnix, label?, tooltip? }`。文本复用 `HarnessLocalizedText`（英文回退；标签最多 256 字符、提示最多 1024 字符），仅供安全展示，不含动作或回调。Renderer 在外部 Harness 的权限控件旁以时钟和剩余分钟显示，每分钟本地刷新，过期隐藏，空间不足时优先让位于公共控件；官方 Codex Thread 不显示。Claude Code 仅在原生账号额度可用时提供提示词缓存倒计时，采用 Host 侧主会话最近一次 assistant 响应时间加固定一小时；恢复 Session 时读取原生历史时间，不从页面加载时重新计时。
 
 Desktop 使用同一浏览器安全的解析函数展示菜单、当前选择和命令。Web 等客户端需要在各自展示入口使用该函数，不能继续只读取 `label`；本主线不包含独立 Web UI 的适配。安装更新的专属说明使用 `localizeHarnessText`，安全展示文本与诊断错误分开，不能以原始 `message` 替代 `notice`。
 
-额度主窗口及 `productUsage` 可提供原生 `scope: { id, label, localizations? }`；每个附加窗口可提供自己的 `periodType`。客户端按 scope 的稳定 ID 分组，通过 `accountCreditsWindowLabel` 展示本地化范围与公共周期，不解析产品名称中的 `7-day` 等字符串。缺少新元数据的旧插件仍显示原文和数值，不猜周期；未知或自定义的主窗口标签不会被公共周期覆盖。Grok 账号概览由插件只提供共享套餐额度，BOFT 账号设置页保留只显示周额度的过滤，产品细分仍保留在会话额度浮窗。API 账号可提供 `remaining` 和 `unit` 而不提供 `usedPercent`；设置页展示余额，Composer 不展示百分比额度控件。
+额度主窗口及 `productUsage` 可提供原生 `scope: { id, label, localizations? }`；每个附加窗口可提供自己的 `periodType`。客户端按 scope 的稳定 ID 分组，通过 `accountCreditsWindowLabel` 展示本地化范围与公共周期，不解析产品名称中的 `7-day` 等字符串。缺少新元数据的旧插件仍显示原文和数值，不猜周期；未知或自定义的主窗口标签不会被公共周期覆盖。Grok 账号概览由插件只提供共享套餐额度，产品细分仍保留在会话额度浮窗，不再由 Renderer 根据 Grok ID 过滤。
 
 `HarnessAdapter.credits?()` / `refreshCredits?()` 是正式可选接口：前者无 I/O 地同步读取账号级缓存，后者异步刷新同一缓存，原生认证、有效期、并发合并及失效策略仍归插件。Host 不等待刷新，读取后校验公开结构，隔离同步读取异常与刷新拒绝；旧缓存的私有 `fetchedAt` 不传给客户端。`inspectAccount(s)` 继续负责设置页的新鲜账号查询，不用当前账号额度替代历史 Thread 的实际计费事实。
 
@@ -326,3 +333,5 @@ DeepSeek 插件通过自身的 HTTP/WebSocket 实现连接受支持的本机 DSH
 - 恢复、Pi/DeepSeek 导入、委派、协议路由和 Renderer 的定向回归。
 
 这些是合成测试、构建和分离 Bundle 冒烟检查，不等同于真实 Codex Desktop、所有原生 Harness、macOS Broker、SSH 远端或完整安装/升级验收。后续仍须按架构方案的能力基线和发布 Gate 完成迁移与验证。
+
+官方 Codex 通过 Host 的原生通道接入，不使用 Adapter 工厂；宿主的来源隔离与会话存储职责不进入插件。

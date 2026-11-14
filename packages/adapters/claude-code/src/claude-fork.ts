@@ -47,7 +47,8 @@ function comparableTurn(turn: HostTurnSnapshot): unknown {
   return {
     input: turn.input,
     items: turn.items.map(({ item, outcome }) => ({
-      item: { ...item, itemId: undefined },
+      // Elapsed display time depends on the next record, which a Fork may truncate.
+      item: { ...item, itemId: undefined, durationMs: undefined },
       outcome,
     })),
     outcome: turn.outcome,

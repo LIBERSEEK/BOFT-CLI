@@ -14,17 +14,18 @@
 
 ## 一、先建立分层模型
 
-### 控制台启动成功但 Codex 界面未加载
+### 打开 External Thread 后侧栏行消失，但详情仍在
 
-Launcher 的 `Host chain ready` 和 Controller 存活不代表 Renderer 集成完成。
-`Renderer Host request manager is unavailable` 表示 Renderer 中的路由/预热策略未找到可用的原生请求管理器；该错误本身说明安装脚本已经执行，不能据此判断 CDP 完全无法注入。
+先区分存储记录、Desktop 目录条目和行组件订阅。记录未归档、目录仍含 Thread，
+并不保证侧栏的 `listState` 订阅有效。Desktop 的只读状态选择器可能保留空缓存，
+而重新执行同一选择器、读取当前依赖时已能得到完整状态。
 
-先在主聊天界面只读检查编辑器、所属 Fiber 的 Host 身份、注册表和 manager 数量。
-原生 Host 注册表按 `addManager` 与 `getForHostId` 识别，不要求 `waitForManagerForHostId`；manager 可以只通过注册表暴露，不必同时出现在直接 hook 中。
-注册表存在时，以其当前条目为准；查找抛错不会中止其他注册表的检查。无法为目标 Host 解析唯一有效 manager 时保持路由关闭，不回退到旧 manager。
-
-排查安装包时还要核对其发布标签是否包含对应兼容修复。BOFT CLI `v0.8.3` 不含注册表兼容提交 `4ee7baac`，重新安装同一版本不能获得该修复。
-是否恢复应以 Renderer 状态为 `ready`、`lastInstalledAt` 已填充以及实际请求链路验证为准，不能只看控制台的启动成功状态。
+`renderer-sidebar-thread-state.ts` 仅处理经过上述对比确认的 External Thread：
+按侧栏语义属性和已提交的 React 树定位行组件，校验 Thread ID、Host ID 与
+`modelProvider: codexhost`，为唯一匹配的空订阅建立新的只读选择器缓存。
+新订阅继续执行原生查询，真实的空状态、移除和后续更新仍由 Desktop 决定。
+组件卸载或 Renderer 注入释放时取消附加订阅并恢复 getter；不写入 Atom、会话记录或列表顺序。
+该兼容路径依赖只读 signal 与 `useSyncExternalStore` hook 结构，更新 Desktop 后需复核。
 
 ### 历史原生会话不能拖入引用或通过 `@` 搜索会话
 

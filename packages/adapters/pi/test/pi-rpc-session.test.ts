@@ -1082,6 +1082,27 @@ function session(
   );
 }
 
+describe("Pi RPC child stdin", () => {
+  it("faults the Session instead of throwing when the child closes stdin", async () => {
+    const process = new FakePiRpcProcess("fast");
+    const onFault = vi.fn();
+    const rpc = new PiRpcSession(
+      { cwd: "/synthetic", commandTimeoutMs: 2_000, closeTimeoutMs: 500, onFault },
+      { spawn: () => process as unknown as ChildProcessWithoutNullStreams },
+    );
+    await rpc.start();
+    try {
+      const epipe = Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
+      expect(() => process.stdin.emit("error", epipe)).not.toThrow();
+      expect(onFault).toHaveBeenCalledOnce();
+      expect(onFault).toHaveBeenCalledWith(expect.objectContaining({ kind: "processExited" }));
+      await expect(rpc.runTurn("must not be sent", vi.fn())).rejects.toThrow("unavailable");
+    } finally {
+      await rpc.close();
+    }
+  });
+});
+
 describe("Pi Fast command acknowledgement", () => {
   it("changes only Fast and keeps the confirmed state through Thinking refresh", async () => {
     const rpc = session("fast");
@@ -3169,7 +3190,7 @@ describe("Pi RPC Turn aggregation", () => {
     const complete = session("stats-full");
     await complete.start();
     await expect(complete.getSessionUsage()).resolves.toEqual({
-      inputTokens: 10,
+      inputTokens: 13,
       cachedInputTokens: 2,
       cacheWriteInputTokens: 1,
       outputTokens: 5,
