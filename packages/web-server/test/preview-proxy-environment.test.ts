@@ -71,6 +71,7 @@ it(
     const proxy = createServer();
     proxy.on("connect", (request, socket) => {
       requests.push(request.url ?? "");
+      socket.on("error", () => undefined);
       socket.end("HTTP/1.1 502 Test proxy\r\nContent-Length: 0\r\n\r\n");
     });
     await new Promise<void>((done) => proxy.listen(0, "127.0.0.1", done));

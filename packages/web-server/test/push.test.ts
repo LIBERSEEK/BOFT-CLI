@@ -82,13 +82,15 @@ for (const [name, environment, expected] of [
     undefined,
   ],
   [
-    "lowercase precedence",
+    process.platform === "win32" ? "case-insensitive environment keys" : "lowercase precedence",
     {
       NODE_USE_ENV_PROXY: "1",
       HTTPS_PROXY: "http://upper.example.test:8080",
       https_proxy: "http://lower.example.test:8080",
     },
-    "http://lower.example.test:8080",
+    process.platform === "win32"
+      ? "http://upper.example.test:8080"
+      : "http://lower.example.test:8080",
   ],
 ] as const) {
   it(`passes the resolved push proxy to web-push on every Node version: ${name}`, async (t) => {
@@ -110,6 +112,7 @@ it(
     const server = createServer();
     server.on("connect", (request, socket) => {
       requests.push(request.url ?? "");
+      socket.on("error", () => undefined);
       socket.end("HTTP/1.1 502 Test proxy\r\nContent-Length: 0\r\n\r\n");
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
