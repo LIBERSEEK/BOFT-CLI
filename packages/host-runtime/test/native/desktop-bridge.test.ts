@@ -14,7 +14,7 @@ const repository = path.resolve(import.meta.dirname, "../../../..");
 const launcher = path.join(
   repository,
   "target/debug",
-  process.platform === "win32" ? "codexhost.exe" : "codexhost",
+  process.platform === "win32" ? "boft.exe" : "boft",
 );
 const runtime = path.join(repository, "packages/host-runtime/dist/main.js");
 

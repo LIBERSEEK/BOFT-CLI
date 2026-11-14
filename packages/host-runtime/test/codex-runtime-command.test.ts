@@ -26,7 +26,7 @@ async function installation() {
   directories.push(home);
   const bin = path.join(home, "bin");
   await mkdir(bin);
-  const command = path.join(bin, process.platform === "win32" ? "codex.CMD" : "codex");
+  const command = path.join(bin, process.platform === "win32" ? "codex.exe" : "codex");
   await writeFile(command, process.platform === "win32" ? "@exit /b 0\r\n" : "#!/bin/sh\nexit 0\n");
   await chmod(command, 0o700);
   return { command, environment: { HOME: home, PATH: bin } };

@@ -87,6 +87,11 @@ fn service_environment_preserves_opt_in_list_tracing() {
                 .any(|(key, _)| key == "CODEXHOST_TRACE_SESSION_LIST")
         );
         assert!(
+            !command
+                .get_envs()
+                .any(|(key, _)| key == "CODEXHOST_EXTERNAL_CLIENT_PORT")
+        );
+        assert!(
             command
                 .get_envs()
                 .any(|(key, value)| key == "CODEXHOST_TRACE_ENV_TEST" && value.is_none())
@@ -97,6 +102,7 @@ fn service_environment_preserves_opt_in_list_tracing() {
         .args(["--exact", TEST])
         .env("CODEXHOST_TRACE_ENV_TEST", "1")
         .env("CODEXHOST_TRACE_SESSION_LIST", "1")
+        .env("CODEXHOST_EXTERNAL_CLIENT_PORT", "44321")
         .status()
         .unwrap();
     assert!(status.success());

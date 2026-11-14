@@ -18,7 +18,7 @@ const repository = path.resolve(import.meta.dirname, "../../../..");
 const launcher = path.join(
   repository,
   "target/debug",
-  process.platform === "win32" ? "codexhost.exe" : "codexhost",
+  process.platform === "win32" ? "boft.exe" : "boft",
 );
 const runtime = path.join(repository, "packages/host-runtime/dist/main.js");
 async function until(check: () => Promise<boolean>) {
@@ -145,6 +145,10 @@ for (const first of ["Web", "Desktop", "CLI"])
       const endpoint = await discoverHostClientChannel(path.join(data, "client-hosts"));
       assert.ok(endpoint);
       assert.equal(endpoint.owner, "service");
+      const external = JSON.parse(
+        await readFile(path.join(data, "external-client-endpoint.json"), "utf8"),
+      );
+      assert.equal(external.endpoint, `http://127.0.0.1:${port}`);
       assert.equal(endpoint.pid, firstEndpoint?.pid, "ensure must not restart a running Host");
       await assert.rejects(readFile(path.join(data, "shared-host-process.lock")), {
         code: "ENOENT",

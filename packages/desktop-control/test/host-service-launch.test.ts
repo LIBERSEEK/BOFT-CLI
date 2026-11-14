@@ -169,3 +169,14 @@ it("adds the caller's npm entrypoint when it has left this process's environment
   const options = native.mock.calls[0]?.[2] as { env: NodeJS.ProcessEnv };
   expect(options.env.CODEXHOST_NPM_NODE_PATH).toBe(node);
 });
+
+it.each(["44321", "off"])("preserves external client listener setting %s", async (port) => {
+  const f = await fixture();
+  vi.stubEnv("CODEXHOST_EXTERNAL_CLIENT_PORT", port);
+  native.mockImplementation((_file, _args, _options, callback) => {
+    void f.save(f.descriptor).then(() => callback(null, "", ""), callback);
+  });
+  await ensureHostService(f.launch);
+  const options = native.mock.calls[0]?.[2] as { env: NodeJS.ProcessEnv };
+  expect(options.env.CODEXHOST_EXTERNAL_CLIENT_PORT).toBe(port);
+});

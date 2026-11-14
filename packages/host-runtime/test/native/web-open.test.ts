@@ -11,7 +11,7 @@ import { StreamThreadPeer } from "../../src/shared-thread-peer.js";
 
 const exec = promisify(execFile);
 const repository = path.resolve(import.meta.dirname, "../../../..");
-const executable = process.platform === "win32" ? "codexhost.exe" : "codexhost";
+const executable = process.platform === "win32" ? "boft.exe" : "boft";
 
 it("Desktop web/open starts Web independently of Host restart", { timeout: 180_000 }, async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "codexhost-web-open-"));
