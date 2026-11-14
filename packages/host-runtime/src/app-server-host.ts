@@ -228,6 +228,7 @@ import type {
   ThreadSendInput,
   ThreadSendResult,
 } from "./delegation-types.js";
+import { exportDelegationThread, type ThreadExportInput } from "./delegation-thread-export.js";
 import { projectDelegationThreadSnapshot } from "./delegation-snapshot.js";
 import { rememberNativeListSeconds } from "./delegation-thread-list-merge.js";
 import {
@@ -321,6 +322,7 @@ import {
 } from "./thread-list-aggregator.js";
 import { listSectionThreads, moveThreadSection } from "./external-thread-sections.js";
 import { ThreadPins } from "./external-thread-pins.js";
+import { ThreadTree } from "./thread-tree.js";
 import { externalThreadListEntries } from "./external-thread-list.js";
 import { ModelPriceCatalog } from "./model-prices.js";
 import { UsageMeasurementsStore } from "./usage-measurements-store.js";
@@ -692,6 +694,7 @@ export class AppServerHost {
   readonly #desktopControl: DesktopControlRequests;
   readonly #threadRouting: DesktopThreadRouting;
   readonly #threadPins: ThreadPins;
+  readonly #threadTree: ThreadTree;
   #sectionOperations: Promise<unknown> = Promise.resolve();
   readonly #turnProjection: ExternalTurnProjection;
   /** Console requests share Desktop handling; their replies return to the console. */
@@ -888,8 +891,13 @@ export class AppServerHost {
       options.mappingStore ??
         createProductionExternalThreadStore(this.#options.environment ?? process.env),
     );
-    this.#threadPins = new ThreadPins(this.#repository, (method, params) =>
-      this.#requestOfficial(method, params),
+    this.#threadPins = new ThreadPins(
+      this.#repository,
+      (method, params) => this.#requestOfficial(method, params),
+      (threadId) => this.clientEvents.changed(threadId, "codexhost/thread/tree/changed"),
+    );
+    this.#threadTree = new ThreadTree(this.#repository, () =>
+      this.#runSectionOperation(() => this.#threadPins.list()),
     );
     this.#externalAdapters = new Map(options.externalAdapters);
     for (const [harnessId, adapter] of this.#externalAdapters) {
@@ -929,8 +937,16 @@ export class AppServerHost {
       startExternalTurn: (thread, text, turnId) =>
         this.#startDelegatedExternalTurn(thread, text, turnId),
       notifyThreadStarted: (thread) => this.#notifyExternalThreadStarted(thread),
+      notifyTreeChanged: (threadId) =>
+        this.clientEvents.changed(threadId, "codexhost/thread/tree/changed"),
       inspectOfficial: (input) => this.#inspectOfficialDelegationTarget(input),
       readOfficial: (input) => this.#readOfficialDelegationThread(input),
+      exportOfficial: async (input) =>
+        exportDelegationThread(
+          input,
+          await this.#readFullOfficialDelegationThread(input.threadId),
+          this.#options.environment ?? process.env,
+        ),
       sendOfficial: (input) => this.#sendOfficialDelegationThread(input),
       cancelOfficial: (input) => this.#cancelOfficialDelegationThread(input),
       startOfficial: (input) => this.#startOfficialDelegation(input),
@@ -968,6 +984,8 @@ export class AppServerHost {
         cancel: (input) =>
           this.#waitForPlugins().then(() => this.#delegationCoordinator.cancel(input)),
         read: (input) => this.#waitForPlugins().then(() => this.#delegationCoordinator.read(input)),
+        exportThread: (input: ThreadExportInput) =>
+          this.#waitForPlugins().then(() => this.#delegationCoordinator.exportThread(input)),
         wait: (input) => this.#waitForPlugins().then(() => this.#delegationCoordinator.wait(input)),
         list: (input) => this.#waitForPlugins().then(() => this.#delegationCoordinator.list(input)),
         canHandleStart: (input) => this.#canHandleDelegationStart(input),
@@ -1066,7 +1084,7 @@ export class AppServerHost {
       listThreads: (request, listRequest, origin) =>
         this.#listThreads(request, listRequest, origin),
       runSectionOperation: (run) => this.#runSectionOperation(run),
-      moveThreadSection: (request, frame, move) => this.#moveThreadSection(request, frame, move),
+      moveThreadSection: (request, move) => this.#moveThreadSection(request, move),
       setExternalThreadArchived: (request, location, archived) =>
         this.#setExternalThreadArchived(request, location, archived),
       updateExternalThreadMetadata: (request, location, update) =>
@@ -1681,8 +1699,8 @@ export class AppServerHost {
       const result = await this.#delegationCoordinator.read({
         threadId: parsed.data.threadId,
         view: parsed.data.view,
-        ...(parsed.data.cursor !== undefined ? { cursor: parsed.data.cursor } : {}),
-        ...(parsed.data.limit !== undefined ? { limit: parsed.data.limit } : {}),
+        ...(parsed.data.from !== undefined ? { from: parsed.data.from } : {}),
+        ...(parsed.data.to !== undefined ? { to: parsed.data.to } : {}),
       });
       await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
       return;
@@ -1775,6 +1793,14 @@ export class AppServerHost {
       return;
     }
     if (await this.#desktopControl.handle(request)) return;
+    if (request.method === "codexhost/thread/tree/read") {
+      this.#dispatchDesktopReply(request, async () => {
+        await this.#waitForPlugins();
+        await this.#writer.json(await this.#threadTree.handle(request));
+      });
+      return;
+    }
+
     if (
       request.method === "codexhost/thread/pins/list" ||
       request.method === "codexhost/thread/pins/set"
@@ -2340,6 +2366,7 @@ export class AppServerHost {
         ...(input.requestId ? { requestId: input.requestId } : {}),
         taskDigest: digest,
       });
+      this.clientEvents.changed(threadId, "codexhost/thread/tree/changed");
       return {
         delegationId,
         threadId,
@@ -2505,9 +2532,9 @@ export class AppServerHost {
     return { threadId: input.threadId, turnId, harnessId: "codex", cancelled: true };
   }
 
-  async #readOfficialDelegationThread(input: ThreadReadInput): Promise<DelegationThreadSnapshot> {
+  async #readFullOfficialDelegationThread(threadId: string) {
     const response = await this.#requestOfficial("thread/read", {
-      threadId: input.threadId,
+      threadId,
       includeTurns: true,
     });
     if (isRecord(response.error)) throw officialThreadReadError(response.error);
@@ -2519,17 +2546,18 @@ export class AppServerHost {
       ? thread.turns.filter((turn): turn is JsonObject => isRecord(turn))
       : [];
     const running =
-      this.#activeOfficialTurns.has(input.threadId) ||
+      this.#activeOfficialTurns.has(threadId) ||
       (isRecord(thread.status) && thread.status.type === "active");
+    return { threadId, harnessId: "codex" as const, thread, turns, running };
+  }
+
+  async #readOfficialDelegationThread(input: ThreadReadInput): Promise<DelegationThreadSnapshot> {
+    const source = await this.#readFullOfficialDelegationThread(input.threadId);
     const snapshot = projectDelegationThreadSnapshot({
-      threadId: input.threadId,
-      harnessId: "codex",
-      thread,
-      turns,
-      running,
+      ...source,
       view: input.view,
-      ...(input.cursor ? { cursor: input.cursor } : {}),
-      ...(input.limit !== undefined ? { limit: input.limit } : {}),
+      ...(input.from !== undefined ? { from: input.from } : {}),
+      ...(input.to !== undefined ? { to: input.to } : {}),
     });
     const delegation = await this.#repository.getDelegationByChild(
       hostThreadIdSchema.parse(input.threadId),
@@ -2807,7 +2835,6 @@ export class AppServerHost {
 
   async #moveThreadSection(
     request: JsonRpcRequest,
-    frame: Buffer<ArrayBufferLike>,
     move: DecodedThreadSectionMoveRequest,
   ): Promise<void> {
     try {
@@ -2828,10 +2855,16 @@ export class AppServerHost {
       });
       if (outcome.kind === "moved" && outcome.persistError !== undefined)
         this.#diagnose(outcome.persistError);
-      if (outcome.kind === "forward") await this.#forwardOfficialRequest(request, frame);
-      else if (outcome.kind === "error")
+      if (outcome.kind === "forward") {
+        // Keep the serial section boundary until native persistence is confirmed.
+        const response = await this.#requestOfficial(request.method, requestObject(request));
+        await this.#writer.json(rpcEnvelope(request, { ...response, id: request.id }));
+        if (response.error) return;
+      } else if (outcome.kind === "error") {
         await this.#writer.json(rpcEnvelope(request, { error: outcome.error }));
-      else await this.#writer.json(rpcEnvelope(request, { result: {} }));
+        return;
+      } else await this.#writer.json(rpcEnvelope(request, { result: {} }));
+      this.clientEvents.changed(move.threadId, "codexhost/thread/tree/changed");
     } catch (error) {
       await this.#writer.json(rpcError(request, -32081, "Thread section could not be moved"));
       this.#diagnose(error);

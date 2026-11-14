@@ -57,7 +57,6 @@ function runtime(
       turn: { turnId: thread.turnId ?? `turn-${threadId}`, status: thread.status },
       progress: [],
       result: { availability: "pending" },
-      nextCursor: null,
     } as DelegationThreadSnapshot;
   });
   const send = vi.fn(async (input: ThreadSendInput) => {
@@ -134,9 +133,13 @@ describe("DelegationWatchService across a Host Runtime restart", () => {
     expect(store.records.size).toBe(0);
   });
 
-  it.each(["审查最近PR · 委派", undefined])(
-    "preserves the title through persistence and restored delivery (%s)",
-    async (title) => {
+  it.each([
+    { title: "审查最近PR · 委派", label: "审查最近PR · 委派" },
+    { title: "summary-row · " + "🐙".repeat(50), label: "summary-row · " + "🐙".repeat(20) + "…" },
+    { title: undefined, label: "child" },
+  ])(
+    "preserves the saved title and shortens only the restored notification ($title)",
+    async ({ title, label }) => {
       const store = memoryStore();
       const before = runtime({
         child: { status: "running", ...(title ? { title } : {}) },
@@ -159,7 +162,7 @@ describe("DelegationWatchService across a Host Runtime restart", () => {
       service(after, store);
       await vi.advanceTimersByTimeAsync(POLL_MS);
       expect(parseThreadWatchNotice(after.sent[0]?.message ?? "")).toEqual([
-        { threadId: "child", label: title ?? "child", outcome: "completed" },
+        { threadId: "child", label, outcome: "completed" },
       ]);
       expect(store.records.size).toBe(0);
     },

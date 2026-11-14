@@ -21,6 +21,8 @@ import {
 import { DelegationWatchService, type ClientEventSink } from "./delegation-watch.js";
 import type { DelegationWatchStore } from "./delegation-watch-store.js";
 import { clientOrigin, originClientName } from "./external-client-origin.js";
+import { interruptAndSend } from "./delegation-interrupt-send.js";
+import { validateThreadExportInput, type ThreadExportInput } from "./delegation-thread-export.js";
 import { mergeRefs, normalizeRefs, type ThreadRefsStore } from "./thread-refs.js";
 
 const REF_CURSOR_PREFIX = "ref:";
@@ -120,11 +122,20 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
   }
 
   async send(input: Parameters<DelegationControlApi["send"]>[0]) {
-    return (await this.#registrationForThread(input.threadId)).send(input);
+    if (input.interrupt !== undefined && typeof input.interrupt !== "boolean")
+      throw new DelegationControlError("INVALID_ARGUMENT", "interrupt must be a boolean");
+    const registration = await this.#registrationForThread(input.threadId);
+    if (!input.interrupt) return registration.send(input);
+    const send = { threadId: input.threadId, message: input.message };
+    return this.#watchService.holdNotifications(input.threadId, () =>
+      interruptAndSend(registration, send),
+    );
   }
 
   async cancel(input: Parameters<DelegationControlApi["cancel"]>[0]) {
-    return (await this.#registrationForThread(input.threadId)).cancel(input);
+    return this.#watchService.cancel(input.threadId, async () =>
+      (await this.#registrationForThread(input.threadId)).cancel(input),
+    );
   }
 
   async read(input: ThreadReadInput) {
@@ -157,6 +168,14 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
       return this.#remoteRead(read);
     }
     return (await this.#registrationForThread(read.threadId)).read(read);
+  }
+
+  async exportThread(input: ThreadExportInput) {
+    validateThreadExportInput(input);
+    const registration = await this.#registrationForThread(input.threadId);
+    if (!registration.exportThread)
+      throw new DelegationControlError("UNSUPPORTED", "Thread export is unavailable");
+    return registration.exportThread(input);
   }
 
   async wait(input: ThreadWaitInput) {

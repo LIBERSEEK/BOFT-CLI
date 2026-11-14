@@ -7,12 +7,14 @@ import {
   DelegationControlError,
   type DelegationControlApi,
   type DelegationThreadSnapshot,
+  type ThreadCancelResult,
   type ThreadWatchInput,
   type ThreadWatchListResult,
   type ThreadWatchOutcome,
   type ThreadWatchResult,
 } from "./delegation-types.js";
 import type { DelegationWatchStore, PersistedWatch } from "./delegation-watch-store.js";
+import { threadWatchLabel } from "./delegation-title.js";
 import type { NewClientEvent } from "./external-client-events.js";
 import { originClientName } from "./external-client-origin.js";
 import { isValidClientName } from "./external-clients.js";
@@ -33,6 +35,8 @@ const UNREADABLE_GRACE_MS = 60_000;
 const DEFAULT_RESTORE_GRACE_MS = 5 * 60_000;
 
 interface Watch extends PersistedWatch {
+  /** Invalidates reads that overlapped an internal stop-and-resend operation. */
+  observationGeneration?: number;
   unreadableSince?: number;
   lastReadError?: string;
   /** Restored watch: read failures mean the owning session is not back yet. */
@@ -144,7 +148,7 @@ function notification(watches: readonly Watch[]): string {
         .join(" ");
       return {
         threadId: watch.threadId,
-        label: watch.title || watch.threadId,
+        label: threadWatchLabel(watch.title, watch.threadId),
         // Only pending deliveries, whose outcome has been observed, are notified.
         outcome: watch.outcome as ThreadWatchOutcome,
         ...(note ? { note } : {}),
@@ -169,6 +173,7 @@ export class DelegationWatchService {
   readonly #restoreGraceMs: number;
   readonly #ready: Promise<void>;
   readonly #watches: Watch[] = [];
+  readonly #cancelling = new Map<string, number>();
   #writes: Promise<void> = Promise.resolve();
   #timer: ReturnType<typeof setTimeout> | undefined;
   #closed = false;
@@ -240,6 +245,7 @@ export class DelegationWatchService {
       registeredAt: new Date().toISOString(),
       timeoutMs: input.timeoutMs,
       deadline: Date.now() + input.timeoutMs,
+      ...(target.title ? { title: target.title } : {}),
     };
     this.#watches.push(watch);
     try {
@@ -258,19 +264,78 @@ export class DelegationWatchService {
 
   async watches(): Promise<ThreadWatchListResult> {
     await this.#ready;
+    const watches = [...this.#watches];
+    const snapshots = new Map<string, DelegationThreadSnapshot | undefined>();
+    await Promise.all(
+      [...new Set(watches.map(({ threadId }) => threadId))].map(async (threadId) => {
+        try {
+          snapshots.set(threadId, await this.#api.read({ threadId, view: "result" }));
+        } catch {
+          // A missing or temporarily unreadable Thread must not hide its watch.
+        }
+      }),
+    );
+    const now = Date.now();
     return {
-      watches: this.#watches.map(
-        ({ threadId, notifyThreadId, state, outcome, turnId, reason, registeredAt }) => ({
-          threadId,
-          notifyThreadId,
-          state,
-          ...(outcome ? { outcome } : {}),
-          ...(turnId ? { turnId } : {}),
-          ...(reason ? { reason } : {}),
-          registeredAt,
-        }),
-      ),
+      watches: watches
+        .filter((watch) => this.#watches.includes(watch))
+        .map(
+          ({ threadId, notifyThreadId, state, outcome, turnId, reason, registeredAt, title }) => {
+            const snapshot = snapshots.get(threadId);
+            const taskName = snapshot?.title || title;
+            const registeredMs = Date.parse(registeredAt);
+            return {
+              threadId,
+              notifyThreadId,
+              state,
+              ...(outcome ? { outcome } : {}),
+              ...(turnId ? { turnId } : {}),
+              ...(reason ? { reason } : {}),
+              registeredAt,
+              ...(taskName ? { taskName } : {}),
+              ...(snapshot ? { threadStatus: snapshot.status } : {}),
+              ...(Number.isFinite(registeredMs)
+                ? { watchedForMs: Math.max(0, now - registeredMs) }
+                : {}),
+            };
+          },
+        ),
     };
+  }
+
+  /** Hold notifications until cancellation is decided; only an accepted cancel drops watches. */
+  async cancel(
+    threadId: string,
+    operation: () => Promise<ThreadCancelResult>,
+  ): Promise<ThreadCancelResult> {
+    return this.holdNotifications(threadId, async () => {
+      const result = await operation();
+      if (result.cancelled) {
+        for (const watch of [...this.#watches]) {
+          if (watch.threadId === threadId) this.#remove(watch);
+        }
+        // Flush ordered removals before acknowledging, using the normal diagnostic-only I/O errors.
+        await this.#writes;
+      }
+      return result;
+    });
+  }
+
+  /** Internal stop-and-resend is not a stop: keep watches and suppress transient outcomes. */
+  async holdNotifications<T>(threadId: string, operation: () => Promise<T>): Promise<T> {
+    this.#cancelling.set(threadId, (this.#cancelling.get(threadId) ?? 0) + 1);
+    try {
+      await this.#ready;
+      for (const watch of this.#watches) {
+        if (watch.threadId === threadId)
+          watch.observationGeneration = (watch.observationGeneration ?? 0) + 1;
+      }
+      return await operation();
+    } finally {
+      const remaining = (this.#cancelling.get(threadId) ?? 1) - 1;
+      if (remaining > 0) this.#cancelling.set(threadId, remaining);
+      else this.#cancelling.delete(threadId);
+    }
   }
 
   /** Stops work in this process. Stored watches stay on disk for the next Runtime. */
@@ -331,9 +396,16 @@ export class DelegationWatchService {
   async #tick(): Promise<void> {
     for (const watch of [...this.#watches]) {
       if (this.#closed) return;
-      if (watch.state !== "watching") continue;
+      if (watch.state !== "watching" || this.#cancelling.has(watch.threadId)) continue;
+      const generation = watch.observationGeneration;
       const observed = await this.#observe(watch);
-      if (!observed) continue;
+      if (
+        !observed ||
+        !this.#watches.includes(watch) ||
+        this.#cancelling.has(watch.threadId) ||
+        generation !== watch.observationGeneration
+      )
+        continue;
       const { outcome, turnId, restartNote } = observed;
       if (restartNote) watch.restartNote = restartNote;
       watch.state = "pendingDelivery";
@@ -407,18 +479,23 @@ export class DelegationWatchService {
 
   /** All notifications pending for one subscriber start a single Turn. */
   async #deliver(notifyThreadId: string): Promise<void> {
-    const pending = this.#watches.filter(
-      (watch) => watch.state === "pendingDelivery" && watch.notifyThreadId === notifyThreadId,
+    let pending = this.#watches.filter(
+      (watch) => this.#deliverable(watch) && watch.notifyThreadId === notifyThreadId,
     );
+    if (pending.length === 0) return;
     const client = originClientName(notifyThreadId);
     if (client !== undefined) {
       await this.#deliverToClient(client, pending);
       return;
     }
     if (!(await this.#subscriberReady(notifyThreadId, pending))) return;
+    pending = pending.filter((watch) => this.#deliverable(watch));
+    if (pending.length === 0) return;
     for (const watch of pending) watch.delivering = true;
     // Recorded before sending, so a restart during the send delivers again instead of losing it.
     await Promise.all(pending.map((watch) => this.#persist(watch)));
+    pending = pending.filter((watch) => this.#deliverable(watch));
+    if (pending.length === 0) return;
     try {
       await this.#api.send({ threadId: notifyThreadId, message: notification(pending) });
       for (const watch of pending) this.#remove(watch);
@@ -490,7 +567,18 @@ export class DelegationWatchService {
     return true;
   }
 
+  #deliverable(watch: Watch): boolean {
+    return (
+      !this.#closed &&
+      this.#watches.includes(watch) &&
+      watch.state === "pendingDelivery" &&
+      !this.#cancelling.has(watch.threadId)
+    );
+  }
+
   #persist(watch: Watch, required = false): Promise<void> {
+    // An asynchronous observation or delivery may still hold a removed watch.
+    if (!this.#watches.includes(watch)) return Promise.resolve();
     const record = persisted(watch);
     return this.#write((store) => store.save(record), required);
   }

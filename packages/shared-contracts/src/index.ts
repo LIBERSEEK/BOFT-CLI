@@ -414,6 +414,12 @@ export {
   type CodexSshDraft,
 } from "./remote-connections.js";
 
+export {
+  threadTitleInputSchema,
+  threadTitleResultSchema,
+  type ThreadTitleInput,
+} from "./thread-title.js";
+
 export { usageMeasurementsSchema, type UsageMeasurementsSnapshot } from "./thread-usage.js";
 
 export {
@@ -435,3 +441,11 @@ export {
   REMOTE_CONTROLLER_REQUEST_MAX_BYTES,
   type RemoteSessionOperation,
 } from "./remote-sessions.js";
+
+export {
+  encodeOfficialCodexModelRef,
+  decodeOfficialCodexModelRef,
+  decodeOfficialCodexModelSelection,
+  canonicalizeOfficialCodexModelRef,
+  OFFICIAL_CODEX_MODEL_REF_PREFIX,
+} from "./official-codex-model-ref.js";
