@@ -153,7 +153,7 @@ describe("Prepared native Session import", () => {
         threadId: outcome.threadId,
       });
     expect(f.prepare).toHaveBeenCalledOnce();
-    expect(f.adapter.sessionImport.resolveCandidate).toHaveBeenCalledOnce();
+    expect(f.adapter.sessionImport.resolveCandidate).toHaveBeenCalledTimes(5);
     expect(f.adopt).toHaveBeenCalledOnce();
   });
 

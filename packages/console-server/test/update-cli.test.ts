@@ -62,7 +62,7 @@ describe("update command", () => {
     const write = vi.fn();
     await runUpdateCommand(target, updates, write);
     expect(updates.start).not.toHaveBeenCalled();
-    expect(write).toHaveBeenLastCalledWith("BOFT 1.0.0 is up to date.");
+    expect(write).toHaveBeenLastCalledWith("BOFT CLI 1.0.0 is up to date.");
   });
 
   it("propagates check and preparation errors", async () => {

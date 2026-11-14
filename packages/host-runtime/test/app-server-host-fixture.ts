@@ -348,7 +348,6 @@ export function createFixture(
       : {}),
     environment: {
       HOME: mappingStoreDirectory,
-      CODEX_HOME: path.join(mappingStoreDirectory, ".codex"),
       CODEXHOST_DATA_DIR: mappingStoreDirectory,
       // Keep Account projection off the developer Codex home.
       CODEX_HOME: path.join(mappingStoreDirectory, "codex-home"),
@@ -441,6 +440,9 @@ export async function startPiTurn(
     params: { threadId, input: [{ type: "text", text: "synthetic" }] },
   });
   const response = await fixture.collector.waitFor((message) => requestId(message, id));
+  if (response.error !== undefined) {
+    throw new Error(`Synthetic turn start failed: ${JSON.stringify(response.error)}`);
+  }
   const result = response.result as JsonObject;
   const turn = result.turn as JsonObject;
   if (typeof turn.id !== "string") throw new Error("Synthetic turn response has no ID");

@@ -111,7 +111,10 @@ export function findSourceBoundaryViolations({
     ) {
       violations.push(`${filePath}: Skill Library is Node/YAML-only and owned by Host Runtime`);
     }
-    if (isInside(filePath, rendererDirectory) && isForbiddenLocalRuntimeImport(specifier)) {
+    if (
+      isInside(filePath, resolve(rendererDirectory, "src")) &&
+      isForbiddenLocalRuntimeImport(specifier)
+    ) {
       violations.push(`${filePath}: Renderer cannot import '${specifier}'`);
     }
 

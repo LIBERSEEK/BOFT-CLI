@@ -248,15 +248,15 @@ describe("event-driven Harness display synchronization", () => {
           finish = resolve;
         }),
     );
-    store.moveAgent("old", "more");
+    store.moveAgent("grok", "more");
     await next.setHarnessDisplaySettings({ entries: [{ agent: "new", section: "more" }] });
     current = next;
     stop.connect();
     await settle();
-    finish({ entries: [{ agent: "old", section: "more" }] });
+    finish({ entries: [{ agent: "grok", section: "more" }] });
     await settle();
     expect(store.sectionOf("new")).toBe("more");
-    expect(store.sectionOf("old")).toBe("main");
+    expect(store.sectionOf("grok")).toBe("main");
     expect(old.listeners.size).toBe(0);
     stop();
   });

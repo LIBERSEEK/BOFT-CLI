@@ -1026,6 +1026,25 @@ describe("AppServerHost installed Harness plugins", () => {
   });
   it("fails the active Turn and keeps the Thread usable after a projection invariant violation", async () => {
     const fixture = createFixture();
+    const nativeOpen = fixture.adapter.open.bind(fixture.adapter);
+    vi.spyOn(fixture.adapter, "open").mockImplementation(async (input) => {
+      if (input.kind !== "resume") return nativeOpen(input);
+      const previous = fixture.adapter.sessions[0];
+      if (!previous) throw new Error("Fake Pi Session was not available for recovery");
+      const nativeRef = previous.initialState.nativeRef;
+      if (!nativeRef) throw new Error("Fake Pi Session had no Native identity");
+      const recovered = new FakeHarnessSession(
+        fixture.adapter.harnessId,
+        fixture.adapter.catalog,
+        input.model ?? previous.state.effectiveModel,
+        nativeRef,
+        previous.persistedSnapshot(),
+        true,
+        input.cwd,
+      );
+      fixture.adapter.sessions.push(recovered);
+      return { ok: true, value: recovered };
+    });
     const threadId = await startPiThread(fixture);
     const session = fixture.adapter.sessions[0];
     if (!session) throw new Error("Fake Pi Session was not opened");
@@ -1066,15 +1085,18 @@ describe("AppServerHost installed Harness plugins", () => {
     session.abandonTurn();
 
     const secondTurnId = await startPiTurn(fixture, threadId, 3);
-    session.appendText("answer");
-    session.succeedTurn();
-    await expect(
-      fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", secondTurnId)),
-    ).resolves.toMatchObject({ params: { turn: { status: "completed" } } });
+    const recoveredSession = fixture.adapter.sessions[1];
+    if (!recoveredSession) throw new Error("Fake Pi Session was not recovered");
+    recoveredSession.appendText("answer");
+    recoveredSession.succeedTurn();
+    const secondCompletion = await fixture.collector.waitFor((message) =>
+      turnEvent(message, "turn/completed", secondTurnId),
+    );
+    expect(secondCompletion).toMatchObject({ params: { turn: { status: "completed" } } });
     await stopFixture(fixture);
   });
 
-  it("persists External pin metadata but rejects unsupported metadata without official fallback", async () => {
+  it("rejects unsupported External metadata without official fallback", async () => {
     const fixture = createFixture();
     const officialWrite = vi.fn();
     fixture.official.stdin.on("data", officialWrite);
@@ -1086,10 +1108,9 @@ describe("AppServerHost installed Harness plugins", () => {
     });
     await expect(
       fixture.collector.waitFor((message) => requestId(message, 53)),
-    ).resolves.toMatchObject({ result: { thread: { id: threadId, isPinned: true } } });
-    await expect(
-      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
-    ).resolves.toMatchObject({ isPinned: true });
+    ).resolves.toMatchObject({
+      error: { code: -32078, message: "External Thread metadata fields are unsupported: isPinned" },
+    });
     writeRequest(fixture.desktopInput, {
       id: 54,
       method: "thread/metadata/update",
@@ -1098,7 +1119,7 @@ describe("AppServerHost installed Harness plugins", () => {
     await expect(
       fixture.collector.waitFor((message) => requestId(message, 54)),
     ).resolves.toMatchObject({
-      result: { thread: { id: threadId, isPinned: true, gitInfo: { branch: "main" } } },
+      result: { thread: { id: threadId, gitInfo: { branch: "main" } } },
     });
     writeRequest(fixture.desktopInput, {
       id: 55,
@@ -1122,7 +1143,7 @@ describe("AppServerHost installed Harness plugins", () => {
     });
     expect(officialWrite).not.toHaveBeenCalled();
     const stored = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId));
-    expect(stored).toMatchObject({ isPinned: true, gitInfo: { branch: "main" } });
+    expect(stored).toMatchObject({ gitInfo: { branch: "main" } });
     await stopFixture(fixture);
   });
 

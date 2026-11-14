@@ -11,7 +11,7 @@ use codexhost_platform::{process_snapshot, spawn_in_desktop_session, terminate_p
 fn desktop_spawn_reports_child_launch_failures() {
     let directory = std::env::temp_dir().join(format!("aqua-error-{}", std::process::id()));
     fs::create_dir(&directory).unwrap();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_codexhost-shim"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_boft-shim"));
     command.current_dir(directory.join("missing"));
     let result = spawn_in_desktop_session(&command);
     fs::remove_dir(&directory).unwrap();
@@ -39,7 +39,7 @@ with open(os.environ['AQUA_TEST_OUTPUT']+'.partial','w') as f: json.dump(data,f)
 os.replace(os.environ['AQUA_TEST_OUTPUT']+'.partial',os.environ['AQUA_TEST_OUTPUT'])
 time.sleep(30)
 "#;
-    let mut command = Command::new(env!("CARGO_BIN_EXE_codexhost-shim"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_boft-shim"));
     command
         .args(["-c", script])
         .env_clear()

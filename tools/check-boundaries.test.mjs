@@ -91,6 +91,19 @@ describe("source boundary checks", () => {
     );
   });
 
+  it("allows Node.js built-ins in Renderer tests", () => {
+    const violations = findSourceBoundaryViolations({
+      filePath: "/repo/packages/renderer-extension/test/brand.test.ts",
+      packageRoot: rendererDirectory,
+      packagesDirectory,
+      rendererDirectory,
+      sharedContractsDirectory,
+      sourceText: 'import { readFileSync } from "node:fs";',
+    });
+
+    expect(violations).toEqual([]);
+  });
+
   it.each([
     "@agentclientprotocol/sdk",
     "@agentclientprotocol/sdk/internal",

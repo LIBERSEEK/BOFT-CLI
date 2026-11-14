@@ -38,7 +38,7 @@ while True:
     }
 
     fn command(&self) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_codexhost-shim"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_boft-shim"));
         for (key, _) in std::env::vars_os() {
             if key.to_string_lossy().starts_with("CODEXHOST_") {
                 command.env_remove(key);
@@ -140,7 +140,7 @@ fn rejected_desktop_handoff_cleans_descendants_ignoring_sigterm() {
     let socket = fixture.directory.join("ipc");
     let listener = UnixListener::bind(&socket).unwrap();
     fs::set_permissions(&socket, fs::Permissions::from_mode(0o600)).unwrap();
-    let helper = Command::new(env!("CARGO_BIN_EXE_codexhost-shim"))
+    let helper = Command::new(env!("CARGO_BIN_EXE_boft-shim"))
         .arg(codexhost_platform::AQUA_SPAWN_ARGUMENT)
         .arg(&socket)
         .stdout(Stdio::piped())

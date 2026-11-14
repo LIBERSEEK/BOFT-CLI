@@ -6151,10 +6151,9 @@ export class AppServerHost {
 
       let response;
       try {
-        response =
-          "error" in value
-            ? { type: "question" as const, answers: {}, cancelled: true as const }
-            : pending.projection.parseResponse(value.result);
+        response = isRecord(value.error)
+          ? { type: "question" as const, answers: {}, cancelled: true as const }
+          : pending.projection.parseResponse(value.result);
       } catch (error) {
         this.#diagnose(error);
         response = { type: "question" as const, answers: {}, cancelled: true as const };

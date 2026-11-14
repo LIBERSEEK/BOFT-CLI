@@ -38,7 +38,15 @@ const itemOutcomeSchema = z.union([
   z.strictObject({ status: z.literal("cancelled"), reason: z.string().optional() }),
 ]);
 
-const textContentSchema = z.strictObject({ type: z.literal("text"), text: z.string() });
+const textInputSchema = z.strictObject({ type: z.literal("text"), text: z.string() });
+const imageInputSchema = z.strictObject({
+  type: z.literal("image"),
+  mimeType: z.string(),
+  base64Data: z.string(),
+  sourcePath: z.string().optional(),
+});
+const turnInputSchema = z.union([textInputSchema, imageInputSchema]);
+const textContentSchema = textInputSchema;
 const imageContentSchema = z.strictObject({
   type: z.literal("image"),
   mimeType: z.string(),
@@ -114,7 +122,7 @@ const turnOutcomeSchema = z.union([
 const turnSchema = z.strictObject({
   nativeTurnRef: nativeTurnRefSchema,
   checkpoint: nativeCheckpointRefSchema.optional(),
-  input: z.array(z.strictObject({ type: z.literal("text"), text: z.string() })),
+  input: z.array(turnInputSchema),
   items: z.array(z.strictObject({ item: hostItemSchema, outcome: itemOutcomeSchema })),
   outcome: turnOutcomeSchema,
   model: harnessModelRefSchema.optional(),

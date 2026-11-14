@@ -17,6 +17,8 @@ import {
   HARNESS_INSTALLATION_METHOD,
   HARNESS_INSTALLATION_START_METHOD,
   HARNESS_INSTALLATION_STATUS_METHOD,
+  HARNESS_LONG_CONTEXT_GET_METHOD,
+  HARNESS_LONG_CONTEXT_SET_METHOD,
   HARNESS_LAUNCH_SETTINGS_GET_METHOD,
   HARNESS_LAUNCH_SETTINGS_SET_METHOD,
   HARNESS_PREFERENCES_GET_METHOD,
@@ -52,6 +54,7 @@ import { listedHarnessAccounts, listHarnessAccountSources } from "./harness-acco
 import type { HarnessDisplaySettingsStore } from "./harness-display-settings.js";
 import { handleHarnessInstallation, HarnessInstallationError } from "./harness-installation.js";
 import { HarnessInstallationTasks } from "./harness-installation-tasks.js";
+import { handleHarnessLongContext, HarnessLongContextError } from "./harness-long-context.js";
 import {
   handleModelPriceOverridesRequest,
   isModelPriceOverridesMethod,
@@ -376,6 +379,35 @@ export class DesktopControlRequests {
               error instanceof HarnessInstallationError
                 ? error.message
                 : "Harness version management failed",
+            ),
+          );
+        }
+      });
+      return true;
+    }
+    if (
+      request.method === HARNESS_LONG_CONTEXT_GET_METHOD ||
+      request.method === HARNESS_LONG_CONTEXT_SET_METHOD
+    ) {
+      this.#host.dispatchReply(request, async () => {
+        await this.#host.waitForPlugins();
+        try {
+          const result = await handleHarnessLongContext(
+            request.method,
+            request.params,
+            this.#host.externalAdapters,
+          );
+          await this.#host.writeJson(
+            rpcEnvelope(request, { result: jsonValueSchema.parse(result) }),
+          );
+        } catch (error) {
+          await this.#host.writeJson(
+            rpcError(
+              request,
+              error instanceof HarnessLongContextError ? error.code : -32077,
+              error instanceof HarnessLongContextError
+                ? error.message
+                : "Could not read or save the 1M context setting",
             ),
           );
         }
