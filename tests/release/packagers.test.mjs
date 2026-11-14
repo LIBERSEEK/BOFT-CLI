@@ -111,11 +111,22 @@ describe("platform packagers", () => {
     expect(workflow).toContain("publish-release:");
     const publishRelease = workflow.slice(workflow.indexOf("  publish-release:"));
     expect(publishRelease).toContain("gh release create");
-    expect(publishRelease).toContain('"boft-cli-${VERSION}-windows-x64.exe"');
-    expect(publishRelease).toContain('"boft-cli-${VERSION}-windows-arm64.exe"');
-    expect(publishRelease).toContain('"boft-cli-${VERSION}-macos-x64.dmg"');
-    expect(publishRelease).toContain('"boft-cli-${VERSION}-macos-arm64.dmg"');
-    expect(publishRelease).not.toContain('"codexhost-${VERSION}');
+    expect(publishRelease).toContain(
+      '"windows-x64:codexhost-${VERSION}-windows-x64.exe:boft-cli-${VERSION}-windows-x64.exe"',
+    );
+    expect(publishRelease).toContain(
+      '"windows-arm64:codexhost-${VERSION}-windows-arm64.exe:boft-cli-${VERSION}-windows-arm64.exe"',
+    );
+    expect(publishRelease).toContain(
+      '"macos-x64:codexhost-${VERSION}-macos-x64.dmg:boft-cli-${VERSION}-macos-x64.dmg"',
+    );
+    expect(publishRelease).toContain(
+      '"macos-arm64:codexhost-${VERSION}-macos-arm64.dmg:boft-cli-${VERSION}-macos-arm64.dmg"',
+    );
+    expect(publishRelease).toContain(
+      'find release-assets -type f -path "*/${target}/${source_name}"',
+    );
+    expect(publishRelease).toContain('cp "${matches[0]}" "release-assets/${release_name}"');
     expect(workflow).not.toContain("softprops/action-gh-release");
     expect(workflow).not.toContain("codexhost-*.sha256");
     expect(workflow).not.toContain("checksums.txt");
