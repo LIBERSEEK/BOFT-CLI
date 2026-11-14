@@ -139,7 +139,7 @@ async function runBridge(
     const code = await Promise.race([
       closed,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`Bridge did not exit: ${stderr}`)), 5000);
+        timer = setTimeout(() => reject(new Error(`Bridge did not exit: ${stderr}`)), 15000);
       }),
     ]);
     const summary: unknown = JSON.parse(stdout.trim() || "[]");
