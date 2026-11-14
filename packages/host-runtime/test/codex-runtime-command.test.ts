@@ -46,8 +46,9 @@ it("uses local codex at the minimum supported version when Desktop is absent", a
     process.platform === "win32" ? command.toLowerCase() : command,
   );
   expect(runInstallationCommand).toHaveBeenCalledOnce();
-  const [invokedCommand, args, invokedEnvironment] =
-    vi.mocked(runInstallationCommand).mock.calls[0]!;
+  const call = vi.mocked(runInstallationCommand).mock.calls[0];
+  if (!call) throw new Error("Expected a local codex version check");
+  const [invokedCommand, args, invokedEnvironment] = call;
   expect(process.platform === "win32" ? invokedCommand.toLowerCase() : invokedCommand).toBe(
     process.platform === "win32" ? command.toLowerCase() : command,
   );
