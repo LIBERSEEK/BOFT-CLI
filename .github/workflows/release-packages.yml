@@ -223,6 +223,8 @@ jobs:
         with:
           name: boft-cli-${{ matrix.target }}
           path: |
+            build/release/${{ needs.prepare.outputs.version }}/${{ matrix.target }}/codexhost-*.dmg
+            build/release/${{ needs.prepare.outputs.version }}/${{ matrix.target }}/codexhost-*.exe
             build/release/${{ needs.prepare.outputs.version }}/${{ matrix.target }}/boft-cli-*.dmg
             build/release/${{ needs.prepare.outputs.version }}/${{ matrix.target }}/boft-cli-*.exe
             build/npm/${{ needs.prepare.outputs.version }}/${{ matrix.target }}/boft-cli-*-${{ matrix.target }}.tgz
@@ -394,23 +396,25 @@ jobs:
         run: |
           set -euo pipefail
           expected=(
-            "boft-cli-${VERSION}-macos-arm64.dmg"
-            "boft-cli-${VERSION}-macos-x64.dmg"
-            "boft-cli-${VERSION}-windows-x64.exe"
-            "boft-cli-${VERSION}-windows-arm64.exe"
+            "macos-arm64:codexhost-${VERSION}-macos-arm64.dmg:boft-cli-${VERSION}-macos-arm64.dmg"
+            "macos-x64:codexhost-${VERSION}-macos-x64.dmg:boft-cli-${VERSION}-macos-x64.dmg"
+            "windows-x64:codexhost-${VERSION}-windows-x64.exe:boft-cli-${VERSION}-windows-x64.exe"
+            "windows-arm64:codexhost-${VERSION}-windows-arm64.exe:boft-cli-${VERSION}-windows-arm64.exe"
           )
           files=()
-          for name in "${expected[@]}"; do
-            mapfile -d '' matches < <(find release-assets -type f -name "$name" -print0)
+          for artifact in "${expected[@]}"; do
+            IFS=: read -r target source_name release_name <<< "$artifact"
+            mapfile -d '' matches < <(find release-assets -type f -path "*/${target}/${source_name}" -print0)
             if [[ "${#matches[@]}" -ne 1 ]]; then
-              echo "expected exactly one release artifact named ${name}, found ${#matches[@]}" >&2
+              echo "expected exactly one ${source_name} artifact for ${target}, found ${#matches[@]}" >&2
               exit 1
             fi
             if [[ ! -s "${matches[0]}" ]]; then
               echo "release artifact is empty: ${matches[0]}" >&2
               exit 1
             fi
-            files+=("${matches[0]}")
+            cp "${matches[0]}" "release-assets/${release_name}"
+            files+=("release-assets/${release_name}")
           done
           if [[ ! -s release-metadata/release-notes.md ]]; then
             echo "release notes are missing or empty" >&2
