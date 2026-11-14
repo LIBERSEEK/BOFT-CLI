@@ -86,6 +86,23 @@ describe("workflow and form contracts", () => {
     expect(publishRelease).toContain("await verifyRelease(");
   });
 
+  it("publishes BOFT-named installers from the codexhost-named build outputs", async () => {
+    const workflow = await read(".github/workflows/release-packages.yml");
+    expect(workflow).toContain(
+      "build/release/${{ needs.prepare.outputs.version }}/${{ matrix.target }}/codexhost-*.dmg",
+    );
+    expect(workflow).toContain(
+      "build/release/${{ needs.prepare.outputs.version }}/${{ matrix.target }}/codexhost-*.exe",
+    );
+    expect(workflow).toContain(
+      '"macos-arm64:codexhost-${VERSION}-macos-arm64.dmg:boft-cli-${VERSION}-macos-arm64.dmg"',
+    );
+    expect(workflow).toContain(
+      '"windows-arm64:codexhost-${VERSION}-windows-arm64.exe:boft-cli-${VERSION}-windows-arm64.exe"',
+    );
+    expect(workflow).toContain('cp "${matches[0]}" "release-assets/${release_name}"');
+  });
+
   it("limits CI skipping to explicit manual input and carries it through publication checks", async () => {
     const workflow = await read(".github/workflows/release-packages.yml");
     expect(workflow).toMatch(
