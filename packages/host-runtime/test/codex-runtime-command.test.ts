@@ -41,7 +41,10 @@ it("prefers the Desktop program over a locally installed codex", async () => {
 
 it("uses local codex at the minimum supported version when Desktop is absent", async () => {
   const { command, environment } = await installation();
-  expect(await resolveOfficialCodexExecutable("", environment)).toBe(command);
+  const resolved = await resolveOfficialCodexExecutable("", environment);
+  expect(process.platform === "win32" ? resolved?.toLowerCase() : resolved).toBe(
+    process.platform === "win32" ? command.toLowerCase() : command,
+  );
   expect(runInstallationCommand).toHaveBeenCalledExactlyOnceWith(
     command,
     ["--version"],
