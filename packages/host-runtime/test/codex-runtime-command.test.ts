@@ -45,11 +45,14 @@ it("uses local codex at the minimum supported version when Desktop is absent", a
   expect(process.platform === "win32" ? resolved?.toLowerCase() : resolved).toBe(
     process.platform === "win32" ? command.toLowerCase() : command,
   );
-  expect(runInstallationCommand).toHaveBeenCalledExactlyOnceWith(
-    command,
-    ["--version"],
-    environment,
+  expect(runInstallationCommand).toHaveBeenCalledOnce();
+  const [invokedCommand, args, invokedEnvironment] =
+    vi.mocked(runInstallationCommand).mock.calls[0]!;
+  expect(process.platform === "win32" ? invokedCommand.toLowerCase() : invokedCommand).toBe(
+    process.platform === "win32" ? command.toLowerCase() : command,
   );
+  expect(args).toEqual(["--version"]);
+  expect(invokedEnvironment).toEqual(environment);
 });
 
 it("refuses codexhost shim aliases and the routing proxy without executing them", async () => {
