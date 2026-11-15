@@ -270,10 +270,13 @@ describe("Thread export", () => {
   it("keeps the debugging help to the requested short description", () => {
     const help = delegationCliHelp(["thread", "export", "--help"]);
     expect(help).toContain(
-      "codexhost thread export <thread> [--out <path>] [--format json|compact|text]\nRarely needed: debugging only. Exports the full Thread to a JSON file and returns its path.\n\n",
+      "boft thread export <thread> [--out <path>] [--format json|compact|text]\nRarely needed: debugging only. Exports the full Thread to a JSON file and returns its path.\n\n",
     );
     expect(delegationCliHelp(["delegate", "--help"])).toContain(
-      "codexhost thread export <thread> (rarely needed)\n",
+      "boft thread export <thread> (rarely needed)\n",
+    );
+    expect(delegationCliHelp(["thread", "send", "--help"])).toContain(
+      "boft thread send <thread> (--message <text> | --message-file <path|->) [--interrupt] [--steer true|false]",
     );
   });
 });
