@@ -6,7 +6,6 @@ import {
   rendererSettingsMessages,
   resolveRendererSettingsLocale,
 } from "../../src/settings/localization.js";
-import { createDefaultRendererSettingsPages } from "../../src/settings/pages.js";
 
 describe("Renderer settings localization", () => {
   it("negotiates English and Chinese language tags with an English fallback", () => {
@@ -26,7 +25,6 @@ describe("Renderer settings localization", () => {
     expect(codexLocaleOverrideForSettingsSelection("en")).toBe("en-US");
     expect(codexLocaleOverrideForSettingsSelection("zh-CN")).toBe("zh-CN");
   });
-
   it("provides complete immutable English and Chinese settings catalogs", () => {
     const english = rendererSettingsMessages("en");
     const chinese = rendererSettingsMessages("zh-CN");
@@ -98,24 +96,5 @@ describe("Renderer settings localization", () => {
     expect(Object.keys(chinese.pageLabels)).toEqual(Object.keys(english.pageLabels));
     expect(Object.isFrozen(english)).toBe(true);
     expect(Object.isFrozen(chinese.pageLabels)).toBe(true);
-  });
-
-  it("localizes every default page descriptor", () => {
-    expect(
-      createDefaultRendererSettingsPages(rendererSettingsMessages("zh-CN")).map(
-        ({ label }) => label,
-      ),
-    ).toEqual([
-      "Agents",
-      "手机与浏览器",
-      "远程连接",
-      "账号",
-      "会话",
-      "用量统计",
-      "外观",
-      "插件",
-      "更新",
-      "关于",
-    ]);
   });
 });

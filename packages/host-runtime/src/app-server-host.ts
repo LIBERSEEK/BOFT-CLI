@@ -2583,7 +2583,7 @@ export class AppServerHost {
     };
     const decoded = decodeThreadListRequest(request);
     if (!decoded) throw new Error("Delegation thread/list request could not be decoded");
-    const records = await this.#repository.list();
+    const records = await this.#repository.listSummaries();
     const result = await aggregateThreadList({
       query: decoded,
       records,
@@ -2642,7 +2642,7 @@ export class AppServerHost {
         ...(parsed.data.officialCursor ? { officialCursor: parsed.data.officialCursor } : {}),
         readLocal: async () => {
           const [records, placements] = await Promise.all([
-            this.#repository.list(),
+            this.#repository.listSummaries(),
             this.#repository.listSectionPlacements(),
           ]);
           return { records, placements };
@@ -2677,7 +2677,7 @@ export class AppServerHost {
     let ok = false;
     try {
       const [records, placements] = await timing.measure("store", () =>
-        Promise.all([this.#repository.list(), this.#repository.listSectionPlacements()]),
+        Promise.all([this.#repository.listSummaries(), this.#repository.listSectionPlacements()]),
       );
       timing.counts.mappingRecords = records.length;
       timing.counts.placements = placements.length;
@@ -2757,7 +2757,7 @@ export class AppServerHost {
   ): Promise<void> {
     try {
       const [records, localPlacements, sharedPlacements, sharedThreads] = await Promise.all([
-        this.#repository.list(),
+        this.#repository.listSummaries(),
         this.#repository.listSectionPlacements(),
         this.#options.sharedThreads?.placements() ?? [],
         this.#options.sharedThreads?.list(query.params) ?? [],
