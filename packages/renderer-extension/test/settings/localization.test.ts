@@ -6,6 +6,10 @@ import {
   rendererSettingsMessages,
   resolveRendererSettingsLocale,
 } from "../../src/settings/localization.js";
+import {
+  RENDERER_SETTINGS_NAV_SECTIONS,
+  rendererSettingsNavSectionLabel,
+} from "../../src/settings/pages.js";
 
 describe("Renderer settings localization", () => {
   it("negotiates English and Chinese language tags with an English fallback", () => {
@@ -58,14 +62,20 @@ describe("Renderer settings localization", () => {
     expect(chinese.pageLabels["session-import"]).toBe("会话");
     expect(chinese.sessionImportTitle).toBe("会话导入");
     expect(chinese.pageLabels.plugins).toBe("插件");
-    expect(chinese.connectionSection).toBe("连接");
+    expect(chinese.agentsSection).toBe("Agents");
+    expect(chinese.accessSection).toBe("访问与账号");
+    expect(chinese.activitySection).toBe("会话与活动");
     expect(chinese.connectionCopyPrompt).toBe("复制 Prompt");
     expect(english.connectionCopyPrompt).toBe("Copy prompt");
     expect(chinese.connectionInstallCommand).toBe("安装命令");
     expect(chinese.connectionInstallPrompt).toContain("{command}");
     expect(english.connectionInstallPrompt).toContain("{command}");
     expect(chinese.generalSection).toBe("通用");
-    expect(chinese.otherSection).toBe("其他");
+    expect(chinese.otherSection).toBe("关于");
+    expect(english.agentsSection).toBe("Agents");
+    expect(english.accessSection).toBe("Access");
+    expect(english.activitySection).toBe("Sessions & activity");
+    expect(english.otherSection).toBe("About");
 
     expect(chinese.sessionImportAvailabilityNote).toContain("可选 Harness 来自当前 Host");
     expect(chinese.sessionImportAvailabilityNote).toContain("先在原生客户端关闭该会话再导入");
@@ -96,5 +106,30 @@ describe("Renderer settings localization", () => {
     expect(Object.keys(chinese.pageLabels)).toEqual(Object.keys(english.pageLabels));
     expect(Object.isFrozen(english)).toBe(true);
     expect(Object.isFrozen(chinese.pageLabels)).toBe(true);
+  });
+
+  it("groups every settings page exactly once by user task", () => {
+    const pageIds = RENDERER_SETTINGS_NAV_SECTIONS.flatMap((section) => [...section.pageIds]);
+    expect(new Set(pageIds).size).toBe(pageIds.length);
+    expect(pageIds).toEqual([
+      "connections",
+      "plugins",
+      "accounts",
+      "remote-connections",
+      "mobile-web",
+      "session-import",
+      "usage-statistics",
+      "harness-schedules",
+      "appearance",
+      "updates",
+      "about",
+    ]);
+
+    const chinese = rendererSettingsMessages("zh-CN");
+    expect(
+      RENDERER_SETTINGS_NAV_SECTIONS.map((section) =>
+        rendererSettingsNavSectionLabel(section.id, chinese),
+      ),
+    ).toEqual(["Agents", "访问与账号", "会话与活动", "通用", "关于"]);
   });
 });

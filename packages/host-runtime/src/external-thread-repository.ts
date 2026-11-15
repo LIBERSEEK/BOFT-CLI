@@ -568,7 +568,7 @@ export function createExternalThreadRecordInput(input: {
   };
 }
 
-function subagentThreadModelFields(record: StoredThreadRecordV1): {
+function subagentThreadModelFields(record: StoredThreadSummaryV1): {
   model?: string;
   reasoningEffort?: string;
 } {

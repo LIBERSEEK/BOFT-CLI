@@ -33,7 +33,9 @@ export interface RendererSettingsMessages {
   readonly title: string;
   readonly close: string;
   readonly sectionsLabel: string;
-  readonly connectionSection: string;
+  readonly agentsSection: string;
+  readonly accessSection: string;
+  readonly activitySection: string;
   readonly generalSection: string;
   readonly otherSection: string;
   readonly appearanceDescription: string;
@@ -320,9 +322,11 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   title: "Settings",
   close: "Close settings",
   sectionsLabel: "Settings sections",
-  connectionSection: "Connections",
+  agentsSection: "Agents",
+  accessSection: "Access",
+  activitySection: "Sessions & activity",
   generalSection: "General",
-  otherSection: "Other",
+  otherSection: "About",
   appearanceDescription: "Conversation display and local resource management.",
   appearanceGroup: "Appearance",
   loadedSessions: {
@@ -676,9 +680,11 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   title: "设置",
   close: "关闭设置",
   sectionsLabel: "设置分类",
-  connectionSection: "连接",
+  agentsSection: "Agents",
+  accessSection: "访问与账号",
+  activitySection: "会话与活动",
   generalSection: "通用",
-  otherSection: "其他",
+  otherSection: "关于",
   appearanceDescription: "会话显示与本地资源管理。",
   appearanceGroup: "外观",
   loadedSessions: {
