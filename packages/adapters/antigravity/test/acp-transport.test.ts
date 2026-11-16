@@ -188,14 +188,11 @@ describe("native ACP stdio transport", () => {
   });
   it("creates sessions with system append, roots, tier and queued commands", async () => {
     const value = transport();
-    const mcpServers = [
-      { name: "codexhost_background", command: process.execPath, args: [], env: [] },
-    ];
     const { opened } = await value.openSession({
       kind: "create",
       cwd: "/repo",
-      mcpServers,
       additionalDirectories: ["/extra"],
+      mcpServers: [{ name: "codexhost_background", command: process.execPath }],
       systemPromptAppend: "Be concise",
     });
     expect(value.sessionId).toBe("native");
@@ -203,7 +200,7 @@ describe("native ACP stdio transport", () => {
     expect(opened.models?.availableModels.map(({ name }) => JSON.parse(name))).toEqual([
       {
         cwd: "/repo",
-        mcpServers,
+        mcpServers: [{ name: "codexhost_background", command: process.execPath }],
         additionalDirectories: ["/extra"],
         _meta: { antigravity: { systemPrompt: { append: "Be concise" } } },
       },

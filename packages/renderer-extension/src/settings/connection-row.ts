@@ -305,6 +305,7 @@ export function createConnectionRowView(
       }
 
       const version = item.version;
+      if (item.accessory) nextActions.push(item.accessory);
       if (version?.state?.updateAvailable && !version.updating) {
         if (!versionAvailableBadge) {
           const badge = document.createElement("span");
@@ -373,7 +374,6 @@ export function createConnectionRowView(
         }
         nextActions.push(groupToggleButton);
       }
-      if (item.accessory) nextActions.push(item.accessory);
       reconcileElementChildren(action, nextActions);
 
       if (group) {

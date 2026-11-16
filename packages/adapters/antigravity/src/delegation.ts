@@ -1,5 +1,3 @@
-import { ANTIGRAVITY_BACKGROUND_WAIT_INSTRUCTIONS } from "./background-wait-mcp.js";
-
 const DELEGATION_ENVIRONMENT_KEYS = [
   "CODEXHOST_CLI_PATH",
   "CODEXHOST_RUNTIME_ENDPOINT",
@@ -18,6 +16,7 @@ export function antigravityDelegationInstructions(
     ? ANTIGRAVITY_DELEGATION_INSTRUCTIONS
     : undefined;
 }
+import { ANTIGRAVITY_BACKGROUND_WAIT_INSTRUCTIONS } from "./background-wait-mcp.js";
 
 export function antigravitySessionInstructions(environment: NodeJS.ProcessEnv): string {
   const delegation = antigravityDelegationInstructions(environment);

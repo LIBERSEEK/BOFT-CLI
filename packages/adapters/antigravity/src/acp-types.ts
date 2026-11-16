@@ -3,9 +3,9 @@ import type {
   CreateElicitationRequest,
   CreateElicitationResponse,
   InitializeResponse,
-  McpServer,
   RequestPermissionRequest,
   RequestPermissionResponse,
+  McpServer,
 } from "@agentclientprotocol/sdk";
 import type { HarnessErrorCode } from "@codexhost/harness-adapter";
 

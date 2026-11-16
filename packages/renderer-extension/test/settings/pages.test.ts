@@ -2513,7 +2513,7 @@ describe("Renderer Connections page", () => {
     cleanup?.();
   });
 
-  it("shows the 1M switch after Claude CLI is installed and keeps the download button before that", async () => {
+  it("shows the 1M switch before update and grouping actions after Claude CLI is installed", async () => {
     const messages = rendererSettingsMessages("zh-CN");
     let resolveGet: (value: { enabled: boolean }) => void = () => undefined;
     const getLongContext = vi.fn(
@@ -2540,9 +2540,12 @@ describe("Renderer Connections page", () => {
         ],
       }),
       refresh: vi.fn(async () => undefined),
-      installation: vi.fn(async () => {
-        throw new Error("version check is not part of this interaction");
-      }),
+      installation: vi.fn(async () => ({
+        currentVersion: "1.0.0",
+        latestVersion: "1.1.0",
+        updateAvailable: true,
+        canUpdate: true,
+      })),
       getLongContext,
       setLongContext,
       subscribe: () => () => undefined,
@@ -2568,14 +2571,28 @@ describe("Renderer Connections page", () => {
     const longContextSwitch = switches[0];
     if (!longContextSwitch) throw new Error("Expected 1M switch");
     expect(descendants(claude)).toContain(longContextSwitch);
+    const action = descendants(claude).find((element) =>
+      element.className.split(" ").includes("settings-connection-row__action"),
+    );
+    if (!action) throw new Error("Expected Claude row actions");
+    await vi.waitFor(() =>
+      expect(
+        descendants(claude).some((element) => element.dataset.connectionAction === "update"),
+      ).toBe(true),
+    );
+    const updateButton = descendants(claude).find(
+      (element) => element.dataset.connectionAction === "update",
+    );
+    const groupButton = descendants(claude).find((element) =>
+      element.className.split(" ").includes("settings-connection-row__group-toggle"),
+    );
+    if (!updateButton || !groupButton) throw new Error("Expected update and grouping actions");
+    const actionOrder = action.children as FakeElement[];
+    expect(actionOrder.indexOf(longContextSwitch)).toBeLessThan(actionOrder.indexOf(updateButton));
+    expect(actionOrder.indexOf(updateButton)).toBeLessThan(actionOrder.indexOf(groupButton));
     expect(descendants(pi).some((element) => element.className.includes("long-context"))).toBe(
       false,
     );
-    expect(
-      descendants(content).some((element) =>
-        element.className.split(" ").includes("settings-connection-install-link"),
-      ),
-    ).toBe(false);
     const input = descendants(longContextSwitch).find((element) => element.tagName === "input");
     if (!input) throw new Error("Expected 1M switch");
     expect(input.checked).toBe(true);
