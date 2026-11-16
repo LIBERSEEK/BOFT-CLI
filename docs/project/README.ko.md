@@ -83,13 +83,21 @@ boft stop     # BOFT CLI의 모든 백그라운드 서비스 중지
 
 macOS 앱 메타데이터의 이름은 **BOFT CLI**이지만, 기존 앱 업데이트와 수동 덮어쓰기를 위해 DMG의 파일명은 **BOFT.app**으로 유지됩니다. Finder에도 이 파일명이 표시될 수 있습니다. Applications로 드래그하여 기존 앱을 교체한 뒤 확인되지 않는다는 메시지가 나타나면 다음을 실행하세요:
 
-`boft web`으로 Web을 시작하고 브라우저에서 엽니다.
-
 ```bash
 xattr -d com.apple.quarantine /Applications/BOFT.app
 ```
 
 그런 다음 앱을 다시 여세요.
+
+**방법 3: WinGet** (Windows x64 / ARM64)
+
+설치와 업그레이드에 같은 명령을 사용합니다:
+
+```powershell
+winget install --id BytePioneer-AI.CodexHost --exact
+```
+
+> Linux는 x64 / ARM64를 지원합니다. 자세한 내용은 [Linux 안내](../platforms/linux/linux.md)를 참고하세요.
 
 **업그레이드와 중지**: `boft update`로 업그레이드하고, `boft stop`으로 모든 백그라운드 서비스를 중지합니다. npm으로 덮어써 설치하기 전에는 먼저 `boft stop`을 실행하세요.
 

@@ -70,6 +70,14 @@ boft stop     # 停止 BOFT CLI 的全部后台服务
 
 从 [Releases](https://github.com/LIBERSEEK/BOFT-CLI/releases) 下载对应平台的安装包。
 
+**方式三：WinGet**（Windows x64 / ARM64）
+
+安装或升级均使用同一条命令：
+
+```powershell
+winget install --id BytePioneer-AI.CodexHost --exact
+```
+
 > Linux 支持 x64 / ARM64，详见 [Linux 说明](../platforms/linux/linux.zh-CN.md)。
 
 系统显示名称为 **BOFT CLI**；Windows 开始菜单入口为 **BOFT CLI** 和 **BOFT CLI console**，升级时会移除旧的 BOFT 快捷方式。命令仍为 `boft`，应用身份和用户数据目录保持不变。macOS 应用元数据使用 **BOFT CLI**，文件名仍为 **BOFT.app**，兼容原位更新和手动覆盖安装；Finder 中也可能显示该文件名。

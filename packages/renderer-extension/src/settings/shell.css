@@ -1530,6 +1530,7 @@
   background: var(--settings-surface);
   border: 1px solid var(--settings-border);
   border-radius: 10px;
+  overflow-anchor: none;
 }
 
 .settings-connection-inspector__header {

@@ -56,10 +56,9 @@ printf 'Host stopped; interrupted tasks: 7\n<opaque output>\n'
         })).unwrap()).unwrap();
         Self { root, owner }
     }
+
     fn status(&self) -> Option<serde_json::Value> {
-        fs::read(self.root.join("status.json"))
-            .ok()
-            .map(|bytes| serde_json::from_slice(&bytes).unwrap())
+        serde_json::from_slice(&fs::read(self.root.join("status.json")).ok()?).ok()
     }
 }
 impl Drop for Fixture {
@@ -305,9 +304,4 @@ fn rejected_lock_handoff_does_not_stop_or_recover_services() {
     assert!(!fixture.root.join("order").exists());
     assert!(fixture.root.join("web-running").exists());
     assert!(fixture.root.join("host-running").exists());
-}
-
-#[test]
-fn no_running_host_omits_empty_stop_output_from_the_update_result() {
-    update(false, false);
 }

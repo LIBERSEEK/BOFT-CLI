@@ -81,7 +81,7 @@ export interface ExternalThread {
   pendingSteerProjections: Set<Promise<void>>;
   ephemeralTurnIds: Set<HostTurnId>;
   /** Latest explicit command, retained only for client lifecycle presentation. */
-  clientCommand?: { name: string; turn: JsonObject };
+  clientCommand?: { name: string; turn: JsonObject; subsequentTurnId?: HostTurnId };
   persistenceError: Error | null;
   ignoredInteractionIds: Set<HostInteractionId>;
   /** Native Session faulted or closed; idle Threads should restore instead of reuse. */
@@ -824,6 +824,9 @@ export class ExternalThreadRuntime {
       return;
     const retained = new Set<string>(
       thread.record.turnMappings.map((mapping) => mapping.hostTurnId),
+    );
+    thread.usageMeter.restoreOutputTimings(
+      saved.values.outputTimings?.filter((value) => retained.has(value.turnId)) ?? [],
     );
     for (const field of ["outputTokensPerSecond", "timeToFirstOutputMs"] as const) {
       const value = saved.values[field];
