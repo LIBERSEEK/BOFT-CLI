@@ -265,6 +265,8 @@ export interface HostUsageRequest {
   cacheWrite1hInputTokens?: number;
   outputTokens: number;
   reasoningOutputTokens?: number;
+  /** Output Tokens generated within [startedAtMs, completedAtMs]; defaults to outputTokens. */
+  timedOutputTokens?: number;
   /** Unix ms of this request's first output token and of its completion; both or neither. */
   startedAtMs?: number;
   completedAtMs?: number;
@@ -277,6 +279,7 @@ const requestTokenFields = [
   "cacheWrite1hInputTokens",
   "outputTokens",
   "reasoningOutputTokens",
+  "timedOutputTokens",
   "startedAtMs",
   "completedAtMs",
 ] as const satisfies ReadonlyArray<keyof HostUsageRequest>;
@@ -340,6 +343,14 @@ export function parseHostUsageRequest(value: unknown): HostUsageRequest {
   }
   if ((request.startedAtMs === undefined) !== (request.completedAtMs === undefined)) {
     throw new Error("Harness Usage request timing fields must be provided together");
+  }
+  if (request.timedOutputTokens !== undefined) {
+    if (request.startedAtMs === undefined) {
+      throw new Error("Harness Usage request 'timedOutputTokens' requires timing fields");
+    }
+    if (request.timedOutputTokens > request.outputTokens) {
+      throw new Error("Harness Usage request 'timedOutputTokens' must not exceed 'outputTokens'");
+    }
   }
   if (
     request.startedAtMs !== undefined &&

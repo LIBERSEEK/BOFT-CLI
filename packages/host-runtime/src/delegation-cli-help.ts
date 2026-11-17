@@ -60,7 +60,8 @@ Request cancellation of the active Turn while preserving the Thread and history.
 Accepted cancellation also removes all watches on that Thread; thread send --interrupt instead preserves them.
 cancelled=true (compact: cancelRequested=true) means the cancellation request was accepted. Read or wait to confirm the terminal state. An idle Thread returns false.`,
   "thread read": `boft thread read <thread> [--host <hostId>] [--view result|messages] [--cursor <cursor>] [--from <n>] [--to <n>] [--limit <n>] [--format json|compact|text]
-Read immediately without starting a Turn. Accepts thread://<id>?hostId=<encoded-host-id> or --host with a bare ID. Explicit remote Hosts use the existing Desktop connection, never local fallback. Requires updated local and remote BOFT CLI; remote send/wait/watch are not supported.
+Read immediately without starting a Turn. Accepts thread://<id>?hostId=<encoded-host-id> or --host with a bare ID. Explicit remote Hosts use the existing Desktop connection, never local fallback. Requires updated local and remote BOFT CLI; remote send/wait/watch/answer are not supported.
+pendingQuestions lists unanswered Questions with interaction ID, Turn, kind, and native request data. No watch is needed to read or answer them.
 The default result view reports the latest Turn's status and result. Text result output shows Thread metadata, then --- and verbatim result text.
 The messages view pages visible user/Agent messages, oldest first. Default limit 25, maximum 100; --cursor, --from, --to and --limit require --view messages. --from and --to select inclusive absolute Turn numbers; see the messages view details below.
 hasMore describes remaining messages now. Save nextCursor for later incremental reads even when hasMore=false.
@@ -69,16 +70,21 @@ Full JSON retains the complete snapshot. Tool calls/output, file activity, and r
   "thread export": `boft thread export <thread> [--out <path>] [--format json|compact|text]
 Rarely needed: debugging only. Exports the full Thread to a JSON file and returns its path.`,
   "thread wait": `boft thread wait <thread> [--timeout-ms <n>] [--view result|messages] [--cursor <cursor>] [--from <n>] [--to <n>] [--limit <n>] [--format json|compact|text]
-Wait until the Thread is terminal or the timeout expires (default 30000 ms), then return the same snapshot as thread read plus timedOut.
+Wait until the Thread is terminal, is waiting for an answer, or the timeout expires (default 30000 ms), then return the same snapshot as thread read plus timedOut.
 timedOut=true is a running checkpoint: the child keeps running. The response already includes the result when available; another read is unnecessary unless more information is needed.
 ${MESSAGE_VIEW_HELP}`,
+  "thread answer": `boft thread answer <thread> --interaction <id> --answers-file <file> [--format json|compact]
+Answer a pending Question request reported by thread read in pendingQuestions, and let the original Turn continue.
+--interaction is the opaque interactionId reported by read. --answers-file contains the existing reply result for kind=requestUserInput, for example {"answers":{"decision":{"answers":["Continue"]}}}. For kind=requestUserInputAsync, each entry is one question: read request.title and request.options and submit {"answer":"Continue"}. Native async questions follow the client channel: answers steer the current active Turn, or start a Turn when idle; the original question need not belong to the current Turn.
+Read pendingQuestions[].request for the original prompts and option labels. Do not assume a rejected reply can be retried; read the Thread again.
+QUESTION_NOT_PENDING means the interaction ID is unknown, already answered, cancelled, expired, from a finished Turn, or from a retired Runtime. The receipt means the answer was accepted, not that delegated work succeeded: read or wait for the outcome.`,
   "thread watch": `boft thread watch <thread> [--notify <thread>] [--timeout-ms <n>] [--format json|compact|text]
-Ask the Host to notify one Thread, once, when the watched Thread stops. Returns immediately; no waiting or polling by the caller is needed, and the caller may end its Turn.
+Ask the Host to notify one Thread, once, when the watched Thread stops or waits for an answer. Returns immediately; no waiting or polling by the caller is needed, and the caller may end its Turn.
 --notify defaults to the calling Thread when it is identified (CODEXHOST_THREAD_ID, or CODEX_THREAD_ID in native Codex); for an external client it defaults to the client, and the notification becomes an event in its log (see boft events). Otherwise it is required. delegate start reports the caller as its parent.
-The notification uses the same steering operation as thread send --steer true in the notified Thread with the watched Thread's link and outcome: completed, failed, interrupted, timedOut, unreadable, or notFound; a terminal outcome names the Turn it came from. It reports execution state only and asks the notified agent to read each Thread's result before continuing.
+The notification uses the same steering operation as thread send --steer true in the notified Thread with the watched Thread's link and outcome: completed, failed, interrupted, needsInput, timedOut, unreadable, or notFound; a terminal outcome names the Turn it came from. It reports execution state only and asks the notified agent to read each Thread's result before continuing.
 Link labels use the observed title (Thread id if unavailable); a suffix after " · " is limited to 20 characters plus an ellipsis without renaming the Thread.
 --timeout-ms defaults to 1740000 (29 min). timedOut means the Thread had not reached a terminal state, which also covers a Harness that stopped without reporting it; watch again to keep waiting. unreadable means reads failed for 60 s, so the state is unknown.
-state=watching means registered. state=alreadyTerminal means the Thread was not running: nothing was registered and nothing will be sent.
+state=watching means registered. state=alreadyTerminal means the Thread was not running; state=alreadyNeedsInput means it already has an unanswered Question. In either immediate return, nothing was registered or sent, and pendingQuestions is included when relevant.
 An active notified Thread receives the notification through the same steering operation; if it cannot accept input yet, delivery is retried for up to 6 hours. Notifications due together arrive as one message. THREAD_BUSY is never treated as delivered.
 A watch is one-shot. There is no separate watch-cancel command; an accepted thread cancel removes all watches on that Thread, while thread send --interrupt preserves them. Watching the same pair again while it is still watched returns that watch; once it has stopped, a new watch covers the next stop and any pending notification is still delivered. Watches are stored and resume after a Host Runtime restart; a notification whose delivery was in progress when the Runtime stopped is sent again, so a restart may repeat one. A Turn that was running when the Runtime restarted is reported as interrupted, because the restart ended its Harness process.`,
   "thread watches": `boft thread watches [--format json|compact|text]
@@ -116,6 +122,7 @@ export const DELEGATION_HELP = `usage:
   boft thread read <thread>
   boft thread export <thread> (rarely needed)
   boft thread wait <thread>
+  boft thread answer <thread> --interaction <id> --answers-file <file>
   boft thread watch <thread>
   boft thread watches
   boft thread list
