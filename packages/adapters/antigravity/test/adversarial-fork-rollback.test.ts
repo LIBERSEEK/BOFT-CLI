@@ -180,7 +180,7 @@ describe("Empirical Adversarial Challenges: Fork & Rollback", () => {
       const dataDir = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-adv-fork3-"));
       const adapter = new AntigravityAdapter({
         command,
-        environment: { ...process.env, CODEXHOST_DATA_DIR: dataDir },
+        environment: { ...process.env, HOME: cwd, USERPROFILE: cwd, CODEXHOST_DATA_DIR: dataDir },
       });
 
       try {
@@ -310,7 +310,10 @@ describe("Empirical Adversarial Challenges: Fork & Rollback", () => {
   describe("2. Non-existent Checkpoint and Mismatched Session ID", () => {
     it("rejects non-existent checkpoint with checkpointNotFound", async () => {
       const { command, cwd, cleanup } = await createMockAgy();
-      const adapter = new AntigravityAdapter({ command });
+      const adapter = new AntigravityAdapter({
+        command,
+        environment: { ...process.env, HOME: cwd, USERPROFILE: cwd, CODEXHOST_DATA_DIR: cwd },
+      });
       try {
         const sourceRef = nativeSessionRefSchema.parse({
           harnessId: antigravityHarnessId,
@@ -371,7 +374,10 @@ describe("Empirical Adversarial Challenges: Fork & Rollback", () => {
 
     it("rejects mismatched session ID on checkpoint with checkpointNotFound", async () => {
       const { command, cwd, cleanup } = await createMockAgy();
-      const adapter = new AntigravityAdapter({ command });
+      const adapter = new AntigravityAdapter({
+        command,
+        environment: { ...process.env, HOME: cwd, USERPROFILE: cwd, CODEXHOST_DATA_DIR: cwd },
+      });
       try {
         const sourceRef = nativeSessionRefSchema.parse({
           harnessId: antigravityHarnessId,
@@ -455,7 +461,7 @@ describe("Empirical Adversarial Challenges: Fork & Rollback", () => {
       const childThreadId = "thread-child-isolation";
       const adapter = new AntigravityAdapter({
         command,
-        environment: { ...process.env, CODEXHOST_DATA_DIR: dataDir },
+        environment: { ...process.env, HOME: cwd, USERPROFILE: cwd, CODEXHOST_DATA_DIR: dataDir },
       });
 
       try {
@@ -570,7 +576,10 @@ describe("Empirical Adversarial Challenges: Fork & Rollback", () => {
       const { command, cwd, cleanup } = await createMockAgy();
       const dataDir = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-adv-rb0-"));
       const env = { CODEXHOST_DATA_DIR: dataDir, CODEXHOST_THREAD_ID: "thread-rb0" };
-      const adapter = new AntigravityAdapter({ command });
+      const adapter = new AntigravityAdapter({
+        command,
+        environment: { ...process.env, HOME: cwd, USERPROFILE: cwd, CODEXHOST_DATA_DIR: cwd },
+      });
 
       try {
         // Create 0-turn session history in persistence
@@ -642,7 +651,10 @@ describe("Empirical Adversarial Challenges: Fork & Rollback", () => {
 
       const { command, cwd, cleanup } = await createMockAgy({ turnResponses: turns });
       const dataDir = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-adv-rb1-"));
-      const adapter = new AntigravityAdapter({ command });
+      const adapter = new AntigravityAdapter({
+        command,
+        environment: { ...process.env, HOME: cwd, USERPROFILE: cwd, CODEXHOST_DATA_DIR: cwd },
+      });
 
       try {
         const opened = await adapter.open({
@@ -761,7 +773,10 @@ describe("Empirical Adversarial Challenges: Fork & Rollback", () => {
 
       const { command, cwd, cleanup } = await createMockAgy({ turnResponses: turns });
       const dataDir = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-adv-crb-"));
-      const adapter = new AntigravityAdapter({ command });
+      const adapter = new AntigravityAdapter({
+        command,
+        environment: { ...process.env, HOME: cwd, USERPROFILE: cwd, CODEXHOST_DATA_DIR: cwd },
+      });
 
       try {
         // Build a 3-turn session
@@ -816,7 +831,7 @@ describe("Empirical Adversarial Challenges: Fork & Rollback", () => {
           sourceRef: ref2,
           environment: { CODEXHOST_DATA_DIR: dataDir, CODEXHOST_THREAD_ID: "th-consec-2" },
         });
-        expect(rb1.ok).toBe(true);
+        expect(rb1.ok, JSON.stringify(rb1)).toBe(true);
         if (!rb1.ok) return;
         const session1 = rb1.value;
         const snap1 = await session1.readSnapshot();
@@ -832,7 +847,7 @@ describe("Empirical Adversarial Challenges: Fork & Rollback", () => {
           sourceRef: ref1,
           environment: { CODEXHOST_DATA_DIR: dataDir, CODEXHOST_THREAD_ID: "th-consec-3" },
         });
-        expect(rb0.ok).toBe(true);
+        expect(rb0.ok, JSON.stringify(rb0)).toBe(true);
         if (!rb0.ok) return;
         const session0 = rb0.value;
         const snap0 = await session0.readSnapshot();
@@ -869,7 +884,10 @@ describe("Empirical Adversarial Challenges: Fork & Rollback", () => {
   describe("6. Foreign Harness ID Rejection", () => {
     it("rejects fork and rollback for foreign harness IDs with invalidRequest", async () => {
       const { command, cwd, cleanup } = await createMockAgy();
-      const adapter = new AntigravityAdapter({ command });
+      const adapter = new AntigravityAdapter({
+        command,
+        environment: { ...process.env, HOME: cwd, USERPROFILE: cwd, CODEXHOST_DATA_DIR: cwd },
+      });
       try {
         const foreignHarnessId = "claude-code" as unknown as HarnessId;
         const foreignSession = nativeSessionRefSchema.parse({
@@ -949,7 +967,10 @@ describe("Empirical Adversarial Challenges: Fork & Rollback", () => {
 
       // Delay turn by 500ms so we can test busy state
       const { command, cwd, cleanup } = await createMockAgy({ turnResponses: turns, delayMs: 500 });
-      const adapter = new AntigravityAdapter({ command });
+      const adapter = new AntigravityAdapter({
+        command,
+        environment: { ...process.env, HOME: cwd, USERPROFILE: cwd, CODEXHOST_DATA_DIR: cwd },
+      });
 
       try {
         const opened = await adapter.open({ kind: "create", cwd });
@@ -1043,7 +1064,10 @@ describe("Empirical Adversarial Challenges: Fork & Rollback", () => {
 
       const { command, cwd, cleanup } = await createMockAgy({ turnResponses: turns });
       const dataDir = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-adv-cfg-"));
-      const adapter = new AntigravityAdapter({ command });
+      const adapter = new AntigravityAdapter({
+        command,
+        environment: { ...process.env, HOME: cwd, USERPROFILE: cwd, CODEXHOST_DATA_DIR: cwd },
+      });
 
       try {
         const model = harnessModelRefSchema.parse({ id: "gemini-3.7-flash" });
