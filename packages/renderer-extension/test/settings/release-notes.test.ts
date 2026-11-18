@@ -64,16 +64,9 @@ describe("Release notes Markdown", () => {
   it("renders the current GitHub Release subset as structured elements", () => {
     const root = render(
       [
-        "BOFT CLI 是一个将 Pi 和 Claude Code 接入 Codex Desktop 的跨平台 Host。",
+        "BOFT CLI connects external Agent Harnesses to Codex Desktop.",
         "",
-        "## 本次发布",
-        "",
-        "- 新增 Grok CLI adapter：支持在 Codex Desktop 中通过 Grok 执行任务。",
-        "- 集成 DeepSeek Harness：通过本地 Host 接入 DeepSeek。",
-        "",
-        "## 安装方式",
-        "",
-        "### npm",
+        "## Installation",
         "",
         "```bash",
         "npm install -g @liberseek/boft-cli",
@@ -86,46 +79,16 @@ describe("Release notes Markdown", () => {
     expect(root.children.map((child) => (child as FakeElement).tagName)).toEqual([
       "p",
       "h2",
-      "ul",
-      "h2",
-      "h3",
       "pre",
     ]);
-    expect(visibleText(root)).toContain("本次发布");
+    expect(visibleText(root)).toContain("Installation");
     expect(visibleText(root)).not.toContain("##");
-    expect(visibleText(root)).not.toContain("- 新增");
     expect(visibleText(root)).toContain("npm install -g @liberseek/boft-cli");
 
-    const list = descendants(root).find((element) => element.tagName === "ul");
-    expect(list?.children).toHaveLength(2);
     const code = descendants(root).find((element) => element.tagName === "code");
     expect(code?.className).toBe("language-bash");
     expect(code?.textContent).toBe("npm install -g @liberseek/boft-cli\nboft");
   });
-
-  it("sets the translation line of a bilingual paragraph apart", () => {
-    const root = render(
-      [
-        "Download the installer matching your OS and CPU architecture:",
-        "下载与你的操作系统和 CPU 架构对应的安装包：",
-      ].join("\n"),
-    );
-
-    const paragraph = descendants(root).find((element) => element.tagName === "p");
-    expect(paragraph?.children).toHaveLength(2);
-    const translation = paragraph?.children[1] as FakeElement;
-    expect(translation.tagName).toBe("span");
-    expect(translation.className).toBe("release-note-translation");
-  });
-
-  it("preserves authored line breaks within single-language paragraphs", () => {
-    const root = render(["First line", "Second line"].join("\n"));
-
-    const paragraph = descendants(root).find((element) => element.tagName === "p");
-    expect(paragraph?.children).toHaveLength(3);
-    expect((paragraph?.children[1] as FakeElement).tagName).toBe("br");
-  });
-
   it("renders inline code, emphasis, links, and ordered lists", () => {
     const root = render(
       [

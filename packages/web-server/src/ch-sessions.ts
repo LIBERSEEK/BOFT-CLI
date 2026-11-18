@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import {
+  THREAD_ARCHIVE_CONFIRM_METHOD,
   WEB_FOLLOW_PROJECTION_KEYS,
   webTurnDiffsRequestSchema,
   webToolOutputReferenceSchema,
@@ -11,6 +12,7 @@ import {
   harnessPluginRouteSchema,
   harnessModelSelectionStateSchema,
   threadInspectionSchema,
+  threadArchiveConfirmResultSchema,
   threadUsageInspectionSchema,
   type HarnessDisplayEntries,
 } from "@codexhost/shared-contracts";
@@ -31,6 +33,7 @@ import { ChThreadEditing } from "./ch-thread-edit.ts";
 import { editedNativeInput } from "./native-user-input.ts";
 import { forkChThread, forkUnavailable } from "./ch-thread-fork.ts";
 import { ChPinnedThreads } from "./ch-pinned-threads.ts";
+import { ChThreadTree } from "./ch-thread-tree.ts";
 import { type WebImages, WEB_IMAGE_INPUT, WEB_IMAGE_LIMITS } from "./web-images.ts";
 import { ChAttachments } from "./ch-attachments.ts";
 import { ChFileInputs, type FileUploadTiming } from "./ch-file-inputs.ts";
@@ -54,6 +57,7 @@ import { readToolOutput, toolOutputRecords, toolOutputSink } from "./tool-output
 import type { WireEvent } from "./session-log.ts";
 import { SessionListTiming } from "./session-list-timing.ts";
 import { readSessionPage, nextCatalogCursor, type CatalogPage } from "./ch-session-page.ts";
+import { tryGenerateThreadTitle } from "./ch-thread-titles.ts";
 
 function globalProjectionValues(values: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(
@@ -69,6 +73,7 @@ interface Draft {
   createdAt: number;
   canonicalId?: string;
   creating?: Promise<string>;
+  titleRequested?: boolean;
 }
 
 export class ChSessions {
@@ -76,6 +81,7 @@ export class ChSessions {
   readonly catalog: ChHarnessCatalog;
   private readonly editing = new ChThreadEditing();
   private readonly pins: ChPinnedThreads;
+  private readonly tree: ChThreadTree;
   private readonly attachments: ChAttachments | undefined;
   private readonly fileInputs: ChFileInputs | undefined;
   private rows = new Map<string, ChThread>();
@@ -88,12 +94,14 @@ export class ChSessions {
   private refreshingCatalog = false;
   private refreshingArchives = false;
   private refreshingArchiveChanges: Map<string, boolean> | undefined;
+  private readonly archiveOperations = new Map<string, symbol>();
   private refreshingTiming: SessionListTiming | undefined;
   private catalogReadAt = -Infinity;
   private timer?: NodeJS.Timeout;
   private closed = false;
   private readonly realtime: ChRealtime | undefined;
   private readonly skills: WebSkills;
+  private readonly titleRequests = new Set<string>();
   private readonly interactions: ChInteractions | undefined;
   private hostOnline = true;
   private hostEpoch: string | undefined;
@@ -106,8 +114,9 @@ export class ChSessions {
     displayEntries?: () => Promise<HarnessDisplayEntries>,
     private readonly preferences?: WebHarnessPreferences,
     harnesses?: ReadonlySet<string>,
+    private readonly openFile?: (path: unknown) => Promise<{ opened: true }>,
   ) {
-    this.catalog = new ChHarnessCatalog(host, displayEntries, preferences, harnesses);
+    this.catalog = new ChHarnessCatalog(host, events, displayEntries, preferences, harnesses);
     this.attachments = images ? new ChAttachments(images, files) : undefined;
     this.fileInputs =
       files && images
@@ -147,6 +156,7 @@ export class ChSessions {
       return { threadId: hostThreadIdSchema.parse(id) };
     });
     this.pins = new ChPinnedThreads(host, workspaces);
+    this.tree = new ChThreadTree(host);
     workspaces.setReferenceArchives([]);
     this.interactions = host.realtime
       ? new ChInteractions(host.realtime, events, (id, message) => {
@@ -159,16 +169,23 @@ export class ChSessions {
           catalog: async () => {
             await this.refresh();
           },
-          archived: (id, archived) => this.updateArchive(id, archived),
+          archived: (id, archived) => {
+            this.archiveOperations.delete(id);
+            this.updateArchive(id, archived);
+          },
           connection: (online) => {
             this.hostOnline = online;
-            if (!online) this.interactions?.clear();
+            if (!online) {
+              this.archiveOperations.clear();
+              this.interactions?.clear();
+            }
             for (const [, view] of this.threads.views())
               view.log.setProjection("nativeConnection", {
                 state: online ? "connected" : "reconnecting",
               });
           },
           reset: (epoch, full) => {
+            this.archiveOperations.clear();
             if (full && this.hostEpoch === epoch) this.threads.forgetKnownTurns();
             if (this.hostEpoch && this.hostEpoch !== epoch) {
               this.interactions?.clear();
@@ -250,23 +267,14 @@ export class ChSessions {
         }),
       ),
       timing.measure("project_definitions", () => this.host.projects([])),
+      timing.measure("thread_tree", () => this.tree.refresh()),
     ]);
     if (this.closed) return;
     const found = new Map(snapshot.threads.map((row) => [row.id, row]));
-    const assignments = await timing.measure("projects", () =>
-      this.host.projects([...new Set([...found.keys(), ...this.rows.keys()])]),
-    );
-    const projects = { ...assignments, projects: definitions.projects };
-    if (this.closed) return;
     const snapshotArchives = new Set<string>(snapshot.archivedThreadIds);
     const archivedIds = new Set(this.workspaces.localArchivedSessionIds());
     for (const id of snapshotArchives) archivedIds.add(id);
     for (const id of found.keys()) if (!snapshotArchives.has(id)) archivedIds.delete(id);
-    // Notifications received after the pull began supersede its archive membership.
-    for (const [id, archived] of archiveChanges) {
-      if (archived) archivedIds.add(id);
-      else archivedIds.delete(id);
-    }
     const ownership = new Map<string, string>();
     for (const item of snapshot.ownership) {
       if (
@@ -302,11 +310,27 @@ export class ChSessions {
       rows.set(id, row);
       ownership.set(id, harnessId);
     }
+    await this.tree.supplement(rows, async (id) => {
+      const { thread, harnessId } = await this.readThread(id);
+      ownership.set(id, harnessId);
+      if (thread.archived === true) archivedIds.add(id);
+      return thread;
+    });
+    const assignments = await timing.measure("projects", () =>
+      this.host.projects([...rows.keys()]),
+    );
+    const projects = { ...assignments, projects: definitions.projects };
+    if (this.closed) return;
     this.threads.replaceHarnesses(ownership);
     this.rows = rows;
     timing.count("visibleRows", rows.size);
     await this.syncWorkspace(timing, projects);
     if (this.closed) return;
+    // Notifications received during catalog or ancestor reads supersede their membership.
+    for (const [id, archived] of archiveChanges) {
+      if (archived) archivedIds.add(id);
+      else archivedIds.delete(id);
+    }
     timing.measureSync("archive_sync", () =>
       this.workspaces.setReferenceArchives([...archivedIds].sort()),
     );
@@ -369,6 +393,7 @@ export class ChSessions {
       row.updatedAt,
       row.status.type,
       row.parentThreadId ?? null,
+      this.tree.parent(row.id),
       row.canAcceptDirectInput !== false,
       row.codexhostImportSource ?? null,
       this.threads.harnessId(row.id),
@@ -397,6 +422,7 @@ export class ChSessions {
     for (const [id, row] of this.rows) {
       const log = this.threads.view(id)?.log;
       log?.setProjection("title", threadListTitle(row));
+      log?.setProjection("threadTreeParent", this.tree.parent(id));
       log?.setProjection("codexhostImportSource", row.codexhostImportSource ?? null);
     }
     for (const row of changed) this.events.emit("api-session/added", row);
@@ -494,6 +520,7 @@ export class ChSessions {
       );
       view = history;
       view.log.setProjection("threadReference", { hostId: "local" });
+      view.log.setProjection("threadTreeParent", this.tree.parent(id));
       if (this.images) {
         view.log.setProjection("attachmentInput", this.files ? WEB_FILE_INPUT : WEB_IMAGE_INPUT);
         view.log.setProjection("imageLimits", WEB_IMAGE_LIMITS);
@@ -655,6 +682,7 @@ export class ChSessions {
           .filter((key) => Object.hasOwn(projections, key))
           .map((key) => [key, projections[key]]),
       ),
+      threadTreeParent: this.tree.parent(row.id),
       nativeDiscovery: !row.parentThreadId && row.canAcceptDirectInput !== false,
       threadReference: { hostId: "local" },
       title: threadListTitle(row),
@@ -920,21 +948,71 @@ export class ChSessions {
 
   private async setArchived(sessionId: string, archived: boolean): Promise<void> {
     const id = this.id(sessionId);
-    if (this.drafts.has(id))
-      throw new RpcError(
-        "session/not-started",
-        "Send the first message before archiving this Thread.",
-      );
-    if (!this.threads.hasHarness(id)) await this.refresh();
-    if (!this.threads.hasHarness(id))
-      throw new RpcError("session/not-found", "This Thread is not in the shared catalog.");
-    await this.owner(id);
-    await this.host.request(archived ? "thread/archive" : "thread/unarchive", { threadId: id });
-    // Finish any pre-write catalog read before confirming from a fresh Host snapshot.
-    // A read failure cannot turn an acknowledged mutation into a rejected write.
-    await this.refreshing?.catch(() => undefined);
-    this.updateArchive(id, archived);
-    await this.refresh().catch(() => undefined);
+    const operation = Symbol();
+    this.archiveOperations.set(id, operation);
+    try {
+      if (this.drafts.has(id))
+        throw new RpcError(
+          "session/not-started",
+          "Send the first message before archiving this Thread.",
+        );
+      if (!this.threads.hasHarness(id)) {
+        const { thread, harnessId } = await this.readThread(id);
+        this.rows.set(id, thread);
+        this.threads.setHarness(id, harnessId);
+      }
+      const owner = await this.owner(id);
+      if (this.archiveOperations.get(id) !== operation) return;
+      try {
+        await this.host.request(archived ? "thread/archive" : "thread/unarchive", { threadId: id });
+      } catch (error) {
+        if (
+          !archived ||
+          owner.owner !== "codex" ||
+          !(error instanceof RpcError) ||
+          error.code !== "host/rejected" ||
+          !("hostCode" in error.details) ||
+          error.details.hostCode !== -32600 ||
+          error.message !== `no rollout found for thread id ${id}`
+        )
+          throw error;
+        // Drain older catalog merges before the final, native-only confirmation.
+        await this.refreshing?.catch(() => undefined);
+        if (this.archiveOperations.get(id) !== operation) throw error;
+        const confirmation = await this.host
+          .request(THREAD_ARCHIVE_CONFIRM_METHOD, { threadId: id })
+          .then((value) => threadArchiveConfirmResultSchema.safeParse(value))
+          .catch(() => undefined);
+        if (
+          !confirmation?.success ||
+          !confirmation.data.confirmed ||
+          this.archiveOperations.get(id) !== operation
+        )
+          throw error;
+        this.updateArchive(id, true);
+        return;
+      }
+      // A failed read cannot reject an acknowledged mutation. Newer operations
+      // and realtime notifications, however, supersede this completion.
+      await this.refreshing?.catch(() => undefined);
+      if (this.archiveOperations.get(id) === operation) this.updateArchive(id, archived);
+    } finally {
+      if (this.archiveOperations.get(id) === operation) this.archiveOperations.delete(id);
+    }
+  }
+
+  private async readThread(id: string) {
+    const owner = await this.owner(id);
+    const { thread } = await this.host.request<{ thread: ChThread & { archived?: boolean } }>(
+      "thread/read",
+      {
+        threadId: id,
+        includeTurns: false,
+      },
+    );
+    if (thread.id !== id || (owner.owner === "external" && thread.modelProvider !== "codexhost"))
+      throw new RpcError("session/ownership-unconfirmed", "Thread identity was not confirmed.");
+    return { thread, harnessId: owner.harnessId };
   }
 
   register(rpc: RpcRegistry, streams: StreamRegistry): void {
@@ -981,15 +1059,6 @@ export class ChSessions {
         },
       });
     });
-    for (const [method, archived] of [
-      ["workspace/archiveSession", true],
-      ["workspace/unarchiveSession", false],
-    ] as const)
-      rpc.register(method, async (args) => {
-        const { sessionId } = requestOf<{ sessionId: string }>(args);
-        await this.setArchived(sessionId, archived);
-        return { archivedSessionIds: this.workspaces.archivedSessionIds() };
-      });
     for (const [method, pinned] of [
       ["workspace/pinSession", true],
       ["workspace/unpinSession", false],
@@ -1006,7 +1075,9 @@ export class ChSessions {
         await this.owner(id);
         if (!this.threads.hasHarness(id))
           throw new RpcError("session/not-found", "This Thread is not in the shared catalog.");
-        return { pinnedSessionIds: await this.pins.sync({ threadId: id, pinned }) };
+        const pinnedSessionIds = await this.pins.sync({ threadId: id, pinned });
+        await this.refresh().catch(() => undefined);
+        return { pinnedSessionIds };
       });
     }
     rpc.register("session/list", async (args, context) => {
@@ -1025,21 +1096,21 @@ export class ChSessions {
             archivedSessionIds: this.workspaces.archivedSessionIds(),
           };
         const id = this.id(sessionId);
-        const owner = await this.owner(id);
-        const { thread } = await this.host.request<{ thread: ChThread }>("thread/read", {
-          threadId: id,
-          includeTurns: false,
-        });
-        if (
-          thread.id !== id ||
-          (owner.owner === "external" && thread.modelProvider !== "codexhost")
-        )
-          throw new RpcError("session/ownership-unconfirmed", "Thread identity was not confirmed.");
+        await this.tree.refresh();
+        const { thread, harnessId } = await this.readThread(id);
         this.rows.set(thread.id, thread);
-        this.threads.setHarness(thread.id, owner.harnessId);
+        this.threads.setHarness(thread.id, harnessId);
+        const direct = new Map([[thread.id, thread]]);
+        await this.tree.supplement(direct, async (ancestorId) => {
+          const ancestor = await this.readThread(ancestorId);
+          this.rows.set(ancestorId, ancestor.thread);
+          this.threads.setHarness(ancestorId, ancestor.harnessId);
+          if (ancestor.thread.archived === true) this.updateArchive(ancestorId, true);
+          return ancestor.thread;
+        });
         // Catalog/organization refreshes reconcile project grouping for these retained rows.
         return {
-          items: [await this.summary(thread)],
+          items: await Promise.all([...direct.values()].map((row) => this.summary(row))),
           archivedSessionIds: this.workspaces.archivedSessionIds(),
         };
       }
@@ -1050,7 +1121,7 @@ export class ChSessions {
         throw new RpcError("session/list-invalid", "cursor must be a string.");
       // Explicit pages are request-local and are never joined to another browser's refresh.
       const page = await this.refresh(timing, includeArchived, cursor);
-      const pageIds = new Set(page?.threads.map((row) => row.id));
+      const pageIds = this.tree.withAncestors(page?.threads.map((row) => row.id) ?? []);
       const archivedSessionIds = this.workspaces.archivedSessionIds();
       const archived = new Set(archivedSessionIds);
       const items = await timing.measure("summaries", async () => [
@@ -1258,6 +1329,28 @@ export class ChSessions {
           ...(request.requestId ? { clientUserMessageId: request.requestId } : {}),
         });
       }
+      if (draft && !draft.titleRequested) {
+        draft.titleRequested = true;
+        const row = this.rows.get(threadId);
+        if (row) {
+          this.titleRequests.add(threadId);
+          const prompt = request.content
+            .filter((part) => part.type === "text")
+            .map((part) => part.text ?? "")
+            .join("\n");
+          void tryGenerateThreadTitle(
+            this.host,
+            row,
+            prompt,
+            () => !this.closed && this.titleRequests.has(threadId),
+          )
+            .then(async (changed) => {
+              if (changed && !this.closed) await this.refresh();
+            })
+            .catch(() => undefined)
+            .finally(() => this.titleRequests.delete(threadId));
+        }
+      }
       this.fileInputs?.accepted(threadId, request.content);
       try {
         await this.view(threadId);
@@ -1357,6 +1450,7 @@ export class ChSessions {
     });
     rpc.register("session/rename", async (args) => {
       const request = requestOf<{ sessionId: string; title: string }>(args);
+      this.titleRequests.delete(this.id(request.sessionId));
       await this.owner(request.sessionId);
       await this.host.request("thread/name/set", {
         threadId: this.id(request.sessionId),
@@ -1404,20 +1498,44 @@ export class ChSessions {
         : page;
     });
     rpc.register("session/workspacePathApplications", () => ({ applications: [] }));
-    rpc.register("session/openWorkspacePath", () => {
-      throw new RpcError(
-        "session/open-unavailable",
-        "Opening computer paths is unavailable in Web.",
-      );
+    rpc.register("session/openWorkspacePath", async (args, context) => {
+      if (context.relay)
+        throw new RpcError(
+          "session/open-unavailable",
+          "Remote connections cannot open Host files.",
+        );
+      const request = requestOf<{ path: string; action?: string; application?: string }>(args);
+      if (request.action !== undefined || request.application !== undefined)
+        throw new RpcError(
+          "session/open-unavailable",
+          "Only the system default application is supported.",
+        );
+      if (!this.openFile)
+        throw new RpcError("session/open-unavailable", "The native launcher is unavailable.");
+      return this.openFile(request.path);
     });
     for (const [method, archived] of [
+      ["workspace/archiveSession", true],
+      ["workspace/unarchiveSession", false],
       ["session/archive", true],
       ["session/unarchive", false],
     ] as const)
       rpc.register(method, async (args) => {
         const { sessionId } = requestOf<{ sessionId: string }>(args);
-        await this.setArchived(sessionId, archived);
-        return {};
+        this.archiveOperations.delete(this.id(sessionId));
+        try {
+          await this.tree.archive(
+            this.id(sessionId),
+            archived,
+            new Set(this.workspaces.localArchivedSessionIds()),
+            (id) => this.setArchived(id, archived),
+          );
+        } finally {
+          await this.refresh().catch(() => undefined);
+        }
+        return method.startsWith("workspace/")
+          ? { archivedSessionIds: this.workspaces.archivedSessionIds() }
+          : {};
       });
     streams.register("session/control", async (_args, sink) => {
       const projections: Record<string, unknown> = {};
@@ -1634,9 +1752,12 @@ export class ChSessions {
     throw new RpcError("host/import-explicit", "CH imports must be explicitly selected.");
   }
   async close(): Promise<void> {
+    this.catalog.close();
     this.fileReferences.close();
     this.skills.close();
     this.closed = true;
+    this.archiveOperations.clear();
+    this.titleRequests.clear();
     this.pins.close();
     this.realtime?.close();
     this.interactions?.clear();

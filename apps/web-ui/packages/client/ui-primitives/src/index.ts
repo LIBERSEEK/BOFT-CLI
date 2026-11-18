@@ -16,6 +16,7 @@ export type { TextShimmerProps } from "./TextShimmer.tsx";
 export { Button } from "./Button.tsx";
 export type { ButtonVariant } from "./Button.tsx";
 export { Pill } from "./Pill.tsx";
+export { default as preferenceRowStyles } from "./settings-form/PreferenceRow.module.css";
 export { SegmentedTabs } from "./SegmentedTabs.tsx";
 export type { SegmentedTab } from "./SegmentedTabs.tsx";
 export { Tag } from "./Tag.tsx";
@@ -43,6 +44,13 @@ export { useAnchoredPosition } from "./useAnchoredPosition.ts";
 export type { AnchoredPositionOptions } from "./useAnchoredPosition.ts";
 export { useDismissOnOutsidePointer } from "./useDismissOnOutsidePointer.ts";
 export { HoverCard } from "./HoverCard.tsx";
+export {
+  ResponseAnnotationCard,
+  ResponseAnnotationChip,
+  ResponseAnnotationLabel,
+  ResponseAnnotationPopover,
+} from "./ResponseAnnotation.tsx";
+export type { ResponseAnnotationLabels, ResponseAnnotationView } from "./ResponseAnnotation.tsx";
 export { ShortcutKeys } from "./ShortcutKeys.tsx";
 export { observeComposition } from "./keyboard-composition.ts";
 export { focusWithoutRing, isMobileDevice, shouldAutoFocusTextInput } from "./focus.ts";
@@ -156,6 +164,7 @@ export type {
   MarkdownFileMentions,
   MarkdownLabels,
   MarkdownPathImages,
+  MarkdownResponseAnnotations,
 } from "./markdown/MarkdownText.tsx";
 export { extractMarkdownPlainText } from "./markdown/plain-text.ts";
 export type { MarkdownPlainTextMode, MarkdownPlainTextOptions } from "./markdown/plain-text.ts";

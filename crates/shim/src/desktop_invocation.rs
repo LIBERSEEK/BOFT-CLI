@@ -1,7 +1,7 @@
 //! A managed Desktop also passes its environment to native tool helpers. Their
 //! private app-servers must not become another owner of the Host Runtime.
 
-#[cfg(any(target_os = "windows", test))]
+#[cfg(any(target_os = "windows", target_os = "macos", test))]
 use codexhost_platform::ProcessSnapshot;
 
 pub(crate) fn is_desktop_helper(_stock_codex_path: &std::path::Path) -> bool {
@@ -26,25 +26,51 @@ pub(crate) fn is_desktop_helper(_stock_codex_path: &std::path::Path) -> bool {
     false
 }
 
+/// Returns whether the Shim's direct parent is positively known not to be Codex Desktop.
+///
+/// Only a caller whose official CLI belongs to a validated Desktop bundle can be classified.
+/// Unknown layouts keep the caller on the Host Runtime path and its existing ownership checks.
+pub(crate) fn is_known_non_desktop_caller(_stock_codex_path: &std::path::Path) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        use codexhost_platform::process_snapshot;
+
+        let Some(installation) = macos_desktop_installation(_stock_codex_path) else {
+            return false;
+        };
+        let Ok(shim) = process_snapshot(std::process::id()) else {
+            return false;
+        };
+        if shim.parent_id <= 1 {
+            return false;
+        }
+        process_snapshot(shim.parent_id)
+            .is_ok_and(|parent| parent.executable != installation.desktop_executable)
+    }
+    #[cfg(not(target_os = "macos"))]
+    false
+}
+
+#[cfg(target_os = "macos")]
+fn macos_desktop_installation(
+    stock_codex_path: &std::path::Path,
+) -> Option<codexhost_platform::DesktopInstallation> {
+    desktop_installation_for_cli(stock_codex_path)
+}
+
 #[cfg(target_os = "macos")]
 fn is_macos_desktop_helper(stock_codex_path: &std::path::Path) -> Option<bool> {
     use codexhost_platform::process_snapshot;
-    use std::path::PathBuf;
 
-    let launcher_id = std::env::var(super::LAUNCHER_PID_ENV).ok()?.parse().ok()?;
-    let launcher = process_snapshot(launcher_id).ok()?;
-    let expected_launcher = PathBuf::from(std::env::var_os("CODEXHOST_LAUNCHER_EXECUTABLE")?)
-        .canonicalize()
-        .ok()?;
-    if launcher.executable != expected_launcher {
-        return None;
-    }
-    // LaunchServices reparents Desktop to launchd, so the launcher cannot be an
-    // ancestor. Walk up from the official CLI to the Desktop bundle that owns
-    // that exact CLI. A packaged CLI sits below a nested CodexCLI.app, so a
-    // fixed three-parent hop lands on the wrong bundle. A direct Desktop child
-    // still starts Host.
-    let installation = desktop_installation_for_cli(stock_codex_path)?;
+    // Launcher metadata marks a managed Desktop tree. LaunchServices reparents
+    // Desktop to launchd, so validated Desktop ancestry determines helper status.
+    std::env::var(super::LAUNCHER_PID_ENV)
+        .ok()?
+        .parse::<u32>()
+        .ok()
+        .filter(|id| *id != 0)?;
+    std::env::var_os("CODEXHOST_LAUNCHER_EXECUTABLE")?;
+    let installation = macos_desktop_installation(stock_codex_path)?;
     let mut child = process_snapshot(std::process::id()).ok()?;
     for depth in 1..=32 {
         if child.parent_id <= 1 || child.parent_id == child.id {
@@ -52,10 +78,10 @@ fn is_macos_desktop_helper(stock_codex_path: &std::path::Path) -> Option<bool> {
         }
         let parent = process_snapshot(child.parent_id).ok()?;
         if parent.started_at_micros > child.started_at_micros {
-            return None;
+            return None; // Parent PID was reused.
         }
         if parent.executable == installation.desktop_executable {
-            return (parent.started_at_micros >= launcher.started_at_micros).then_some(depth > 1);
+            return Some(depth > 1);
         }
         child = parent;
     }

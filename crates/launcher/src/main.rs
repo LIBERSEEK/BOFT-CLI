@@ -151,6 +151,7 @@ const USAGE: &str = "usage:
   boft harness list|inspect ...
   boft delegate start ...
   boft thread send|cancel|read|wait|watch|watches|list|file ...
+  boft thread export <thread> (rarely needed)
   boft client add|list|remove ...
   boft events [--after <id>] [--limit <n>] [--follow true|false]";
 
@@ -1533,6 +1534,15 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         Some("update") => Err("update accepts no arguments".into()),
         Some("console") => Err("console accepts no arguments".into()),
         Some("launch") => launch(parse_launch_options(&arguments[1..])?, false),
+        Some("open-file") if arguments.len() == 2 => {
+            let path = PathBuf::from(&arguments[1]).canonicalize()?;
+            if !path.is_file() {
+                return Err("native file opener requires a regular file".into());
+            }
+            let path = path.to_str().ok_or("file path must be valid UTF-8")?;
+            codexhost_platform::open_external_url(path).map_err(Into::into)
+        }
+        Some("open-file") => Err("open-file requires one file path".into()),
         Some("open-loopback-url") if arguments.len() == 1 => {
             let url = read_bounded_loopback_url(std::io::stdin().lock())?;
             validate_loopback_root_url(&url)?;

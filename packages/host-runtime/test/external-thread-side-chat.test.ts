@@ -1,11 +1,10 @@
-import { createHash } from "node:crypto";
-
 import type { HostThreadSnapshot, OpenSessionInput } from "@codexhost/harness-adapter";
 import { FakeHarnessAdapter, FakeHarnessSession } from "@codexhost/harness-adapter/testing";
 import type { JsonObject } from "@codexhost/protocol-core";
 import { harnessIdSchema, hostThreadIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
 import { describe, expect, it } from "vitest";
 
+import { withInjectedText, withoutInjectedText } from "../src/external-thread-side-chat.js";
 import {
   closeFixture,
   completePiTurn,
@@ -19,7 +18,6 @@ import {
   turnEvent,
   writeRequest,
 } from "./app-server-host-fixture.js";
-import { withoutInjectedText } from "../src/external-thread-side-chat.js";
 
 type Fixture = ReturnType<typeof createFixture>;
 
@@ -87,18 +85,21 @@ class RestartedAdapter extends FakeHarnessAdapter {
 }
 
 describe("External Side Chats", () => {
-  it("removes an injected text prefix without dropping image inputs", () => {
-    const prefixText = "Side conversation boundary.\n\n";
-    const prefix = {
-      hostTurnId: hostTurnIdSchema.parse("turn-1"),
-      length: prefixText.length,
-      sha256: createHash("sha256").update(prefixText, "utf8").digest("hex"),
-    };
-    const image = { type: "image" as const, mimeType: "image/png", base64Data: "aW1hZ2U=" };
-    const input = [{ type: "text" as const, text: `${prefixText}question` }, image];
+  it("removes only a leading Side Chat prefix and preserves image inputs", () => {
+    const { text, prefix } = withInjectedText(
+      { pendingInjectedText: ["Side Chat boundary"] },
+      "question",
+    );
+    if (!prefix) throw new Error("Missing injected prefix");
+    const recorded = { ...prefix, hostTurnId: hostTurnIdSchema.parse("turn") };
+    const image = { type: "image" as const, mimeType: "image/png", base64Data: "aGVsbG8=" };
+    const message = { type: "text" as const, text };
 
-    expect(withoutInjectedText(input, prefix)).toEqual([{ type: "text", text: "question" }, image]);
-    expect(withoutInjectedText([image, ...input], prefix)).toEqual([image, ...input]);
+    expect(withoutInjectedText([message, image], recorded)).toEqual([
+      { type: "text", text: "question" },
+      image,
+    ]);
+    expect(withoutInjectedText([image, message], recorded)).toEqual([image, message]);
   });
 
   it("keeps inherited history as context and lists only the Side Chat's own Turns", async () => {
@@ -136,12 +137,10 @@ describe("External Side Chats", () => {
       const snapshot = await session.readSnapshot();
       if (!snapshot.ok) throw new Error("Missing Side Chat snapshot");
       // The Native Session keeps the inherited Turn; the boundary leads the first own input.
-      expect(
-        snapshot.value.turns.map(({ input }) => {
-          const first = input[0];
-          return first?.type === "text" ? first.text : undefined;
-        }),
-      ).toEqual(["synthetic", `${boundary(sourceId)}\n\nquestion`]);
+      expect(snapshot.value.turns.map(({ input }) => input[0])).toEqual([
+        { type: "text", text: "synthetic" },
+        { type: "text", text: `${boundary(sourceId)}\n\nquestion` },
+      ]);
       // Its first own message is its preview at once, not the inherited first message.
       const live = await call(fixture, 21, "thread/read", { threadId: sideChatId });
       expect(live.result).toMatchObject({ thread: { preview: "question" } });
@@ -207,12 +206,9 @@ describe("External Side Chats", () => {
       await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
       const snapshot = await sideChat.readSnapshot();
       if (!snapshot.ok) throw new Error("Missing Side Chat snapshot");
-      expect(
-        snapshot.value.turns.map(({ input }) => {
-          const first = input[0];
-          return first?.type === "text" ? first.text : undefined;
-        }),
-      ).toEqual([`${boundary(sourceId)}\n\nquestion`]);
+      expect(snapshot.value.turns.map(({ input }) => input[0])).toEqual([
+        { type: "text", text: `${boundary(sourceId)}\n\nquestion` },
+      ]);
       // A temporary Side Chat is an ephemeral fork; other forks still need a completed Turn.
       const temporary = await call(fixture, 6, "thread/fork", {
         threadId: sourceId,

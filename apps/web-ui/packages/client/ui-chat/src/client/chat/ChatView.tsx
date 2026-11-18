@@ -42,12 +42,16 @@ import { mergeTurnRailItems } from "./turn-rail-items.ts";
 import { useChatScroll } from "./use-chat-scroll.ts";
 import { fileMediaUrl, resolveWorkspacePath } from "@deepseek-ai/dsh-util-workspace-path";
 import { useSentMessageEditing } from "./SentMessageEditor.tsx";
+import { SelectionActions } from "./SelectionActions.tsx";
 import css from "./ChatView.module.css";
 
 declare module "@deepseek-ai/dsh-session-projection/types" {
   interface SessionProjectionMap {
     /** Host-observed compaction activity, separate from ordinary Turn work. */
     compacting: boolean;
+    /** Last failed remote history read; cleared by a successful authoritative read. */
+    remoteHistoryError: { code: string; message: string } | null;
+    nativeConnection: { state: "connected" | "reconnecting"; message?: string } | null;
   }
 }
 
@@ -192,6 +196,7 @@ export function ChatView({
   fileMentions,
   usePresentation,
   useProjection,
+  inputActions,
   t,
 }: ChatViewSlotProps) {
   const order = useChat((s) => s.order);
@@ -239,12 +244,27 @@ export function ChatView({
     }),
     [cwd, remote, t],
   );
+  // The transcript column holds every rendered answer: a selection is offered
+  // the attach action only when it stays inside one of them.
+  const attachSelection = useCallback(
+    (text: string) => {
+      return inputActions?.addResponseAnnotation({ text }, { focus: "end" }) !== undefined;
+    },
+    [inputActions],
+  );
   const running = useSession((s) => s.running);
   const carrier = useSyncExternalStore(connection.state.subscribe, connection.state.getSnapshot);
   const recoveryLasting = useSustainedRecovery(carrier !== "connected");
   const compacting = useProjection("compacting");
   const openState = useSession((s) => s.openState);
-  const statusUnconfirmed = carrier === "disconnected" || recoveryLasting || openState === "error";
+  const historyError = useProjection("remoteHistoryError");
+  const nativeConnection = useProjection("nativeConnection");
+  const statusUnconfirmed =
+    carrier === "disconnected" ||
+    recoveryLasting ||
+    openState === "error" ||
+    !!historyError ||
+    nativeConnection?.state === "reconnecting";
   const openError = useSession((s) => s.openError);
   const hasMore = useSession((s) => s.hasMore);
   const loadingOlder = useSession((s) => s.loadingOlder);
@@ -419,6 +439,7 @@ export function ChatView({
             )}
             <MarkdownDelegateProvider
               openExternalLink={openExternalLink}
+              openFileExternalLabel={t("fileOpen.external")}
               resolveLink={resolveLink}
               openFile={requestOpenFile}
               fileImages={fileImages}
@@ -475,6 +496,11 @@ export function ChatView({
           </div>
         </div>
       </div>
+      <SelectionActions
+        labels={{ addToChat: t("selection.addToChat") }}
+        onAdd={attachSelection}
+        container={() => scroll.columnRef.current}
+      />
       {!scroll.followingTail && (
         <div className={css.toBottomSlot}>
           <button

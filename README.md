@@ -93,6 +93,16 @@ xattr -d com.apple.quarantine /Applications/BOFT.app
 
 然后再打开应用。
 
+**Option 3: WinGet** (Windows x64 / ARM64)
+
+Install or upgrade with the same command:
+
+```powershell
+winget install --id BytePioneer-AI.CodexHost --exact
+```
+
+> Linux is supported on x64 and ARM64. See the [Linux guide](docs/platforms/linux/linux.md).
+
 运行 `boft update` 可在终端检查最新版本并准备更新。有可用更新时请先退出 Codex Desktop；准备完成后，后台 updater 安装更新并重新启动 BOFT CLI。已是最新版本时直接退出。
 
 ### Web 与手机访问

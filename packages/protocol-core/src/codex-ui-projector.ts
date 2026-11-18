@@ -731,6 +731,7 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
   const turn = {
     id: turnId,
     status: historicalStatus(snapshot.outcome),
+    ...(snapshot.outcome.status === "unknown" ? { codexhostTurnOutcome: snapshot.outcome } : {}),
     items: [
       {
         id: `${turnId}-user`,
@@ -1093,7 +1094,11 @@ export class CodexTurnProjector {
 
   #startItem(event: ItemStartedEvent, startedAtMs: number): CodexTurnProjection {
     this.#requireStarted();
-    if (this.#items.has(event.item.itemId)) throw new Error("Host Item started more than once");
+    const existing = this.#items.get(event.item.itemId);
+    if (existing)
+      throw new Error(
+        `Host Item started more than once (${event.item.itemId}: existing ${existing.item.type}, incoming ${event.item.type})`,
+      );
     const projected: ProjectedItem = {
       item: { ...event.item },
       ...(event.item.type === "agentMessage"

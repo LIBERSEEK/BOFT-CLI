@@ -108,14 +108,16 @@ const TOOLS: Tool[] = [
   {
     name: "delegate_start",
     description:
-      "Start a task in a new Thread and return at once. Without parentThread the work belongs to this client and cwd is required. watch=true records an event for this client when the Thread stops (read it with events_poll or the SSE stream).",
+      "Start a task in a new Thread and return at once. Without parentThread the work belongs to this client and cwd is required. worktree creates a new branch and isolated Git checkout on this Host from the required absolute cwd; base defaults to its HEAD. Returns worktree {path, branch, base}; failures after creation retain it in error details.worktree. watch=true watches the Thread after starting and returns watch (including notRegistered if registration fails); without parentThread, notifications go to this client's event log (events_poll or SSE).",
     inputSchema: {
       type: "object",
       properties: {
         harnessId: string("Harness id from harness_list"),
         task: string("The full task text"),
         taskName: string("Short display name"),
-        cwd: string("Absolute workspace path"),
+        cwd: string("Absolute workspace path; required with worktree"),
+        worktree: string("New Git branch; create an isolated checkout on this Host"),
+        base: string("Git ref for worktree; requires worktree, defaults to source HEAD"),
         model: string("Model id from harness_inspect"),
         thinking: string("Thinking option id from harness_inspect"),
         parentThread: string("Optional parent Thread"),
@@ -126,7 +128,7 @@ const TOOLS: Tool[] = [
           description: "Absolute URIs of where the work came from",
         },
         watch: { type: "boolean", description: "Record an event when the Thread stops" },
-        watchTimeoutMs: integer("How long to watch; default 29 minutes"),
+        watchTimeoutMs: { ...integer("How long to watch; default 29 minutes"), minimum: 1 },
       },
       required: ["harnessId", "task"],
     },
@@ -135,34 +137,39 @@ const TOOLS: Tool[] = [
       body: {
         harnessId: text(args, "harnessId", true),
         task: text(args, "task", true),
-        ...pick(args, ["taskName", "cwd", "requestId", "refs"]),
+        ...pick(args, [
+          "taskName",
+          "cwd",
+          "requestId",
+          "refs",
+          "worktree",
+          "base",
+          "watch",
+          "watchTimeoutMs",
+        ]),
         ...(args.model !== undefined ? { model: { id: text(args, "model") } } : {}),
         ...(args.thinking !== undefined ? { thinkingOptionId: text(args, "thinking") } : {}),
         ...(args.parentThread !== undefined ? { parentThreadId: text(args, "parentThread") } : {}),
-        ...(args.watch === true
-          ? {
-              watchTimeoutMs: bounded(
-                args,
-                "watchTimeoutMs",
-                DEFAULT_WATCH_TIMEOUT_MS,
-                Number.MAX_SAFE_INTEGER,
-              ),
-            }
-          : {}),
       },
     }),
   },
   {
     name: "thread_read",
     description:
-      "Read a Thread's status and latest result, or page its visible messages (view=messages). Never changes the Thread.",
+      "Read a Thread's status and latest result, or user messages and each Turn's final reply (view=messages). Returns totalTurns, from/to and turns with absolute turnNumber and status, newest Turn first. User messages precede the reply; no intermediate commentary. Terminal Turns without a final marker use their last nonempty Agent message; running Turns contain only user input. Inclusive from/to start at 1; neither means latest 10, only from means through latest, only to means latest 10 ending there. Bounds intersect existing Turns; empty ranges return null bounds. At most 50 returned Turns; larger ranges are rejected. Never changes the Thread.",
     inputSchema: {
       type: "object",
       properties: {
         thread,
         view: { type: "string", enum: ["result", "messages"] },
-        cursor: string("Message cursor"),
-        limit: integer("Messages per page, at most 100"),
+        from: {
+          ...integer("First absolute Turn number, inclusive; requires view=messages"),
+          minimum: 1,
+        },
+        to: {
+          ...integer("Last absolute Turn number, inclusive; requires view=messages"),
+          minimum: 1,
+        },
       },
       required: ["thread"],
     },
@@ -171,8 +178,25 @@ const TOOLS: Tool[] = [
       body: {
         threadId: threadId(args),
         view: args.view ?? "result",
-        ...pick(args, ["cursor", "limit"]),
+        ...pick(args, ["from", "to"]),
       },
+    }),
+  },
+  {
+    name: "thread_export",
+    description:
+      "Rarely needed: debugging only. Exports the full Thread to a JSON file and returns its path.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        thread,
+        out: string("Output file on this Host; defaults to its data directory under exports/"),
+      },
+      required: ["thread"],
+    },
+    call: (args) => ({
+      route: "/v1/thread/export",
+      body: { threadId: threadId(args), ...pick(args, ["out"]) },
     }),
   },
   {
@@ -204,13 +228,21 @@ const TOOLS: Tool[] = [
   {
     name: "thread_wait",
     description:
-      "Wait up to timeoutMs (at most 60000) for a Thread to stop, then return the same snapshot as thread_read plus timedOut.",
+      "Wait up to timeoutMs (at most 60000) for a Thread to stop, then return the same snapshot as thread_read plus timedOut. view=messages returns totalTurns, from/to and turns with absolute turnNumber and status, newest Turn first, user input then final reply. Running Turns contain only input; no intermediate commentary. Inclusive from/to start at 1; neither means latest 10, only from means through latest, only to means latest 10 ending there. Bounds intersect existing Turns; empty ranges return null bounds. At most 50 returned Turns; larger ranges are rejected.",
     inputSchema: {
       type: "object",
       properties: {
         thread,
         timeoutMs: integer("At most 60000; default 30000"),
         view: { type: "string", enum: ["result", "messages"] },
+        from: {
+          ...integer("First absolute Turn number, inclusive; requires view=messages"),
+          minimum: 1,
+        },
+        to: {
+          ...integer("Last absolute Turn number, inclusive; requires view=messages"),
+          minimum: 1,
+        },
       },
       required: ["thread"],
     },
@@ -220,6 +252,7 @@ const TOOLS: Tool[] = [
         threadId: threadId(args),
         view: args.view ?? "result",
         timeoutMs: bounded(args, "timeoutMs", DEFAULT_TOOL_WAIT_MS, MAX_TOOL_WAIT_MS) || 1,
+        ...pick(args, ["from", "to"]),
       },
     }),
   },
@@ -262,15 +295,54 @@ const TOOLS: Tool[] = [
   {
     name: "thread_send",
     description:
-      "Start a new Turn in an idle Thread. THREAD_BUSY means its current Turn is still running; messages are not queued.",
+      "Start a new Turn. Without interrupt=true or steer=true, a busy Thread returns THREAD_BUSY; messages are never queued or retried. interrupt=true cancels the active Turn and confirms idle before sending (30-second stop deadline); cancellation failure or timeout sends nothing. steer=true uses the same adjustment operation as Desktop: native steering where supported, otherwise stop and resend; an idle Thread starts a new Turn. steer=true and interrupt=true are mutually exclusive. An interrupt preserves existing watches and suppresses the temporary stop notification. watch=true watches after sending and defaults to this client's event log (events_poll or SSE). Returns watch in the same shape as delegate_start, including notRegistered if registration fails after a successful send.",
     inputSchema: {
       type: "object",
-      properties: { thread, message: string("Message text") },
+      properties: {
+        thread,
+        message: string("Message text"),
+        interrupt: {
+          type: "boolean",
+          description: "Stop an active Turn before sending; preserve watches",
+        },
+        steer: {
+          type: "boolean",
+          description: "Adjust a running Turn; an idle Thread starts a new Turn",
+        },
+        watch: { type: "boolean", description: "Record an event when the Thread stops" },
+        watchTimeoutMs: { ...integer("How long to watch; default 29 minutes"), minimum: 1 },
+      },
       required: ["thread", "message"],
     },
     call: (args) => ({
       route: "/v1/thread/send",
-      body: { threadId: threadId(args), message: text(args, "message", true) },
+      body: {
+        threadId: threadId(args),
+        message: text(args, "message", true),
+        ...pick(args, ["interrupt", "steer", "watch", "watchTimeoutMs"]),
+      },
+    }),
+  },
+  {
+    name: "thread_answer",
+    description:
+      "Answer one pending Question returned by thread_read. Use its interactionId and original request to supply result: the existing reply result for requestUserInput, or {answer: string} for requestUserInputAsync. Submission is not task completion; read or watch again afterwards.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        thread,
+        interactionId: string("Opaque interactionId from thread_read pendingQuestions"),
+        result: { type: "object", description: "The Question's reply result" },
+      },
+      required: ["thread", "interactionId", "result"],
+    },
+    call: (args) => ({
+      route: "/v1/thread/answer",
+      body: {
+        threadId: threadId(args),
+        interactionId: text(args, "interactionId", true),
+        result: args.result,
+      },
     }),
   },
   {
@@ -298,7 +370,8 @@ const TOOLS: Tool[] = [
   },
   {
     name: "thread_watches",
-    description: "List watches that have not been delivered yet.",
+    description:
+      "List watches that have not been delivered yet, including taskName (last known title), threadStatus (current status, omitted if unreadable) and watchedForMs (elapsed time including Host downtime).",
     inputSchema: { type: "object", properties: {} },
     call: () => ({ route: "/v1/thread/watches", body: {} }),
   },
@@ -338,6 +411,13 @@ async function callTool(route: ExternalClientRouter, call: ExternalClientCall, p
     typeof params.arguments === "object" && params.arguments !== null ? params.arguments : {}
   ) as Arguments;
   try {
+    if (tool.name === "thread_read" || tool.name === "thread_wait") {
+      for (const key of Object.keys(args)) {
+        if (!Object.hasOwn(tool.inputSchema.properties, key)) {
+          throw new DelegationControlError("INVALID_ARGUMENT", `Unknown read option: ${key}`);
+        }
+      }
+    }
     const request = tool.call(args);
     const value = await route(call, request.route, request.body);
     return {

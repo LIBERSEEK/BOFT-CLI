@@ -110,19 +110,20 @@ export const DEFAULT_RENDERER_SETTINGS_PAGE_IDS = [
 
 export const RENDERER_SETTINGS_NAV_SECTIONS = [
   {
-    id: "connection",
-    pageIds: [
-      "connections",
-      "mobile-web",
-      "remote-connections",
-      "accounts",
-      "session-import",
-      "usage-statistics",
-    ],
+    id: "agents",
+    pageIds: ["connections", "plugins"],
+  },
+  {
+    id: "access",
+    pageIds: ["accounts", "remote-connections", "mobile-web"],
+  },
+  {
+    id: "activity",
+    pageIds: ["session-import", "usage-statistics", "harness-schedules"],
   },
   {
     id: "general",
-    pageIds: ["appearance", "plugins", "updates"],
+    pageIds: ["appearance", "updates"],
   },
   {
     id: "other",
@@ -136,7 +137,9 @@ export function rendererSettingsNavSectionLabel(
   sectionId: RendererSettingsNavSectionId,
   messages: RendererSettingsMessages,
 ): string {
-  if (sectionId === "connection") return messages.connectionSection;
+  if (sectionId === "agents") return messages.agentsSection;
+  if (sectionId === "access") return messages.accessSection;
+  if (sectionId === "activity") return messages.activitySection;
   if (sectionId === "general") return messages.generalSection;
   return messages.otherSection;
 }

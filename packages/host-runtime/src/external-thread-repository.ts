@@ -18,6 +18,7 @@ import {
   type StoredDelegationRecordV1,
   type StoredSectionPlacementV1,
   type StoredThreadRecordV1,
+  type StoredThreadSummaryV1,
   type StoredTurnMappingV1,
   type ThreadMetadataPatch,
 } from "@codexhost/mapping-store";
@@ -42,6 +43,7 @@ export interface ExternalThreadStore {
   initialize(): Promise<void>;
   getThread(hostThreadId: HostThreadId): Promise<StoredThreadRecordV1 | null>;
   listThreads(): Promise<StoredThreadRecordV1[]>;
+  listThreadSummaries(): Promise<StoredThreadSummaryV1[]>;
   getThreadByCreateRequest(createRequestId: string): Promise<StoredThreadRecordV1 | null>;
   getDelegation(delegationId: HostThreadId): Promise<StoredDelegationRecordV1 | null>;
   getDelegationByChild(childHostThreadId: HostThreadId): Promise<StoredDelegationRecordV1 | null>;
@@ -157,6 +159,11 @@ export class ExternalThreadRepository {
 
   list(): Promise<StoredThreadRecordV1[]> {
     return this.store.listThreads();
+  }
+
+  /** Catalog reads; Turn mappings are omitted. */
+  listSummaries(): Promise<StoredThreadSummaryV1[]> {
+    return this.store.listThreadSummaries();
   }
 
   listSectionPlacements(): Promise<StoredSectionPlacementV1[]> {
@@ -593,7 +600,7 @@ export function createExternalThreadRecordInput(input: {
   };
 }
 
-function subagentThreadModelFields(record: StoredThreadRecordV1): {
+function subagentThreadModelFields(record: StoredThreadSummaryV1): {
   model?: string;
   reasoningEffort?: string;
 } {
@@ -624,7 +631,7 @@ export function threadSectionFields(placement?: StoredSectionPlacementV1): {
 }
 
 export function externalThreadValue(input: {
-  record: StoredThreadRecordV1;
+  record: StoredThreadSummaryV1;
   turns: JsonObject[];
   sessionId: string;
   running?: boolean;
