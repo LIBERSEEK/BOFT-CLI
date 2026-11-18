@@ -136,10 +136,12 @@ describe("External Side Chats", () => {
       const snapshot = await session.readSnapshot();
       if (!snapshot.ok) throw new Error("Missing Side Chat snapshot");
       // The Native Session keeps the inherited Turn; the boundary leads the first own input.
-      expect(snapshot.value.turns.map(({ input }) => input[0]?.text)).toEqual([
-        "synthetic",
-        `${boundary(sourceId)}\n\nquestion`,
-      ]);
+      expect(
+        snapshot.value.turns.map(({ input }) => {
+          const first = input[0];
+          return first?.type === "text" ? first.text : undefined;
+        }),
+      ).toEqual(["synthetic", `${boundary(sourceId)}\n\nquestion`]);
       // Its first own message is its preview at once, not the inherited first message.
       const live = await call(fixture, 21, "thread/read", { threadId: sideChatId });
       expect(live.result).toMatchObject({ thread: { preview: "question" } });
@@ -205,9 +207,12 @@ describe("External Side Chats", () => {
       await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
       const snapshot = await sideChat.readSnapshot();
       if (!snapshot.ok) throw new Error("Missing Side Chat snapshot");
-      expect(snapshot.value.turns.map(({ input }) => input[0]?.text)).toEqual([
-        `${boundary(sourceId)}\n\nquestion`,
-      ]);
+      expect(
+        snapshot.value.turns.map(({ input }) => {
+          const first = input[0];
+          return first?.type === "text" ? first.text : undefined;
+        }),
+      ).toEqual([`${boundary(sourceId)}\n\nquestion`]);
       // A temporary Side Chat is an ephemeral fork; other forks still need a completed Turn.
       const temporary = await call(fixture, 6, "thread/fork", {
         threadId: sourceId,
