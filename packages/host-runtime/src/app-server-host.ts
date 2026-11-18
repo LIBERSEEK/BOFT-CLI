@@ -4483,7 +4483,7 @@ export class AppServerHost {
     location: Extract<ExternalThreadLocation, { kind: "external" }>,
   ): Promise<void> {
     // Only a ready Side Chat is listed, so only it can block: Desktop deletes those first.
-    const attached = (await this.#repository.listSummaries()).find(
+    const attached = (await this.#repository.list()).find(
       ({ attachedToThreadId, state }) =>
         attachedToThreadId === location.record.hostThreadId && state === "ready",
     );

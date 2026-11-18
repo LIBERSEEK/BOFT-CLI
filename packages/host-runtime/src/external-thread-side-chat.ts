@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import type { HostTextInput } from "@codexhost/harness-adapter";
+import type { HostTurnInput } from "@codexhost/harness-adapter";
 import type { InjectedTurnPrefix, StoredThreadRecordV1 } from "@codexhost/mapping-store";
 import {
   decodeThreadInjectItemsRequest,
@@ -94,11 +94,11 @@ export async function releaseInjectedText(input: {
 
 /** A replayed Turn shows the user's own message: drop the delivered prefix it starts with. */
 export function withoutInjectedText(
-  input: HostTextInput[],
+  input: HostTurnInput[],
   prefix: InjectedTurnPrefix | undefined,
-): HostTextInput[] {
+): HostTurnInput[] {
   const first = input[0];
-  if (!prefix || !first || first.text.length < prefix.length) return input;
+  if (!prefix || first?.type !== "text" || first.text.length < prefix.length) return input;
   if (sha256(first.text.slice(0, prefix.length)) !== prefix.sha256) return input;
   return [{ ...first, text: first.text.slice(prefix.length) }, ...input.slice(1)];
 }

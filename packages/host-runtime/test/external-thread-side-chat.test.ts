@@ -1,7 +1,9 @@
+import { createHash } from "node:crypto";
+
 import type { HostThreadSnapshot, OpenSessionInput } from "@codexhost/harness-adapter";
 import { FakeHarnessAdapter, FakeHarnessSession } from "@codexhost/harness-adapter/testing";
 import type { JsonObject } from "@codexhost/protocol-core";
-import { harnessIdSchema, hostThreadIdSchema } from "@codexhost/shared-contracts";
+import { harnessIdSchema, hostThreadIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -17,6 +19,7 @@ import {
   turnEvent,
   writeRequest,
 } from "./app-server-host-fixture.js";
+import { withoutInjectedText } from "../src/external-thread-side-chat.js";
 
 type Fixture = ReturnType<typeof createFixture>;
 
@@ -84,6 +87,20 @@ class RestartedAdapter extends FakeHarnessAdapter {
 }
 
 describe("External Side Chats", () => {
+  it("removes an injected text prefix without dropping image inputs", () => {
+    const prefixText = "Side conversation boundary.\n\n";
+    const prefix = {
+      hostTurnId: hostTurnIdSchema.parse("turn-1"),
+      length: prefixText.length,
+      sha256: createHash("sha256").update(prefixText, "utf8").digest("hex"),
+    };
+    const image = { type: "image" as const, mimeType: "image/png", base64Data: "aW1hZ2U=" };
+    const input = [{ type: "text" as const, text: `${prefixText}question` }, image];
+
+    expect(withoutInjectedText(input, prefix)).toEqual([{ type: "text", text: "question" }, image]);
+    expect(withoutInjectedText([image, ...input], prefix)).toEqual([image, ...input]);
+  });
+
   it("keeps inherited history as context and lists only the Side Chat's own Turns", async () => {
     const fixture = createFixture();
     let restarted: Fixture | undefined;
