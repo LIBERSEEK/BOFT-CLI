@@ -1,8 +1,8 @@
 /** Copy for the CodexHost import panel. */
 export const en = {
+  "file.download": "Download",
   "discovery.agents": "Delegation Agents",
   "discovery.sessions": "Sessions",
-  "reference.addedToDraft": "Added to the current draft",
   "discovery.commands": "Native commands",
   "discovery.skills": "Skills",
   "discovery.offline": "Host disconnected",
@@ -45,6 +45,9 @@ export const en = {
   "connection.computer": "Cannot reach your computer. Check that it is on and Web is running.",
   "connection.lastSynced": "Last synced at {time}",
   "connection.retry": "Retry",
+  "connection.historyStale": "Messages and task status may be out of date",
+  "connection.retryHistory": "Retry history",
+  "connection.retryingHistory": "Retrying…",
   title: "Import sessions",
   subtitle:
     "Continue a session you started in a Harness on this computer. Its history is loaded when you open it.",
@@ -487,9 +490,9 @@ export const en = {
 export type ImportLocaleKey = keyof typeof en;
 
 export const zh: Record<ImportLocaleKey, string> = {
+  "file.download": "下载",
   "discovery.agents": "委派 Agent",
   "discovery.sessions": "会话",
-  "reference.addedToDraft": "已加入当前草稿",
   "discovery.commands": "原生命令",
   "discovery.skills": "Skills",
   "discovery.offline": "Host 已断线",
@@ -531,6 +534,9 @@ export const zh: Record<ImportLocaleKey, string> = {
   "connection.computer": "无法连接到电脑，请确认电脑已开机且 Web 正在运行。",
   "connection.lastSynced": "上次同步于 {time}",
   "connection.retry": "重试",
+  "connection.historyStale": "消息与任务状态可能未更新",
+  "connection.retryHistory": "重新读取历史",
+  "connection.retryingHistory": "正在重试…",
   title: "导入会话",
   subtitle: "继续你在这台电脑上用 Harness 开过的会话，打开时会加载完整历史。",
   search: "按标题或文件夹搜索",
