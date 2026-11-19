@@ -11,6 +11,7 @@ import {
   nativeCheckpointRefSchema,
   nativeTurnRefSchema,
   type HarnessId,
+  type HostItemId,
 } from "@codexhost/shared-contracts";
 
 import {
@@ -19,6 +20,7 @@ import {
   claudeSendMessageFailed,
 } from "./native-message.js";
 import { ClaudeBackgroundOccupancy } from "./background-occupancy.js";
+import { claudeToolItem, type ClaudeToolItem } from "./claude-tool-item.js";
 import { claudeTranscriptItemId } from "./item-identity.js";
 import { readClaudeQueuedCommand } from "./claude-queued-command.js";
 
@@ -418,8 +420,12 @@ function isCheckpointCandidate(message: ClaudeHistoryMessage): boolean {
   );
 }
 
-export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThreadSnapshot {
-  return mapClaudeSnapshotWithCheckpointIds(values, sessionId).snapshot;
+export function mapClaudeSnapshot(
+  values: unknown[],
+  sessionId: string,
+  mcpServers?: readonly string[],
+): HostThreadSnapshot {
+  return mapClaudeSnapshotWithCheckpointIds(values, sessionId, mcpServers).snapshot;
 }
 
 /**
@@ -431,6 +437,7 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
 export function mapClaudeSnapshotWithCheckpointIds(
   values: unknown[],
   sessionId: string,
+  mcpServers?: readonly string[],
 ): { snapshot: HostThreadSnapshot; turnCheckpointIds: string[][] } {
   const messages = conversationMessages(values, sessionId);
   const durationsMs = recordDurationsMs(messages);
@@ -635,16 +642,15 @@ export function mapClaudeSnapshotWithCheckpointIds(
             });
             continue;
           }
-          const argumentsResult = jsonValueSchema.safeParse(block.input);
           items.push({
-            item: {
-              type: "toolExecution",
+            item: historyToolItem(
               itemId,
-              toolName: block.name,
-              arguments: argumentsResult.success ? argumentsResult.data : null,
-              ...(output ? { output: { content: [{ type: "text" as const, text: output }] } } : {}),
-              ...(toolDurationMs !== undefined ? { durationMs: toolDurationMs } : {}),
-            },
+              block.name,
+              block.input,
+              output,
+              mcpServers,
+              toolDurationMs,
+            ),
             outcome: toolOutcome,
           });
         }
@@ -655,6 +661,25 @@ export function mapClaudeSnapshotWithCheckpointIds(
     index = end;
   }
   return { snapshot: { turns }, turnCheckpointIds };
+}
+
+function historyToolItem(
+  itemId: HostItemId,
+  toolName: string,
+  input: unknown,
+  output: string | undefined,
+  mcpServers?: readonly string[],
+  durationMs?: number,
+): ClaudeToolItem {
+  const argumentsResult = jsonValueSchema.safeParse(input);
+  let item = claudeToolItem(
+    itemId,
+    toolName,
+    argumentsResult.success ? argumentsResult.data : null,
+    mcpServers,
+  );
+  if (item.type !== "webSearch" && durationMs !== undefined) item = { ...item, durationMs };
+  return output ? { ...item, output: { content: [{ type: "text", text: output }] } } : item;
 }
 
 function toolResultBlocks(
@@ -841,16 +866,8 @@ export function mapClaudeSubagentSnapshot(
           });
           continue;
         }
-        const argumentsResult = jsonValueSchema.safeParse(block.input);
         items.push({
-          item: {
-            type: "toolExecution",
-            itemId,
-            toolName: block.name,
-            arguments: argumentsResult.success ? argumentsResult.data : null,
-            ...(output ? { output: { content: [{ type: "text" as const, text: output }] } } : {}),
-            ...(toolDurationMs !== undefined ? { durationMs: toolDurationMs } : {}),
-          },
+          item: historyToolItem(itemId, block.name, block.input, output, undefined, toolDurationMs),
           outcome: toolOutcome,
         });
       }
