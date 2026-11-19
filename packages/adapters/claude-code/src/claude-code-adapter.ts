@@ -85,7 +85,6 @@ import {
   type HarnessAccountSnapshot,
   type HarnessId,
   type HarnessModelCatalog,
-  type HarnessSessionImportCandidate,
   type HarnessThinkingOptionId,
   type HostInteractionId,
   type NativeSessionRef,
