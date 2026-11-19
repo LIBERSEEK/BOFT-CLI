@@ -226,7 +226,7 @@ export default function (pi) {
       assert.deepEqual(snapshot.value.turns[0]?.nativeTurnRef, terminal.nativeTurnRef);
       assert.ok(
         snapshot.value.turns.every((turn) =>
-          turn.input.every((input) => !input.text.includes(marker)),
+          turn.input.every((input) => input.type !== "text" || !input.text.includes(marker)),
         ),
         "The retired queue must not leak into a later Turn",
       );
