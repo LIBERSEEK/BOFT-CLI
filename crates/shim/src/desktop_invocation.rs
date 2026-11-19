@@ -1,7 +1,7 @@
 //! A managed Desktop also passes its environment to native tool helpers. Their
 //! private app-servers must not become another owner of the Host Runtime.
 
-#[cfg(any(target_os = "windows", target_os = "macos", test))]
+#[cfg(any(target_os = "windows", test))]
 use codexhost_platform::ProcessSnapshot;
 
 pub(crate) fn is_desktop_helper(_stock_codex_path: &std::path::Path) -> bool {

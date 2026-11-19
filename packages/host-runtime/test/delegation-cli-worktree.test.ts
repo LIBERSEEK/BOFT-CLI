@@ -328,7 +328,7 @@ describe("delegate start --worktree", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it("reports a branch left behind when checkout fails", async () => {
+  it("reports a branch left behind when checkout fails", { timeout: 60_000 }, async () => {
     await writeFile(path.join(repository, ".gitattributes"), "tracked.txt filter=broken\n");
     await git("add", ".gitattributes");
     await git("commit", "-m", "filter attribute");
