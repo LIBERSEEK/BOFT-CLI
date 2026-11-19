@@ -59,17 +59,14 @@ Success confirms acceptance, not execution in the current Turn or task completio
 Request cancellation of the active Turn while preserving the Thread and history.
 Accepted cancellation also removes all watches on that Thread; thread send --interrupt instead preserves them.
 cancelled=true (compact: cancelRequested=true) means the cancellation request was accepted. Read or wait to confirm the terminal state. An idle Thread returns false.`,
-  "thread read": `boft thread read <thread> [--host <hostId>] [--view result|messages] [--cursor <cursor>] [--from <n>] [--to <n>] [--limit <n>] [--format json|compact|text]
+  "thread read": `boft thread read <thread> [--host <hostId>] [--view result|messages] [--from <n>] [--to <m>] [--format json|compact|text]
 Read immediately without starting a Turn. Accepts thread://<id>?hostId=<encoded-host-id> or --host with a bare ID. Explicit remote Hosts use the existing Desktop connection, never local fallback. Requires updated local and remote BOFT CLI; remote send/wait/watch/answer are not supported.
 pendingQuestions lists unanswered Questions with interaction ID, Turn, kind, and native request data. No watch is needed to read or answer them.
-The default result view reports the latest Turn's status and result. Text result output shows Thread metadata, then --- and verbatim result text.
-The messages view pages visible user/Agent messages, oldest first. Default limit 25, maximum 100; --cursor, --from, --to and --limit require --view messages. --from and --to select inclusive absolute Turn numbers; see the messages view details below.
-hasMore describes remaining messages now. Save nextCursor for later incremental reads even when hasMore=false.
-Compact messages output contains only the message page and status; compact result output includes the latest nonempty progress while running.
-Full JSON retains the complete snapshot. Tool calls/output, file activity, and reasoning are not included in either format.`,
+The default result view reports the latest Turn's status and result. Text result output shows Thread metadata, then --- and verbatim result text. Full JSON retains the complete snapshot. Tool calls/output, file activity, and reasoning are not included.
+${MESSAGE_VIEW_HELP}`,
   "thread export": `boft thread export <thread> [--out <path>] [--format json|compact|text]
 Rarely needed: debugging only. Exports the full Thread to a JSON file and returns its path.`,
-  "thread wait": `boft thread wait <thread> [--timeout-ms <n>] [--view result|messages] [--cursor <cursor>] [--from <n>] [--to <n>] [--limit <n>] [--format json|compact|text]
+  "thread wait": `boft thread wait <thread> [--timeout-ms <n>] [--view result|messages] [--from <n>] [--to <m>] [--format json|compact|text]
 Wait until the Thread is terminal, is waiting for an answer, or the timeout expires (default 30000 ms), then return the same snapshot as thread read plus timedOut.
 timedOut=true is a running checkpoint: the child keeps running. The response already includes the result when available; another read is unnecessary unless more information is needed.
 ${MESSAGE_VIEW_HELP}`,

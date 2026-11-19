@@ -1147,7 +1147,18 @@ describe("AppServerHost installed Harness plugins", () => {
     await stopFixture(fixture);
   });
 
-  it("maps a Desktop plan-review Approve label even when the JSON-RPC reply includes error: null", async () => {
+  it.each([
+    {
+      outcome: "approves when the reply has error: null",
+      error: null,
+      response: { type: "question", answers: { "plan-decision": ["approve"] } },
+    },
+    {
+      outcome: "cancels when the reply has a JSON-RPC error",
+      error: { code: -32000, message: "Question cancelled" },
+      response: { type: "question", answers: {}, cancelled: true },
+    },
+  ])("handles Desktop plan review: $outcome", async ({ error, response }) => {
     const fixture = createFixture();
     const threadId = await startPiThread(fixture);
     const session = fixture.adapter.sessions[0];
@@ -1179,7 +1190,7 @@ describe("AppServerHost installed Harness plugins", () => {
       result: {
         answers: { "plan-decision": { answers: ["Approve plan and exit plan mode"] } },
       },
-      error: null,
+      error,
     });
     await fixture.collector.waitFor(
       (message) =>
@@ -1187,11 +1198,7 @@ describe("AppServerHost installed Harness plugins", () => {
         ((message.params as JsonObject).item as JsonObject | undefined)?.id ===
           (request.params as JsonObject).itemId,
     );
-    expect(session.interactionResponses).toMatchObject([
-      {
-        response: { type: "question", answers: { "plan-decision": ["approve"] } },
-      },
-    ]);
+    expect(session.interactionResponses.map(({ response }) => response)).toEqual([response]);
     session.succeedTurn();
     await fixture.collector.waitFor((message) => method(message, "turn/completed"));
     await stopFixture(fixture);

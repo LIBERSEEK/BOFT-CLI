@@ -520,7 +520,9 @@ describe("AppServerHost HarnessAdapter projection", () => {
 
     await expect(pending).resolves.toMatchObject({ harnessId: "pi", status: "running" });
     expect(fixture.adapter.sessions[0]?.cwd).toBe(path.resolve("/native-workspace"));
-    expect((await fixture.mappingStore.listThreads())[0]?.title).toBe("inherit workspace");
+    expect((await fixture.mappingStore.listThreads())[0]?.title).toBe(
+      "inherit workspace · Native project",
+    );
     fixture.adapter.sessions[0]?.succeedTurn();
     await stopFixture(fixture);
   });
@@ -1361,7 +1363,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     fixture.official.stdout.write(
       `${JSON.stringify({ id: threadStart.id, result: { thread: { id: "native-child" } } })}\n`,
     );
-    await answerOfficialChildName(fixture, "Auth review");
+    await answerOfficialChildName(fixture, "Auth review · Main review");
     const turnStart = await readJsonLine(fixture.official.stdin);
     expect(turnStart).toMatchObject({
       method: "turn/start",
