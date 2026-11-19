@@ -703,6 +703,53 @@ describe("Grok Adapter ACP projection", () => {
     await adapter.close();
   });
 
+  it.each(["expiry", "explicit refresh", "different cwd"])(
+    "reloads the native Model catalog after %s",
+    async (reason) => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(0);
+      const transport = new FakeGrokTransport();
+      const adapter = new GrokAdapter(
+        {},
+        {
+          randomUUID: () => "grok-id",
+          createTransport: () => transport,
+          fetchCredits: async () => null,
+        },
+      );
+      try {
+        const initial = await adapter.inspect({ cwd: "/synthetic" });
+        transport.initializeResponse = {
+          ...initialize,
+          _meta: {
+            modelState: {
+              currentModelId: "grok-4.7-build-fast",
+              availableModels: [{ modelId: "grok-4.7-build-fast", name: "Grok 4.7 Fast" }],
+            },
+          },
+        };
+        vi.setSystemTime(29_999);
+        expect(await adapter.inspect({ cwd: "/synthetic" })).toEqual(initial);
+        if (reason === "expiry") vi.setSystemTime(30_000);
+        await expect(
+          adapter.inspect({
+            cwd: reason === "different cwd" ? "/other" : "/synthetic",
+            ...(reason === "explicit refresh" ? { refresh: true } : {}),
+          }),
+        ).resolves.toMatchObject({
+          status: "ready",
+          catalog: {
+            models: [{ ref: { id: "grok-4.7-build-fast" } }],
+            defaultModel: { id: "grok-4.7-build-fast" },
+          },
+        });
+      } finally {
+        await adapter.close();
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it("uses always-approve for unattended full-access sessions", async () => {
     const transport = new FakeGrokTransport();
     const adapter = new GrokAdapter(
