@@ -107,4 +107,42 @@ describe("Grok ACP Model catalog", () => {
   it("requires the current model to be advertised", () => {
     expect(parseGrokModelState({ ...models, currentModelId: "magpie/group/missing" })).toBeNull();
   });
+
+  it.each(["magpie/grok-2/grok-4.7", "magpie-grok47"])(
+    "keeps the full catalog and distinct context windows when %s is current",
+    (currentModelId) => {
+      const availableModels = [
+        {
+          modelId: "magpie/grok-2/grok-4.7",
+          name: "500K",
+          _meta: { totalContextTokens: 500_000, contextWindows: [256_000, 500_000] },
+        },
+        {
+          modelId: "magpie-grok47",
+          name: "272K",
+          _meta: { totalContextTokens: 272_000, contextWindows: [256_000] },
+        },
+        { modelId: "grok-4.6", name: "Grok 4.6" },
+        { modelId: "grok-4.5", name: "Grok 4.5" },
+      ];
+      const state = parseGrokModelState({ currentModelId, availableModels });
+      if (!state) throw new Error("Missing Grok Model catalog");
+      const refs = state.catalog.models.map(({ ref }) => ref);
+      expect(refs.map(decodeGrokModelRef)).toEqual(availableModels.map(({ modelId }) => modelId));
+      expect(decodeGrokModelRef(state.currentModel)).toBe(currentModelId);
+      expect(state.catalog.defaultModel).toEqual(state.currentModel);
+      expect(refs.map(({ id }) => state.contextWindowTokensByModel.get(id))).toEqual([
+        500_000,
+        272_000,
+        undefined,
+        undefined,
+      ]);
+      expect(refs.map(({ id }) => state.defaultContextWindowTokensByModel.get(id))).toEqual([
+        500_000,
+        undefined,
+        undefined,
+        undefined,
+      ]);
+    },
+  );
 });

@@ -50,10 +50,10 @@ interface HarnessSessionImportSource {
 
 - `SessionImportScope`：一个 Adapter 的发现读取生命周期。关闭后不再启动读取，进行中的读取被取消并等待结束；读取失败返回固定文案的 `unavailable`，不外泄原生错误；`resolve` 把“选中的会话已不存在”统一为 `sessionNotFound`。
 - `sessionImportCandidate`：构造单条候选并用公共 Schema 校验，不合格返回 `null`。Host 对整页列表做整体校验，未经此步的坏行会让该 Harness 的全部会话不可见。时间接受毫秒数或日期字符串，小数取整；`running` 只有明确的布尔值才保留，其余为 `null`。
-- `sessionImportTitle`：去除 NUL、折叠空白为单行，按字符截断并以 `…` 结尾。默认上限为公共契约上限，Claude Code 传入 120。
+- `sessionImportTitle`：去除 NUL、折叠空白为单行，按字符截断并以 `…` 结尾。默认上限为公共契约上限。
 - `sameFileFingerprint`、`isMissingFileError`、`SessionImportChangedError`：读取前后的文件指纹比对，以及“读取中变化”的统一错误类型。
 
-原生目录规则、可恢复性判断、原生引用与 locator 仍由各插件拥有；带缓存的索引目前只有 Pi 和 Claude Code 各自实现，未抽取。
+原生目录规则、可恢复性判断、原生引用与 locator 仍由各插件拥有；Pi 的文件索引缓存由 Pi 插件管理。
 
 ## Host 与浏览器边界
 
@@ -102,14 +102,12 @@ interface HarnessSessionImportSource {
 
 ## Claude Code 原生规则
 
-- 默认扫描 `~/.claude/projects/<encoded-cwd>/*.jsonl`；`CLAUDE_CONFIG_DIR` 可替换 `.claude` 根目录。只展开一层项目目录，不进入 Session 子目录或 Subagent Transcript，也不跟随枚举到的符号链接。
-- CLI 创建的会话与 Agent SDK 创建的会话使用同一原生 JSONL 结构，因此都会成为候选；`entrypoint` 仅影响 Claude CLI 自己的 picker 展示，不改变 codexhost 的导入或 resume 身份。
-- Session ID 必须是与文件名一致的 UUID；主会话至少包含一条非 sidechain 的用户或 Assistant 记录，并提供绝对 cwd。项目路径解析为真实且仍存在的目录，失效或身份不一致的文件跳过。
-- 标题依次使用最新的 `custom-title`、AI/summary 标题和首条用户文本，忽略 Tool Result、`<local-command-…>` / `<command-…>` 等内部记录，折叠为空白分隔的单行并截取至 120 个字符；更新时间使用文件修改时间。
+- 列表使用 Claude Agent SDK 的 `listSessions()` 元数据，标题依次取 `customTitle`、`summary`、`firstPrompt`，更新时间使用 `lastModified`。候选工作目录必须是绝对路径，且能解析为现存目录。
+- 重复身份检查只枚举 `~/.claude/projects/<encoded-cwd>/*.jsonl` 的文件名；`CLAUDE_CONFIG_DIR` 可替换 `.claude` 根目录。不进入 Session 子目录或 Subagent Transcript，也不跟随枚举到的符号链接。
 - 原生引用只保存 Harness 和 Session ID，不增加 locator；Claude Adapter 已用该 ID 和 cwd 执行 `resume`，而 locator 在现有实现中专属于尚未启动的 codexhost Pending Session。
-- Claude Code 没有可靠的跨进程运行标记，因此候选为 `running: null`。导入前应在 CLI 或其他客户端关闭该会话，避免同时追加同一 Transcript。
-- 扫描只读、流式解析，不启动 Claude、不发送 Turn、不改写 JSONL。读取前后检查设备、inode、大小、mtime 和 ctime；活动写入的文件暂时跳过，导入提交前重新读取所选会话。
-- 每个 Adapter 实例按文件指纹缓存候选元数据；翻页、搜索和刷新不会重复解析未变化的完整 Transcript。重复 Session ID 明确失败，不静默选择其中一个。
+- 当前 Adapter 已打开的会话标记为 `running: true`，其他会话的运行状态为 `null`。导入前应在 CLI 或其他客户端关闭该会话，避免同时追加同一 Transcript。
+- 导入前用 `getSessionInfo()` 重新读取所选会话，并优先使用其 Transcript 中最近一次仍有效的工作目录。发现和解析均只读，不启动 Claude、不发送 Turn、不改写 JSONL。
+- 同一 Session ID 出现在多个项目目录时，列表隐藏该 ID 的全部副本，其余会话仍可导入。即使其中一个副本无效，直接导入重复 ID 也会被拒绝。移除冲突副本后，刷新可重新发现剩余会话。
 
 导入能力与 Claude CLI 的原生会话列表是两条边界：本页可以导入旧 `sdk-ts` 会话；codexhost 新建 SDK 会话另以 `codexhost-sdk` entrypoint 持久化，使当前 Claude CLI 版本的原生 picker 也能列出它们。
 
@@ -171,7 +169,7 @@ interface HarnessSessionImportSource {
 
 Cursor 定向测试使用隔离 SQLite 原生格式夹具，覆盖目录覆盖、只读发现、身份校验、空/坏存储、目录及文件软链、删除与变化复查、关闭取消，以及使用返回引用走 Adapter 恢复并继续同一历史。恢复过程的 ACP Transport 为模拟实现，不代表真实 Cursor CLI 或 Desktop 真机验收。
 
-定向测试覆盖 Claude Code 的 CLI/SDK entrypoint、目录与标题规则、坏文件、Subagent 排除、消失/歧义、只读发现、缓存和提交前复查；Pi 目录规则、活动分支、坏文件、消失/歧义、取消、只读发现，以及超过旧 64 MiB/256 MiB 和 100,000 Entry 限制的有效数据、缓存失效和按选中项复查；Host locator 持久化与重启、跨 Harness 相同 ID、旧 DSH RPC、幂等/竞争/忙碌/失败清理、过滤后分页与跨页搜索；Renderer 动态来源、分页大小/边界、搜索旧响应失效、导入期间控件锁定、未知状态、导入去重和导航失败恢复。
+定向测试覆盖 Claude Code 的 SDK 元数据、目录与标题规则、重复身份隔离、运行状态、取消和所选会话的工作目录复查；Pi 目录规则、活动分支、坏文件、消失/歧义、取消、只读发现，以及超过旧 64 MiB/256 MiB 和 100,000 Entry 限制的有效数据、缓存失效和按选中项复查；Host locator 持久化与重启、跨 Harness 相同 ID、旧 DSH RPC、幂等/竞争/忙碌/失败清理、过滤后分页与跨页搜索；Renderer 动态来源、分页大小/边界、搜索旧响应失效、导入期间控件锁定、未知状态、导入去重和导航失败恢复。
 
 还使用 Pi **0.85.0** 的真实 `SessionManager` 创建隔离临时会话，经公共 Host importer 登记，再用真实 `pi --mode rpc --session ...` 恢复历史并继续一轮，验证同一 Session ID 与同一 JSONL 文件。该检查使用回环地址上的模拟 Provider，不调用付费 Model 服务，也不读取/修改用户原有会话。
 
