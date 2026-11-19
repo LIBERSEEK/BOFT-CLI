@@ -6630,7 +6630,7 @@ export class AppServerHost {
         let response;
         try {
           response =
-            "error" in reply
+            reply.error !== undefined && reply.error !== null
               ? { type: "question" as const, answers: {}, cancelled: true as const }
               : result.questionRequest.parseResponse(reply.result);
         } catch (error) {
