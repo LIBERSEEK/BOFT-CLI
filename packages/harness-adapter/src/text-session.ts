@@ -23,7 +23,7 @@ import type {
   NativeTurnRef,
 } from "@codexhost/shared-contracts";
 
-import type { HostUsage, HostUsageRequest } from "./usage.js";
+import type { HostUsage, HostUsageRequest, HostUsageRequestTiming } from "./usage.js";
 import type { HarnessSessionUsageCapability } from "./session-usage.js";
 import type { HarnessCredentialExport, HarnessCredentialImports } from "./credential-imports.js";
 
@@ -522,6 +522,12 @@ export interface UsageRequestEvent {
   request: HostUsageRequest;
 }
 
+export interface UsageRequestTimingEvent {
+  type: "usage.request.timing";
+  turnId: HostTurnId;
+  timing: HostUsageRequestTiming;
+}
+
 /**
  * Sent after replaying native history on every open, and again with `complete: false` when a
  * running request's usage is missing. The first one switches the Thread to Host metering.
@@ -558,6 +564,13 @@ export interface AutonomousTurnStartedEvent {
    * durations reflect native time instead of replay time.
    */
   startedAtMs?: number;
+}
+
+/** A native autonomous Turn observed only after it commits. It does not acquire
+ * the foreground execution slot and its snapshot must also appear in history. */
+export interface AutonomousTurnCompletedEvent {
+  type: "turn.autonomous.completed";
+  snapshot: HostTurnSnapshot;
 }
 
 export interface ItemStartedEvent {
@@ -633,11 +646,13 @@ export type HostEvent =
   | SessionStateChangedEvent
   | SessionUsageChangedEvent
   | UsageRequestEvent
+  | UsageRequestTimingEvent
   | UsageHistoryEvent
   | SubagentStateChangedEvent
   | SubagentTranscriptChangedEvent
   | TurnStartedEvent
   | AutonomousTurnStartedEvent
+  | AutonomousTurnCompletedEvent
   | ItemStartedEvent
   | ItemUpdatedEvent
   | ItemCompletedEvent

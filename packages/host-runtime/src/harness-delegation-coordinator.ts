@@ -17,10 +17,10 @@ import {
   type RoutedHarnessId,
 } from "@codexhost/protocol-core";
 import {
-  catalogModelForRef,
   harnessIdSchema,
   hostThreadIdSchema,
   hostTurnIdSchema,
+  type HarnessDelegationDefault,
 } from "@codexhost/shared-contracts";
 
 import {
@@ -49,6 +49,7 @@ import {
   type ThreadExportInput,
   type ThreadExportResult,
 } from "./delegation-thread-export.js";
+import { resolveDelegationConfiguration } from "./delegation-configuration.js";
 import { originClientName } from "./external-client-origin.js";
 import { delegationTitle } from "./delegation-title.js";
 import { projectDelegationThreadSnapshot, validateReadOptions } from "./delegation-snapshot.js";
@@ -83,6 +84,12 @@ export function sanitizeDelegationTitle(task: string): string {
 }
 
 type ParentMetadata = { cwd?: string; title?: string };
+type ReadDelegationDefault = (
+  harnessId: RoutedHarnessId,
+) => Promise<HarnessDelegationDefault | undefined>;
+type ResolveOfficialConfiguration = (
+  model: HarnessModelRef | undefined,
+) => ReturnType<typeof resolveDelegationConfiguration>;
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -163,6 +170,7 @@ export class HarnessDelegationCoordinator {
   readonly #steerExternalTurn: (thread: ExternalThread, text: string) => Promise<string>;
   readonly #notifyThreadStarted: (thread: JsonObject) => Promise<void>;
   readonly #notifyTreeChanged: (threadId: string) => void;
+  readonly #readDelegationDefault: ReadDelegationDefault | undefined;
   readonly #inspectOfficial: (input: HarnessInspectInput) => Promise<HarnessInspectResult>;
   readonly #readOfficial: (input: ThreadReadInput) => Promise<DelegationThreadSnapshot>;
   readonly #exportOfficial: ((input: ThreadExportInput) => Promise<ThreadExportResult>) | undefined;
@@ -170,6 +178,7 @@ export class HarnessDelegationCoordinator {
   readonly #cancelOfficial: (input: ThreadCancelInput) => Promise<ThreadCancelResult>;
   readonly #startOfficial: (
     input: DelegationStartInput & { parentThreadId: string; cwd: string; title: string },
+    resolveConfiguration: ResolveOfficialConfiguration,
   ) => Promise<DelegationStartResult>;
   readonly #listOfficial: (input: ThreadListInput) => Promise<DelegationThreadListResult>;
   readonly #officialThreadMetadata: (threadId: string) => Promise<ParentMetadata>;
@@ -196,6 +205,7 @@ export class HarnessDelegationCoordinator {
     steerExternalTurn(thread: ExternalThread, text: string): Promise<string>;
     notifyThreadStarted(thread: JsonObject): Promise<void>;
     notifyTreeChanged(threadId: string): void;
+    readDelegationDefault?: ReadDelegationDefault;
     inspectOfficial(input: HarnessInspectInput): Promise<HarnessInspectResult>;
     readOfficial(input: ThreadReadInput): Promise<DelegationThreadSnapshot>;
     exportOfficial?(input: ThreadExportInput): Promise<ThreadExportResult>;
@@ -203,6 +213,7 @@ export class HarnessDelegationCoordinator {
     cancelOfficial(input: ThreadCancelInput): Promise<ThreadCancelResult>;
     startOfficial(
       input: DelegationStartInput & { parentThreadId: string; cwd: string; title: string },
+      resolveConfiguration: ResolveOfficialConfiguration,
     ): Promise<DelegationStartResult>;
     listOfficial(input: ThreadListInput): Promise<DelegationThreadListResult>;
     officialThreadMetadata(threadId: string): Promise<ParentMetadata>;
@@ -219,6 +230,7 @@ export class HarnessDelegationCoordinator {
     this.#steerExternalTurn = input.steerExternalTurn;
     this.#notifyThreadStarted = input.notifyThreadStarted;
     this.#notifyTreeChanged = input.notifyTreeChanged;
+    this.#readDelegationDefault = input.readDelegationDefault;
     this.#inspectOfficial = input.inspectOfficial;
     this.#readOfficial = input.readOfficial;
     this.#exportOfficial = input.exportOfficial;
@@ -268,12 +280,11 @@ export class HarnessDelegationCoordinator {
     const selectedCwd = input.cwd ?? parent.cwd ?? process.cwd();
     const title = delegationTitle(input, parent.title);
     if (input.harnessId === "codex") {
-      const result = await this.#startOfficial({
-        ...input,
-        parentThreadId,
-        cwd: selectedCwd,
-        title,
-      });
+      const startInput = { ...input, parentThreadId, cwd: selectedCwd, title };
+      // The official owner resolves preferences only after checking the original request digest.
+      const result = await this.#startOfficial(startInput, (model) =>
+        this.#resolveConfiguration(startInput, model),
+      );
       return {
         ...result,
         parentThreadId,
@@ -321,13 +332,12 @@ export class HarnessDelegationCoordinator {
         },
       );
     }
-    if (input.model || input.thinkingOptionId) {
-      const inspected = await this.inspect({
-        harnessId: targetHarnessId,
-        cwd: startInput.cwd,
-      });
-      this.#validateConfiguration(inspected.inspection, input.model, input.thinkingOptionId);
-    }
+    const selection = await this.#resolveConfiguration(startInput, input.model);
+    const { model, thinkingOptionId } = selection;
+    const transportModelId =
+      model || thinkingOptionId
+        ? encodeExternalTransportSelection(targetHarnessId, selection)
+        : transportModelIdForHarness(targetHarnessId);
     const delegationId = hostThreadIdSchema.parse(randomUUID());
     const childThreadId = hostThreadIdSchema.parse(randomUUID());
     const turnId = hostTurnIdSchema.parse(randomUUID());
@@ -339,13 +349,7 @@ export class HarnessDelegationCoordinator {
         harnessId: harnessIdSchema.parse(targetHarnessId),
         cwd: startInput.cwd,
         title,
-        transportModelId:
-          input.model || input.thinkingOptionId
-            ? encodeExternalTransportSelection(targetHarnessId, {
-                ...(input.model ? { model: input.model } : {}),
-                ...(input.thinkingOptionId ? { thinkingOptionId: input.thinkingOptionId } : {}),
-              })
-            : transportModelIdForHarness(targetHarnessId),
+        transportModelId,
         ephemeral: false,
         historyMode: "paginated",
       }),
@@ -370,8 +374,7 @@ export class HarnessDelegationCoordinator {
           cwd: record.cwd,
           environment: { ...this.#environment, [DELEGATION_THREAD_ID_ENV]: childThreadId },
           executionPolicy: "unattended-full-access",
-          ...(input.model ? { model: input.model } : {}),
-          ...(input.thinkingOptionId ? { thinkingOptionId: input.thinkingOptionId } : {}),
+          ...selection,
         });
         if (!opened.ok) throw new DelegationControlError("DELEGATION_FAILED", opened.error.message);
         session = opened.value;
@@ -393,8 +396,8 @@ export class HarnessDelegationCoordinator {
           sessionId: record.hostThreadId,
           thread: threadValue,
           turns: [],
-          ...(input.model ? { requestedModel: input.model } : {}),
-          ...(input.thinkingOptionId ? { requestedThinkingOptionId: input.thinkingOptionId } : {}),
+          ...(model ? { requestedModel: model } : {}),
+          ...(thinkingOptionId ? { requestedThinkingOptionId: thinkingOptionId } : {}),
           ...(session.initialState.nativeRef ? {} : { restoredState: session.initialState }),
         });
         const beforeRevision = thread.stateObserver.revision;
@@ -437,10 +440,7 @@ export class HarnessDelegationCoordinator {
         await this.#notifyThreadStarted(thread.thread);
         return {
           ...this.#result(delegationId, childThreadId, turnId, targetHarnessId, "running", {
-            requested: {
-              ...(input.model ? { model: input.model } : {}),
-              ...(input.thinkingOptionId ? { thinkingOptionId: input.thinkingOptionId } : {}),
-            },
+            requested: selection,
             effective: {
               ...(thread.stateObserver.state.effectiveModel
                 ? { effectiveModel: thread.stateObserver.state.effectiveModel }
@@ -756,50 +756,16 @@ export class HarnessDelegationCoordinator {
     );
   }
 
-  #validateConfiguration(
-    inspection: Awaited<ReturnType<HarnessAdapter["inspect"]>>,
+  #resolveConfiguration(
+    { harnessId, cwd, thinkingOptionId }: DelegationStartInput & { cwd: string },
     model: HarnessModelRef | undefined,
-    thinkingOptionId: HarnessThinkingOptionId | undefined,
-  ): void {
-    if (inspection.status !== "ready") {
-      throw new DelegationControlError("DELEGATION_FAILED", inspection.error.message, {
-        status: inspection.status,
-      });
-    }
-    const selectedModel = model ?? inspection.catalog.defaultModel;
-    if (model && !inspection.capabilities.configuration.selectModel) {
-      throw new DelegationControlError(
-        "INVALID_ARGUMENT",
-        "Harness does not support Model selection",
-      );
-    }
-    if (model && !catalogModelForRef(inspection.catalog, model)) {
-      throw new DelegationControlError(
-        "INVALID_ARGUMENT",
-        "Model is unavailable for the target Harness",
-        {
-          validModelIds: inspection.catalog.models.flatMap((candidate) =>
-            candidate.fastModel ? [candidate.ref.id, candidate.fastModel.id] : [candidate.ref.id],
-          ),
-        },
-      );
-    }
-    if (!thinkingOptionId) return;
-    if (!inspection.capabilities.configuration.selectThinkingOption) {
-      throw new DelegationControlError(
-        "INVALID_ARGUMENT",
-        "Harness does not support Thinking selection",
-      );
-    }
-    const modelEntry = catalogModelForRef(inspection.catalog, selectedModel);
-    const validThinkingOptionIds = modelEntry?.supportedThinkingOptionIds ?? [];
-    if (!validThinkingOptionIds.includes(thinkingOptionId)) {
-      throw new DelegationControlError(
-        "INVALID_ARGUMENT",
-        "Thinking option is unavailable for the selected Model",
-        { validThinkingOptionIds },
-      );
-    }
+  ) {
+    return resolveDelegationConfiguration({
+      harnessId,
+      explicit: { model, thinkingOptionId },
+      readDefault: async () => this.#readDelegationDefault?.(harnessId),
+      inspect: () => this.inspect({ harnessId, cwd }),
+    });
   }
 
   async #parentMetadata(

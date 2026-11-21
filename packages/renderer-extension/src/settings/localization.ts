@@ -4,6 +4,11 @@ import {
   type CredentialImportMessages,
 } from "./credential-import-messages.js";
 import {
+  delegationEnglish,
+  delegationChinese,
+  type DelegationMessages,
+} from "./delegation-messages.js";
+import {
   desktopExtensionsEnglish,
   desktopExtensionsChinese,
   type DesktopExtensionsMessages,
@@ -34,6 +39,7 @@ export interface RendererSettingsLanguageControl {
 
 export interface RendererSettingsMessages {
   readonly credentialImports: CredentialImportMessages;
+  readonly delegation: DelegationMessages;
   readonly desktopExtensions: DesktopExtensionsMessages;
   readonly locale: RendererSettingsLocale;
   readonly title: string;
@@ -321,6 +327,7 @@ export interface RendererSettingsMessages {
 
 const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   credentialImports: credentialImportEnglish,
+  delegation: delegationEnglish,
   desktopExtensions: desktopExtensionsEnglish,
   locale: "en",
   title: "Settings",
@@ -668,6 +675,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
     "desktop-extensions": "Extension Marketplace",
     accounts: "Accounts",
     "session-import": "Sessions",
+    delegation: "Multi-Agent",
     "usage-statistics": "Usage statistics",
     updates: "Updates",
     about: "About",
@@ -676,6 +684,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
 
 const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   credentialImports: credentialImportChinese,
+  delegation: delegationChinese,
   desktopExtensions: desktopExtensionsChinese,
   locale: "zh-CN",
   title: "设置",
@@ -1003,6 +1012,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
     "desktop-extensions": "扩展市场",
     accounts: "账号",
     "session-import": "会话",
+    delegation: "多 Agent 协作",
     "usage-statistics": "用量统计",
     updates: "更新",
     about: "关于",
