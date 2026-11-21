@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import {
   harnessIdSchema,
   type HarnessPluginDescriptor,
@@ -14,6 +15,7 @@ import {
   SIDEBAR_EXTERNAL_THREAD_ATTRIBUTE,
   installRendererSidebarAgentIcons,
   installRendererSidebarExternalPinning,
+  SIDEBAR_AGENT_ICON_ATTRIBUTE,
   draftIdFromSidebarRowElement,
   rendererAgentForThreadOwnership,
   threadIdFromSidebarRowElement,
@@ -167,7 +169,7 @@ describe("Renderer sidebar Agent ownership", () => {
     vi.unstubAllGlobals();
   });
 
-  it("persists the native pin button action for a decorated External Thread", async () => {
+  it("persists pinning without intercepting the native thread title button", async () => {
     const attributes = {
       "data-app-action-sidebar-thread-row": "",
       "data-app-action-sidebar-thread-id": "local:external-thread",
@@ -175,61 +177,49 @@ describe("Renderer sidebar Agent ownership", () => {
       "data-app-action-sidebar-thread-pinned": "false",
       [SIDEBAR_EXTERNAL_THREAD_ATTRIBUTE]: "true",
     };
-    class FakeElement {
-      constructor(readonly kind: "row" | "button" | "target") {}
-
-      closest(selector: string): FakeElement | null {
-        if (selector === "button") return this.kind === "row" ? null : button;
-        return selector.includes("data-app-action-sidebar-thread-row") ? row : null;
-      }
-    }
-    const row = new FakeElement("row");
-    const button = new FakeElement("button");
-    const target = new FakeElement("target");
-    const nativeClick = vi.fn();
-    (button as unknown as HTMLButtonElement).click = nativeClick;
-    (row as unknown as HTMLElement).getAttribute = (name: string) =>
-      attributes[name as keyof typeof attributes] ?? null;
-    (row as unknown as HTMLElement).querySelector = vi.fn(
-      () => button as unknown as HTMLButtonElement,
-    );
+    const row = document.createElement("div");
+    for (const [name, value] of Object.entries(attributes)) row.setAttribute(name, value);
+    row.innerHTML = `
+      <div data-thread-title-trigger>
+        <button data-interactive-row-button><span data-thread-title>Thread</span></button>
+      </div>
+      <button aria-label="Pin">Pin</button>`;
     Object.defineProperty(row, "__reactFiber$test", {
       value: {
         memoizedProps: { conversationId: "external-thread", dataAttributes: attributes },
         return: null,
       },
     });
-    vi.stubGlobal("Element", FakeElement);
-    let clickListener: EventListener = () => {
-      throw new Error("Synthetic click listener was not installed");
-    };
-    const root = {
-      addEventListener: vi.fn((_type: string, listener: EventListener) => {
-        clickListener = listener;
-      }),
-      removeEventListener: vi.fn(),
-      querySelectorAll: vi.fn(() => []),
-    } as unknown as Document;
+    document.body.append(row);
+    const title = row.querySelector<HTMLButtonElement>("[data-interactive-row-button]")!;
+    const pin = row.querySelector<HTMLButtonElement>('[aria-label="Pin"]')!;
+    const titleClick = vi.fn();
+    const pinClick = vi.fn();
+    title.addEventListener("click", titleClick);
+    pin.addEventListener("click", pinClick);
     const updateThreadPinned = vi.fn(async () => undefined);
     const stop = installRendererSidebarExternalPinning({
       getClient: () => ({ ...clientWith(async () => ({ threads: [] })), updateThreadPinned }),
-      root,
     });
 
-    const preventDefault = vi.fn();
-    const stopImmediatePropagation = vi.fn();
-    clickListener({ target, preventDefault, stopImmediatePropagation } as unknown as Event);
-    await settle();
+    try {
+      title.click();
+      expect(titleClick).toHaveBeenCalledOnce();
+      expect(updateThreadPinned).not.toHaveBeenCalled();
 
-    expect(updateThreadPinned).toHaveBeenCalledWith({
-      threadId: "external-thread",
-      isPinned: true,
-    });
-    expect(preventDefault).toHaveBeenCalledOnce();
-    expect(stopImmediatePropagation).toHaveBeenCalledOnce();
-    expect(nativeClick).toHaveBeenCalledOnce();
-    stop();
-    vi.unstubAllGlobals();
+      pin.click();
+      expect(pinClick).not.toHaveBeenCalled();
+      await settle();
+
+      expect(updateThreadPinned).toHaveBeenCalledExactlyOnceWith({
+        threadId: "external-thread",
+        isPinned: true,
+      });
+      expect(pinClick).toHaveBeenCalledOnce();
+    } finally {
+      stop();
+      row.remove();
+    }
   });
 
   it("replays External pinning on the replacement row after native sidebar redraw", async () => {
@@ -307,6 +297,51 @@ describe("Renderer sidebar Agent ownership", () => {
     stop();
     vi.unstubAllGlobals();
   });
+
+  it.each([
+    ["button", "data-interactive-row-button"],
+    ["a", "data-interactive-row-link"],
+  ])(
+    "puts the icon in the native leading position for a title %s",
+    async (tag, interactiveAttribute) => {
+      const row = document.createElement("div");
+      row.setAttribute("data-app-action-sidebar-thread-row", "");
+      row.setAttribute("data-app-action-sidebar-thread-id", "local:client-new-thread:fixture");
+      row.setAttribute("data-app-action-sidebar-thread-host-id", "local");
+      row.innerHTML = `
+      <div style="display: flex">
+        <div style="display: flex; align-items: center; gap: 0.5rem">
+          <div data-thread-title-trigger style="display: flex; gap: 0.5rem">
+            <${tag} ${interactiveAttribute} style="display: flex">
+              <span data-thread-title>Long thread title</span>
+            </${tag}>
+          </div>
+        </div>
+        <span role="status"></span>
+      </div>`;
+      document.body.append(row);
+      const titleTrigger = row.querySelector("[data-thread-title-trigger]");
+      const action = row.querySelector(`[${interactiveAttribute}]`);
+      const status = row.querySelector('[role="status"]');
+      const control = installRendererSidebarAgentIcons({
+        getClient: () => null,
+        getLocalAgent: () => "codex",
+      });
+      try {
+        await settle();
+
+        const icon = row.querySelector(`[${SIDEBAR_AGENT_ICON_ATTRIBUTE}]`);
+        expect(icon).not.toBeNull();
+        expect(icon?.nextElementSibling).toBe(titleTrigger);
+        expect(action?.firstElementChild?.matches("[data-thread-title]")).toBe(true);
+        expect(titleTrigger?.parentElement?.nextElementSibling).toBe(status);
+      } finally {
+        control.dispose();
+        row.remove();
+      }
+      expect(row.querySelector(`[${SIDEBAR_AGENT_ICON_ATTRIBUTE}]`)).toBeNull();
+    },
+  );
 
   it("resolves the draft key separately from the Fiber conversation identity", () => {
     const attributes = {

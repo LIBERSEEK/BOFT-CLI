@@ -36,6 +36,7 @@ import { createHarnessLaunchControls } from "./harness-launch-controls.js";
 import { createRendererSettingsIcon } from "./icons.js";
 import { createClaudeLongContextControl } from "./claude-long-context-control.js";
 import type { RendererSettingsMessages } from "./localization.js";
+import { createRendererAdapterStatusSection } from "./renderer-adapter-status.js";
 
 export const CODEXHOST_GITHUB_ISSUES_NEW_URL = "https://github.com/LIBERSEEK/BOFT-CLI/issues/new";
 
@@ -595,7 +596,8 @@ export function createConnectionsSettingsPage(
       const syncMessage = document.createElement("p");
       syncMessage.className = "settings-page-description";
       syncMessage.setAttribute("role", "status");
-      context.content.append(header, syncMessage, content);
+      const adapterStatus = createRendererAdapterStatusSection(document, messages);
+      context.content.append(header, syncMessage, content, adapterStatus.element);
 
       let pending = false;
       let selectedHostId: string | null = null;
@@ -859,6 +861,7 @@ export function createConnectionsSettingsPage(
       };
 
       const render = (snapshot: RendererConnectionSnapshot | null): void => {
+        adapterStatus.update(snapshot?.adapter);
         const syncStatus = groupPreference.syncStatus();
         const groupDisabled = syncStatus === "loading" || syncStatus === "saving";
         syncMessage.hidden = syncStatus === "ready";

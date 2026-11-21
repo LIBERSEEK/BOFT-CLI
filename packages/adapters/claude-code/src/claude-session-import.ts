@@ -1,7 +1,9 @@
-import { realpath, stat } from "node:fs/promises";
+import { opendir, realpath, stat } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 
 import type { HarnessSessionImportSource } from "@codexhost/harness-adapter";
+import { isMissingFileError } from "@codexhost/harness-adapter/session-import";
 import {
   HARNESS_SESSION_IMPORT_TITLE_MAX_LENGTH,
   harnessSessionImportCandidateSchema,
@@ -15,6 +17,40 @@ export interface ClaudeSessionImportDependencies {
   isRunning(nativeSessionId: string): boolean;
   listSessions(): Promise<readonly ClaudeSessionMetadata[]>;
   readSessionMessages(input: { cwd: string; sessionId: string }): Promise<unknown[] | null>;
+}
+
+function claudeProjectsDirectory(environment: NodeJS.ProcessEnv): string {
+  const home =
+    (process.platform === "win32" ? environment.USERPROFILE : environment.HOME) || os.homedir();
+  return path.join(
+    path.resolve(environment.CLAUDE_CONFIG_DIR ?? path.join(home, ".claude")),
+    "projects",
+  );
+}
+
+async function openDirectory(directory: string) {
+  return opendir(directory).catch((error: unknown) => {
+    if (isMissingFileError(error)) return null;
+    throw error;
+  });
+}
+
+async function* sessionFileIds(directory: string, signal: AbortSignal): AsyncGenerator<string> {
+  signal.throwIfAborted();
+  const projects = await openDirectory(directory);
+  if (!projects) return;
+  for await (const project of projects) {
+    signal.throwIfAborted();
+    if (!project.isDirectory()) continue;
+    const entries = await openDirectory(path.join(directory, project.name));
+    if (!entries) continue;
+    for await (const entry of entries) {
+      signal.throwIfAborted();
+      if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+        yield path.basename(entry.name, ".jsonl");
+      }
+    }
+  }
 }
 
 function titleFromMetadata(metadata: ClaudeSessionMetadata): string | null {
@@ -90,13 +126,15 @@ async function sourceFromMetadata(
     : null;
 }
 
-/** Read-only native Claude Session discovery. Transcript content never leaves the SDK. */
+/** Read-only native Claude Session discovery. */
 export class ClaudeSessionImportIndex {
   readonly #dependencies: ClaudeSessionImportDependencies;
+  readonly #directory: string;
   #listing: Promise<HarnessSessionImportSource[]> | undefined;
 
-  constructor(dependencies: ClaudeSessionImportDependencies) {
+  constructor(dependencies: ClaudeSessionImportDependencies, environment: NodeJS.ProcessEnv) {
     this.#dependencies = dependencies;
+    this.#directory = claudeProjectsDirectory(environment);
   }
 
   list(signal: AbortSignal): Promise<HarnessSessionImportSource[]> {
@@ -110,25 +148,33 @@ export class ClaudeSessionImportIndex {
     signal.throwIfAborted();
     const metadata = await this.#dependencies.listSessions();
     signal.throwIfAborted();
+    if (metadata.length === 0) return [];
     const sources: HarnessSessionImportSource[] = [];
     const identities = new Set<string>();
+    const ambiguous = new Set<string>();
+    for await (const identity of sessionFileIds(this.#directory, signal)) {
+      if (identities.has(identity)) ambiguous.add(identity);
+      identities.add(identity);
+    }
+    identities.clear();
     const canonicalCwds = new Map<string, Promise<string | null>>();
     for (const session of metadata) {
+      const identity = typeof session.sessionId === "string" ? session.sessionId.trim() : "";
+      if (!identity) continue;
+      if (identities.has(identity)) ambiguous.add(identity);
+      identities.add(identity);
+      if (ambiguous.has(identity)) continue;
       const source = await sourceFromMetadata(
         session,
         this.#dependencies.isRunning,
         signal,
         canonicalCwds,
       );
-      if (!source) continue;
-      const identity = source.candidate.nativeSessionId;
-      if (identities.has(identity)) {
-        throw new Error(`Claude Session identity is ambiguous: ${identity}`);
-      }
-      identities.add(identity);
-      sources.push(source);
+      if (source) sources.push(source);
     }
-    return sources;
+    return sources
+      .filter((source) => !ambiguous.has(source.candidate.nativeSessionId))
+      .sort((left, right) => right.candidate.updatedAt - left.candidate.updatedAt);
   }
 
   async resolve(
@@ -136,6 +182,12 @@ export class ClaudeSessionImportIndex {
     signal: AbortSignal,
   ): Promise<HarnessSessionImportSource | null> {
     signal.throwIfAborted();
+    let found = false;
+    for await (const identity of sessionFileIds(this.#directory, signal)) {
+      if (identity !== nativeSessionId) continue;
+      if (found) throw new Error("Claude Code Session identity is ambiguous across files");
+      found = true;
+    }
     const metadata = await this.#dependencies.getSessionInfo({ sessionId: nativeSessionId });
     signal.throwIfAborted();
     if (!metadata || metadata.sessionId !== nativeSessionId) return null;

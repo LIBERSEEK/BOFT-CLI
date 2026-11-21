@@ -39,8 +39,12 @@ import {
   type RendererSessionImportClient,
   type RendererImportedThreadOpener,
 } from "./session-import-page.js";
-import { createPluginsSettingsPage } from "./plugins-page.js";
 import { createAppearanceSettingsPage } from "./appearance-page.js";
+import {
+  createDesktopExtensionsSettingsPage,
+  type RendererDesktopExtensionsClient,
+} from "./desktop-extensions-page.js";
+import type { RendererSettingsPluginPagesSource } from "./desktop-extension-settings-pages.js";
 import type { LoadedSessionsClient } from "./loaded-sessions-table.js";
 import { createReleaseNotesElement } from "./release-notes.js";
 import { createAccountsSettingsPage, type RendererCodexAccountClient } from "./accounts-page.js";
@@ -97,13 +101,13 @@ function windowsInstallerDownloadUrl(window: Window | null | undefined, version:
 
 export const DEFAULT_RENDERER_SETTINGS_PAGE_IDS = [
   "connections",
+  "desktop-extensions",
   "mobile-web",
   "remote-connections",
   "accounts",
   "session-import",
   "usage-statistics",
   "appearance",
-  "plugins",
   "updates",
   "about",
 ] as const;
@@ -111,7 +115,7 @@ export const DEFAULT_RENDERER_SETTINGS_PAGE_IDS = [
 export const RENDERER_SETTINGS_NAV_SECTIONS = [
   {
     id: "agents",
-    pageIds: ["connections", "plugins"],
+    pageIds: ["connections", "desktop-extensions"],
   },
   {
     id: "access",
@@ -202,7 +206,7 @@ function createPanelStatusRow(
 ): HTMLElement {
   const row = document.createElement("div");
   row.className = "settings-update-panel__status-row";
-  row.append(createPanelActions(document, ...buttons), head);
+  row.append(head, createPanelActions(document, ...buttons));
   return row;
 }
 
@@ -565,15 +569,9 @@ function updatesPage(
         controls.className = fallback
           ? "settings-update-controls"
           : "settings-update-controls is-quiet";
-        const windowsNpm =
-          windows && installationValue.textContent === messages.updateInstallationNpm;
         manualNpmDescription.textContent = fallback
-          ? windowsNpm
-            ? messages.updateWindowsNpmDescription
-            : messages.updateManualFallbackDescription
-          : windowsNpm
-            ? messages.updateWindowsNpmDescription
-            : messages.updateManualNpmDescription;
+          ? messages.updateManualFallbackDescription
+          : messages.updateManualNpmDescription;
         manualNpmDescription.className = fallback
           ? "settings-update-manual-description is-fallback"
           : "settings-update-manual-description";
@@ -652,9 +650,9 @@ function updatesPage(
         delete panel.dataset.inline;
         panel.replaceChildren();
         const head = createPanelHead(document, viewPhase, message);
-        appendServiceStopOutput(status);
         setManualFallback(viewPhase === "failed");
         panel.append(head);
+        appendServiceStopOutput(status);
         if (
           status?.phase === "downloading" &&
           status.totalBytes !== undefined &&
@@ -757,25 +755,20 @@ function updatesPage(
         panel.dataset.updateState = view;
         panel.replaceChildren();
         setManualFallback(Boolean(result.error) || actionableStatus !== null);
-        const title = actionableStatus
-          ? messages.updateFailed
-          : result.error
+        const title =
+          result.error || actionableStatus
             ? messages.updateFailed
             : result.updateAvailable
               ? messages.updateAvailable
               : messages.updateUpToDate;
         // Every state gets a status line; a bare button in an empty card reads as unfinished.
-        const inlineUpdate = !result.error && !actionableStatus && result.updateAvailable;
+        const canUpdate = result.updateAvailable && result.installationAvailable;
+        const inlineUpdate = !result.error && !actionableStatus && canUpdate;
         if (inlineUpdate) panel.dataset.inline = "";
         else delete panel.dataset.inline;
         const head = createPanelHead(document, view, title);
-        appendServiceStopOutput(result.status);
         const buttons: HTMLElement[] = [];
-        if (
-          result.updateAvailable &&
-          result.installationAvailable &&
-          (!windows || result.installation !== "npm")
-        ) {
+        if (canUpdate) {
           const update = document.createElement("button");
           update.type = "button";
           update.className = "settings-command-button";
@@ -791,13 +784,12 @@ function updatesPage(
           retry.addEventListener("click", () => void load());
           buttons.push(retry);
         }
-        if (head && buttons.length > 0) {
+        if (buttons.length > 0) {
           panel.append(createPanelStatusRow(document, head, ...buttons));
-        } else if (head) {
+        } else {
           panel.append(head);
-        } else if (buttons.length > 0) {
-          panel.append(createPanelActions(document, ...buttons));
         }
+        appendServiceStopOutput(result.status);
         const shownErrors = new Set<string>([title]);
         appendUniqueUpdateError(document, panel, actionableStatus?.error, shownErrors);
         appendUniqueUpdateError(document, panel, result.error, shownErrors);
@@ -850,12 +842,15 @@ export function createDefaultRendererSettingsPages(
     Promise.reject(new Error("Local Host connection is unavailable")),
   usageStatisticsHosts?: RendererUsageStatisticsHostsProvider,
   harnessSchedules?: HarnessSchedulesPageOptions,
+  getDesktopExtensionsClient: () => RendererDesktopExtensionsClient | null = () => null,
+  pluginPages?: RendererSettingsPluginPagesSource,
 ): readonly RendererSettingsPageDefinition[] {
   return Object.freeze([
     createConnectionsSettingsPage(messages, getDiagnostics, undefined, getRemoteConnections, () => {
       const client = getUpdateClient();
       return client?.openExternalUrl?.bind(client);
     }),
+    createDesktopExtensionsSettingsPage(messages, getDesktopExtensionsClient, pluginPages),
     createMobileWebPage(messages, () => {
       const client = getUpdateClient();
       return client?.openWeb?.bind(client);
@@ -876,7 +871,6 @@ export function createDefaultRendererSettingsPages(
       usageStatisticsHosts,
     ),
     createAppearanceSettingsPage(messages, getLoadedSessionsClient),
-    createPluginsSettingsPage(messages, getDiagnostics),
     updatesPage(messages, getUpdateClient),
     aboutPage(messages, getUpdateClient),
   ]);
@@ -891,6 +885,7 @@ export function createDefaultRendererSettingsRegistry(
   openImportedThread?: RendererImportedThreadOpener,
   requestUsageStatistics?: RendererUsageStatisticsRequest,
   usageStatisticsHosts?: RendererUsageStatisticsHostsProvider,
+  getDesktopExtensionsClient?: () => RendererDesktopExtensionsClient | null,
 ): RendererSettingsPageRegistry {
   return createRendererSettingsPageRegistry(
     createDefaultRendererSettingsPages(
@@ -904,8 +899,11 @@ export function createDefaultRendererSettingsRegistry(
       undefined,
       requestUsageStatistics,
       usageStatisticsHosts,
+      undefined,
+      getDesktopExtensionsClient,
     ),
   );
 }
 
 export type { RendererCodexAccountClient } from "./accounts-page.js";
+export type { RendererDesktopExtensionsClient } from "./desktop-extensions-page.js";

@@ -129,7 +129,17 @@ Web 启动、后台服务管理和访问方式详见[独立 Web 应用](docs/pro
 [Environment]::SetEnvironmentVariable("CODEXHOST_INSTALL_ROOT", "D:\CodexPortable", "User")
 ```
 
-然后完全退出 Codex Desktop，重新打开终端并运行 `boft`。`codexhost` 仍可作为兼容别名使用。
+**Windows: using a portable Codex Desktop**
+
+1. Point `CODEXHOST_INSTALL_ROOT` at the folder where you extracted Codex Desktop:
+
+   ```powershell
+   [Environment]::SetEnvironmentVariable("CODEXHOST_INSTALL_ROOT", "D:\CodexPortable", "User")
+   ```
+
+2. Completely quit any running Codex Desktop and `boft` processes (check notification area or Task Manager if necessary), open a fresh terminal, and run `boft`. `codexhost` remains available as a compatibility alias.
+
+   > BOFT CLI discovers version metadata from `AppxManifest.xml`, `resources/app.asar`, or `package.json`. The Console Overview displays the detected Desktop version, source (`Portable / Unpacked` vs `Windows AppX/MSIX`), and installation path.
 
 </details>
 

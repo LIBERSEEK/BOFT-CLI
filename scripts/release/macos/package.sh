@@ -132,7 +132,7 @@ PLIST
 /usr/bin/codesign --force --sign - "$CONTENTS/MacOS/boft"
 /usr/bin/codesign --force --sign - "$APP_PATH"
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_PATH"
-"$RESOURCES/runtime/node" -e 'if (process.version !== "v24.13.1") process.exit(1)'
+"$RESOURCES/runtime/node" -e 'if (process.version !== "v24.22.1") process.exit(1)'
 
 mkdir -p "$DMG_STAGE"
 # Keep the installed path stable for in-app updates and manual DMG replacement.
