@@ -3729,7 +3729,7 @@ describe("Renderer Updates page", () => {
     ["npm", true],
     ["npm", false],
     ["windows-installer", true],
-  ])(
+  ] as const)(
     "offers an automatic Windows update for %s only when the Host allows it (%s)",
     async (installation, automatic) => {
       const client = {
