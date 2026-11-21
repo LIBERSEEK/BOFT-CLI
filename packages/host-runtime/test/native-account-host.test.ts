@@ -479,7 +479,7 @@ describe("local Codex read-only identity startup", () => {
   });
 
   it.each([false, true])(
-    "preserves Remote Control startup without reading, writing or replacing recorded startup (configure first: %s)",
+    "keeps Remote Control startup separate from Desktop tool access (configure first: %s)",
     async (configureFirst) => {
       const first = nativeFixture();
       const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-remote-startup-"));
@@ -500,24 +500,47 @@ describe("local Codex read-only identity startup", () => {
         remoteControl: true,
       });
       prepared.add(local);
+      const attachment = new AbortController();
       const configuration = {
         stockCodexPath: "/synthetic/desktop-codex",
         arguments: ["-c", "features.remote=true", "app-server"],
-        environment: {},
+        environment: { BROWSER_USE_ACCESS_PIPE_PATH: "/synthetic/desktop-browser" },
       };
+      const configure = (argumentsToUse: string[]) =>
+        configureStartup(local, { ...configuration, arguments: argumentsToUse }, attachment.signal);
       if (configureFirst) {
-        await configureStartup(local, configuration);
-        await configureStartup(local, { ...configuration, arguments: ["app-server"] });
+        await configure(configuration.arguments);
+        await configure(["app-server"]);
       }
-      await local.officialRuntimeScope.start();
+      const scope = local.officialRuntimeScope;
+      const expectedArguments = configureFirst ? configuration.arguments : arguments_;
+      await scope.start();
       expect(createOwnedLoopbackBackend).toHaveBeenCalledWith(
-        expect.objectContaining({
-          arguments: configureFirst ? configuration.arguments : arguments_,
-        }),
+        expect.objectContaining({ arguments: expectedArguments }),
       );
-      await configureStartup(local, { ...configuration, arguments: ["app-server"] });
+      await configure(["app-server"]);
       expect(first.stop).not.toHaveBeenCalled();
       expect(createOwnedLoopbackBackend).toHaveBeenCalledOnce();
+
+      if (!configureFirst) {
+        nativeFixture();
+        await scope.refreshBeforeRequest();
+      }
+      expect(createOwnedLoopbackBackend).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          arguments: expectedArguments,
+          environment: expect.objectContaining(configuration.environment),
+        }),
+      );
+      attachment.abort();
+      nativeFixture();
+      await scope.refreshBeforeRequest();
+      expect(createOwnedLoopbackBackend).toHaveBeenLastCalledWith(
+        expect.objectContaining({ arguments: expectedArguments }),
+      );
+      expect(
+        vi.mocked(createOwnedLoopbackBackend).mock.lastCall?.[0].environment,
+      ).not.toHaveProperty("BROWSER_USE_ACCESS_PIPE_PATH");
       expect(await readFile(startupFile, "utf8")).toBe(saved);
     },
   );
