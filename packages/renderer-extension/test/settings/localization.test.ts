@@ -61,7 +61,7 @@ describe("Renderer settings localization", () => {
 
     expect(chinese.pageLabels["session-import"]).toBe("会话");
     expect(chinese.sessionImportTitle).toBe("会话导入");
-    expect(chinese.pageLabels.plugins).toBe("插件");
+    expect(chinese.pageLabels.plugins).toBe("Codex 插件");
     expect(chinese.agentsSection).toBe("Agents");
     expect(chinese.accessSection).toBe("访问与账号");
     expect(chinese.activitySection).toBe("会话与活动");
@@ -113,6 +113,7 @@ describe("Renderer settings localization", () => {
     expect(new Set(pageIds).size).toBe(pageIds.length);
     expect(pageIds).toEqual([
       "connections",
+      "desktop-extensions",
       "plugins",
       "accounts",
       "remote-connections",

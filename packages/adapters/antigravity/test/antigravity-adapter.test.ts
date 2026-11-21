@@ -883,6 +883,8 @@ describe("Antigravity ACP Session", () => {
     expect(transport.openSession.mock.calls[0]?.[0].mcpServers).toEqual([
       expect.objectContaining({ name: "codexhost_background", command: process.execPath }),
     ]);
+    expect(prompt).toContain("harness inspect --help");
+    expect(prompt).toContain("the exact advertised Model Ref for the requested speed");
   });
   it("reads cold SQLite history, then resumes with the saved configuration for writing", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "agy-history-resume-"));

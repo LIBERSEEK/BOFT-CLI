@@ -80,6 +80,7 @@ export interface ExternalThreadStore {
   ): Promise<StoredThreadRecordV1>;
   setTitle(hostThreadId: HostThreadId, title: string): Promise<StoredThreadRecordV1>;
   setCwd(hostThreadId: HostThreadId, cwd: string): Promise<StoredThreadRecordV1>;
+  touch(hostThreadId: HostThreadId): Promise<StoredThreadRecordV1>;
   setTransportModelId(
     hostThreadId: HostThreadId,
     transportModelId: string,
@@ -248,6 +249,10 @@ export class ExternalThreadRepository {
     const preview = firstUserMessagePreview(turns);
     if (preview === record.preview || (preview === undefined && !clearMissing)) return record;
     return this.store.updateMetadata(record.hostThreadId, { preview: preview ?? null });
+  }
+
+  touch(hostThreadId: HostThreadId): Promise<StoredThreadRecordV1> {
+    return this.store.touch(hostThreadId);
   }
 
   setTransportModelId(

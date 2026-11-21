@@ -31,6 +31,8 @@ export interface RendererSidebarContractInspection {
 
 const OWNERSHIP_RETRY_DELAYS_MS = [100, 300, 800, 1_500, 3_000] as const;
 const PIN_REPLAY_RETRY_DELAYS_MS = [50, 150, 300] as const;
+const SIDEBAR_SHORTCUT_BUTTON_SELECTOR =
+  "button:not([data-interactive-row-button]:has([data-thread-title]))";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -142,11 +144,23 @@ export function rendererAgentForThreadOwnership(ownership: ThreadOwnership): Ren
   return ownership.harnessId;
 }
 
-// Desktop wraps some titles (hover label, secondary line), so the title is not always a direct
-// child of the trigger. Anchor the icon to the title's outermost wrapper that still sits in a
-// horizontal flex row, keeping it on the title line.
 function sidebarAgentIconAnchor(titleTrigger: HTMLElement, title: HTMLElement): HTMLElement {
   const view = title.ownerDocument.defaultView;
+  if (
+    titleTrigger.hasAttribute("data-thread-title-trigger") &&
+    titleTrigger.parentElement &&
+    titleTrigger.contains(
+      title.closest("button[data-interactive-row-button], a[data-interactive-row-link]"),
+    )
+  ) {
+    // The button/link has no gap. Use the native leading position in the content row instead.
+    const style = view?.getComputedStyle(titleTrigger.parentElement);
+    if (style?.display.includes("flex") && !style.flexDirection.startsWith("column")) {
+      return titleTrigger;
+    }
+  }
+
+  // Older and scheduled rows can wrap the title; keep the icon on the title line.
   let anchor = title;
   while (anchor.parentElement && anchor.parentElement !== titleTrigger) {
     const style = view?.getComputedStyle(anchor.parentElement);
@@ -156,10 +170,10 @@ function sidebarAgentIconAnchor(titleTrigger: HTMLElement, title: HTMLElement): 
   return anchor;
 }
 
-class BrowserSidebarAgentIconRow implements SidebarAgentIconRow {
+export class BrowserSidebarAgentIconRow implements SidebarAgentIconRow {
   #scheduledThread: string | null | undefined;
 
-  constructor(private readonly element: HTMLElement) {}
+  constructor(readonly element: HTMLElement) {}
 
   isConnected(): boolean {
     return this.element.isConnected;
@@ -228,8 +242,10 @@ class BrowserSidebarAgentIconRow implements SidebarAgentIconRow {
     marker.style.display = "inline-flex";
     marker.style.alignItems = "center";
     marker.style.justifyContent = "center";
-    marker.style.width = "14px";
-    marker.style.height = "14px";
+    const leadingSlot = anchor === titleTrigger;
+    const slotSize = leadingSlot ? "var(--icon-leading-size, 16px)" : "14px";
+    marker.style.width = slotSize;
+    marker.style.height = slotSize;
     marker.style.flex = "none";
     marker.style.pointerEvents = "none";
     marker.append(createRendererAgentIcon(agent, 14, this.element.ownerDocument, plugin));
@@ -261,7 +277,8 @@ export function sidebarExternalPinActionFromTarget(
     return null;
   }
   // 原生侧栏行的首个快捷操作是置顶/取消置顶；归档按钮必须保持原生行为。
-  if (row.querySelector<HTMLButtonElement>("button") !== button) return null;
+  if (row.querySelector<HTMLButtonElement>(SIDEBAR_SHORTCUT_BUTTON_SELECTOR) !== button)
+    return null;
   const attributes = sidebarThreadAttributes(row);
   const threadId = hostThreadIdSchema.safeParse(threadIdFromSidebarRowElement(row));
   if (!attributes || !threadId.success) return null;
@@ -316,7 +333,7 @@ export function installRendererSidebarExternalPinning(options: {
       return;
     }
     const currentButton =
-      row?.querySelector<HTMLButtonElement>("button") ??
+      row?.querySelector<HTMLButtonElement>(SIDEBAR_SHORTCUT_BUTTON_SELECTOR) ??
       (originalButton.isConnected === false ? null : originalButton);
     if (currentButton) {
       replayingButtons.add(currentButton);
@@ -360,7 +377,7 @@ export function installRendererSidebarExternalPinning(options: {
   };
 }
 
-class BrowserSidebarAgentIconDom implements SidebarAgentIconDom {
+export class BrowserSidebarAgentIconDom implements SidebarAgentIconDom {
   readonly #rowsByElement = new WeakMap<HTMLElement, BrowserSidebarAgentIconRow>();
   readonly #trackedRows = new Set<BrowserSidebarAgentIconRow>();
 
@@ -378,7 +395,7 @@ class BrowserSidebarAgentIconDom implements SidebarAgentIconDom {
     return row;
   }
 
-  rows(): readonly SidebarAgentIconRow[] {
+  rows(): readonly BrowserSidebarAgentIconRow[] {
     for (const row of this.#trackedRows) {
       if (!row.isConnected()) this.#trackedRows.delete(row);
     }

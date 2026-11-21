@@ -41,6 +41,11 @@ import {
 } from "./session-import-page.js";
 import { createPluginsSettingsPage } from "./plugins-page.js";
 import { createAppearanceSettingsPage } from "./appearance-page.js";
+import {
+  createDesktopExtensionsSettingsPage,
+  type RendererDesktopExtensionsClient,
+} from "./desktop-extensions-page.js";
+import type { RendererSettingsPluginPagesSource } from "./desktop-extension-settings-pages.js";
 import type { LoadedSessionsClient } from "./loaded-sessions-table.js";
 import { createReleaseNotesElement } from "./release-notes.js";
 import { createAccountsSettingsPage, type RendererCodexAccountClient } from "./accounts-page.js";
@@ -97,6 +102,7 @@ function windowsInstallerDownloadUrl(window: Window | null | undefined, version:
 
 export const DEFAULT_RENDERER_SETTINGS_PAGE_IDS = [
   "connections",
+  "desktop-extensions",
   "mobile-web",
   "remote-connections",
   "accounts",
@@ -111,7 +117,7 @@ export const DEFAULT_RENDERER_SETTINGS_PAGE_IDS = [
 export const RENDERER_SETTINGS_NAV_SECTIONS = [
   {
     id: "agents",
-    pageIds: ["connections", "plugins"],
+    pageIds: ["connections", "desktop-extensions", "plugins"],
   },
   {
     id: "access",
@@ -850,12 +856,15 @@ export function createDefaultRendererSettingsPages(
     Promise.reject(new Error("Local Host connection is unavailable")),
   usageStatisticsHosts?: RendererUsageStatisticsHostsProvider,
   harnessSchedules?: HarnessSchedulesPageOptions,
+  getDesktopExtensionsClient: () => RendererDesktopExtensionsClient | null = () => null,
+  pluginPages?: RendererSettingsPluginPagesSource,
 ): readonly RendererSettingsPageDefinition[] {
   return Object.freeze([
     createConnectionsSettingsPage(messages, getDiagnostics, undefined, getRemoteConnections, () => {
       const client = getUpdateClient();
       return client?.openExternalUrl?.bind(client);
     }),
+    createDesktopExtensionsSettingsPage(messages, getDesktopExtensionsClient, pluginPages),
     createMobileWebPage(messages, () => {
       const client = getUpdateClient();
       return client?.openWeb?.bind(client);
@@ -891,6 +900,7 @@ export function createDefaultRendererSettingsRegistry(
   openImportedThread?: RendererImportedThreadOpener,
   requestUsageStatistics?: RendererUsageStatisticsRequest,
   usageStatisticsHosts?: RendererUsageStatisticsHostsProvider,
+  getDesktopExtensionsClient?: () => RendererDesktopExtensionsClient | null,
 ): RendererSettingsPageRegistry {
   return createRendererSettingsPageRegistry(
     createDefaultRendererSettingsPages(
@@ -904,8 +914,11 @@ export function createDefaultRendererSettingsRegistry(
       undefined,
       requestUsageStatistics,
       usageStatisticsHosts,
+      undefined,
+      getDesktopExtensionsClient,
     ),
   );
 }
 
 export type { RendererCodexAccountClient } from "./accounts-page.js";
+export type { RendererDesktopExtensionsClient } from "./desktop-extensions-page.js";

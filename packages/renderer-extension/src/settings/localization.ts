@@ -3,6 +3,11 @@ import {
   credentialImportChinese,
   type CredentialImportMessages,
 } from "./credential-import-messages.js";
+import {
+  desktopExtensionsEnglish,
+  desktopExtensionsChinese,
+  type DesktopExtensionsMessages,
+} from "./desktop-extensions-messages.js";
 import type { DefaultRendererSettingsPageId } from "./pages.js";
 import {
   harnessVersionEnglish,
@@ -29,6 +34,7 @@ export interface RendererSettingsLanguageControl {
 
 export interface RendererSettingsMessages {
   readonly credentialImports: CredentialImportMessages;
+  readonly desktopExtensions: DesktopExtensionsMessages;
   readonly locale: RendererSettingsLocale;
   readonly title: string;
   readonly close: string;
@@ -37,6 +43,7 @@ export interface RendererSettingsMessages {
   readonly accessSection: string;
   readonly activitySection: string;
   readonly generalSection: string;
+  readonly pluginsSection: string;
   readonly otherSection: string;
   readonly appearanceDescription: string;
   readonly appearanceGroup: string;
@@ -318,6 +325,7 @@ export interface RendererSettingsMessages {
 
 const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   credentialImports: credentialImportEnglish,
+  desktopExtensions: desktopExtensionsEnglish,
   locale: "en",
   title: "Settings",
   close: "Close settings",
@@ -326,6 +334,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   accessSection: "Access",
   activitySection: "Sessions & activity",
   generalSection: "General",
+  pluginsSection: "Plugin Settings",
   otherSection: "About",
   appearanceDescription: "Conversation display and local resource management.",
   appearanceGroup: "Appearance",
@@ -662,10 +671,11 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   aboutConsoleFailed: "The console could not be opened",
   pageLabels: Object.freeze({
     connections: "Agents",
-    plugins: "Plugins",
+    plugins: "Codex Plugins",
     "mobile-web": "Phone & browser",
     appearance: "Appearance",
     "remote-connections": "Remote connections",
+    "desktop-extensions": "Plugins",
     accounts: "Accounts",
     "session-import": "Sessions",
     "usage-statistics": "Usage statistics",
@@ -676,6 +686,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
 
 const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   credentialImports: credentialImportChinese,
+  desktopExtensions: desktopExtensionsChinese,
   locale: "zh-CN",
   title: "设置",
   close: "关闭设置",
@@ -684,6 +695,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   accessSection: "访问与账号",
   activitySection: "会话与活动",
   generalSection: "通用",
+  pluginsSection: "插件设置",
   otherSection: "关于",
   appearanceDescription: "会话显示与本地资源管理。",
   appearanceGroup: "外观",
@@ -1000,10 +1012,11 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   aboutConsoleFailed: "控制台打开失败",
   pageLabels: Object.freeze({
     connections: "Agents",
-    plugins: "插件",
+    plugins: "Codex 插件",
     "mobile-web": "手机与浏览器",
     appearance: "外观",
     "remote-connections": "远程连接",
+    "desktop-extensions": "插件",
     accounts: "账号",
     "session-import": "会话",
     "usage-statistics": "用量统计",
