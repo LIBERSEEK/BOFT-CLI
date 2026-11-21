@@ -191,8 +191,9 @@ describe("Renderer sidebar Agent ownership", () => {
       },
     });
     document.body.append(row);
-    const title = row.querySelector<HTMLButtonElement>("[data-interactive-row-button]")!;
-    const pin = row.querySelector<HTMLButtonElement>('[aria-label="Pin"]')!;
+    const title = row.querySelector<HTMLButtonElement>("[data-interactive-row-button]");
+    const pin = row.querySelector<HTMLButtonElement>('[aria-label="Pin"]');
+    if (!title || !pin) throw new Error("Expected a title button and a pin button");
     const titleClick = vi.fn();
     const pinClick = vi.fn();
     title.addEventListener("click", titleClick);

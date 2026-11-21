@@ -45,7 +45,8 @@ readline.createInterface({input:process.stdin}).on('line', (line) => {
     if (scenario === 'session-auth') return send({id:req.id,error:{code:-32000,message:'Credentials needed'}});
     if (scenario === 'initial-usage') update({sessionUpdate:'usage_update',used:40,size:1000});
     update({sessionUpdate:'available_commands_update',availableCommands:[{name:'quota',description:'Quota'}]});
-    return result(req.id,{sessionId:'native',models:{currentModelId:'gemini-4-carbon',availableModels:[{modelId:'gemini-4-carbon',name:JSON.stringify(req.params)}]},modes:{currentModeId:'default',availableModes:[]},configOptions:[],_meta:{antigravity:{tier:{id:'pro',name:'Pro',upgradeUri:'https://example.com'}}}});
+    const modelName = scenario === 'echo-session-params' ? JSON.stringify(req.params) : 'Gemini 4 Carbon';
+    return result(req.id,{sessionId:'native',models:{currentModelId:'gemini-4-carbon',availableModels:[{modelId:'gemini-4-carbon',name:modelName}]},modes:{currentModeId:'default',availableModes:[]},configOptions:[],_meta:{antigravity:{tier:{id:'pro',name:'Pro',upgradeUri:'https://example.com'}}}});
   }
   if (req.method === 'session/resume') {
     if (scenario === 'initial-usage') update({sessionUpdate:'usage_update',used:40,size:1000},req.params.sessionId);
@@ -209,7 +210,7 @@ describe("native ACP stdio transport", () => {
     expect(value.skipPermissions).toBe(true);
   });
   it("creates sessions with system append, roots, tier and queued commands", async () => {
-    const value = transport();
+    const value = transport("echo-session-params");
     const mcpServers = [
       { name: "codexhost_background", command: process.execPath, args: [], env: [] },
     ];
@@ -238,7 +239,7 @@ describe("native ACP stdio transport", () => {
     await value.setMode("plan");
   });
   it("omits empty optional session parameters", async () => {
-    const value = transport();
+    const value = transport("echo-session-params");
     const { opened } = await value.openSession({
       kind: "create",
       cwd: "/repo",
