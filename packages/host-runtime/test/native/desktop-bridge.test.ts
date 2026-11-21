@@ -213,14 +213,22 @@ it(
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
     unsubscribe();
-    const afterExit = await web.snapshot(id);
-    assert.match(JSON.stringify(afterExit), /native turn survived Desktop exit/u);
-    assert.deepEqual(
-      (await readNativeCalls())
+    // The bridge process can exit before the Host handles the socket close.
+    // Each read gives the Host a chance to replace the backend once it is idle.
+    const untilRetired = Date.now() + 10_000;
+    for (;;) {
+      const afterExit = await web.snapshot(id);
+      assert.match(JSON.stringify(afterExit), /native turn survived Desktop exit/u);
+      const access = (await readNativeCalls())
         .filter((entry) => entry.type === "startup")
-        .map((entry) => entry.browserAccess),
-      [true, false],
-    );
+        .map((entry) => entry.browserAccess);
+      if (access.length > 1) {
+        assert.deepEqual(access, [true, false]);
+        break;
+      }
+      assert.ok(Date.now() < untilRetired, "idle backend retained Desktop browser access");
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
     const second = await desktop("second-browser.sock");
     assert.match(
       JSON.stringify(await second.request("thread/read", { threadId: id, includeTurns: true })),
