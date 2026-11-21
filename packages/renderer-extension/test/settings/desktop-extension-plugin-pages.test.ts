@@ -231,9 +231,9 @@ describe("Settings shell dynamic Plugins section and declarative schema form", (
     harness.shell.openSettings(undefined, "desktop-extensions");
 
     const initialNavIds = harness.navButtons().map((btn) => btn.dataset.pageId);
-    expect(initialNavIds.slice(0, 3)).toEqual(["connections", "desktop-extensions", "plugins"]);
-    expect(harness.navButtons()[1]?.textContent).toBe("插件");
-    expect(harness.navButtons()[2]?.textContent).toBe("Codex 插件");
+    expect(initialNavIds.slice(0, 3)).toEqual(["connections", "desktop-extensions", "accounts"]);
+    expect(initialNavIds).not.toContain("plugins");
+    expect(harness.navButtons()[1]?.textContent).toBe("扩展市场");
 
     const builtInSections = [
       { id: "agents", text: "Agents" },
@@ -303,11 +303,10 @@ describe("Settings shell dynamic Plugins section and declarative schema form", (
     expect(harness.shell.activePageId).toBe("desktop-extensions");
     harness.shell.dispose();
 
-    // English locale uses "Plugins" for the page item and "Plugin Settings" for the dynamic group heading.
     const enHarness = createHarness("en");
     enHarness.shell.openSettings(undefined, "desktop-extensions");
     expect(enHarness.navButtons()[1]?.dataset.pageId).toBe("desktop-extensions");
-    expect(enHarness.navButtons()[1]?.textContent).toBe("Plugins");
+    expect(enHarness.navButtons()[1]?.textContent).toBe("Extension Marketplace");
     await enHarness.host.reconcile([customEntry]);
     expect(enHarness.navSections()).toEqual([
       { id: "agents", text: "Agents" },
@@ -365,6 +364,9 @@ describe("Settings shell dynamic Plugins section and declarative schema form", (
     });
 
     harness.shell.openSettings(undefined, "desktop-extensions");
+    must(
+      harness.contentRoot().querySelector<HTMLButtonElement>('button[data-tab="installed"]'),
+    ).click();
     await vi.waitFor(() => expect(harness.contentRoot().textContent).toContain("声明式主题"));
 
     // Open extension detail modal -> verify "打开设置" button appears and jumps directly to the plugin page.

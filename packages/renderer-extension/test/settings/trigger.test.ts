@@ -166,25 +166,22 @@ describe("Renderer settings navigation rail trigger", () => {
         document,
       );
       const button = control.button as unknown as FakeElement;
-      const iconWrap = button.children[0];
-      const badge = iconWrap?.children[1];
+      const [icon, badge] = button.children;
 
       expect(button.style.width).toBe("36px");
       expect(button.style.height).toBe("36px");
-      expect(iconWrap?.children[0]?.tagName).toBe("IMG");
-      expect(iconWrap?.children[0]?.style.width).toBe("24px");
-      expect(iconWrap?.children[0]?.style.height).toBe("24px");
-      expect(button.style.color).toContain("--color-text-secondary-ghost");
+      expect(icon?.tagName).toBe("IMG");
+      expect(icon?.style.width).toBe("22px");
       expect(badge?.style.display).toBe("none");
       button.dispatch("click");
       expect(opened).toHaveBeenLastCalledWith(control.button, undefined);
 
       control.setUpdateAvailable(true);
       expect(badge?.style.display).toBe("block");
-      expect(control.button.title).toBe("BOFT CLI settings");
+      expect(control.button.title).toBe("BOFT CLI settings · A new version is available.");
       expect(control.root.hasAttribute("data-update-available")).toBe(true);
-      (control.updateButton as unknown as FakeElement).dispatch("click");
-      expect(opened).toHaveBeenLastCalledWith(control.updateButton, "updates");
+      button.dispatch("click");
+      expect(opened).toHaveBeenLastCalledWith(control.button, "updates");
 
       control.setUpdateAvailable(false);
       expect(badge?.style.display).toBe("none");

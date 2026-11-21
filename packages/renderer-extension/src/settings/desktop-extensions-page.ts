@@ -395,7 +395,7 @@ export function createDesktopExtensionsSettingsPage(
       let localeMenuOpen = false;
       let contentLocalePreference: DesktopExtensionContentLocalePreference =
         readContentLocalePreference(ownerWindow);
-      let activeTab: ActiveTab = "installed";
+      let activeTab: ActiveTab = "marketplace";
       let listing: DesktopExtensionsListResult | null = null;
       let catalog: DesktopExtensionsCatalogResult | null = null;
       let unavailable = false;
@@ -403,6 +403,7 @@ export function createDesktopExtensionsSettingsPage(
       let catalogError: string | null = null;
       let loading = false;
       let catalogLoading = false;
+      let catalogRequested = false;
       let catalogRequestToken = 0;
       let mutating = false;
       let activeMutationId: string | null = null;
@@ -1094,6 +1095,7 @@ export function createDesktopExtensionsSettingsPage(
         const keepFeedback = options.keepFeedback ?? silent;
         const client = resolveAvailableClient(getClient);
         if (!client?.listDesktopExtensions) {
+          catalogRequested = false;
           unavailable = true;
           listing = null;
           loading = false;
@@ -1101,6 +1103,10 @@ export function createDesktopExtensionsSettingsPage(
           render();
           schedulePoll();
           return;
+        }
+
+        if (!catalogRequested && client.listDesktopExtensionCatalog) {
+          void loadCatalog({ silent: true });
         }
 
         if (!silent) {
@@ -1151,6 +1157,7 @@ export function createDesktopExtensionsSettingsPage(
         const forceRefresh = options.forceRefresh ?? false;
         const silent = options.silent ?? false;
         const client = resolveAvailableClient(getClient);
+        const token = ++catalogRequestToken;
         if (!client?.listDesktopExtensionCatalog) {
           catalogUnavailable = true;
           catalogLoading = false;
@@ -1158,8 +1165,9 @@ export function createDesktopExtensionsSettingsPage(
           return;
         }
 
-        const token = ++catalogRequestToken;
+        catalogRequested = true;
         catalogLoading = true;
+        catalogUnavailable = false;
         catalogError = null;
         if (!silent) {
           setFeedback(null);
@@ -1810,9 +1818,7 @@ export function createDesktopExtensionsSettingsPage(
       document.addEventListener?.("keydown", onDocumentKeyDown);
 
       void loadInstalled({ silent: false });
-      if (resolveAvailableClient(getClient)?.listDesktopExtensionCatalog) {
-        void loadCatalog({ forceRefresh: false, silent: true });
-      }
+      if (!catalogRequested) void loadCatalog({ silent: true });
 
       return () => {
         disposed = true;

@@ -1,8 +1,8 @@
 # Desktop 界面扩展（v1）
 
-Desktop 扩展是可选的受信任代码。界面入口只在通过 codexhost 启动、已建立界面控制的 Codex Desktop **主窗口**运行；可选的 Node 后端运行于本机 Host 启动的独立子进程。扩展不预装，发现和安装不执行入口；在 BOFT 设置的「插件」页或 [Console 的扩展页](../operations/codexhost-console.md)启用后才会加载。Web、其他 Desktop 窗口和远程 Host 的侧栏行不是 v1 的界面扩展目标。
+Desktop 扩展是可选的受信任代码。界面入口只在通过 codexhost 启动、已建立界面控制的 Codex Desktop **主窗口**运行；可选的 Node 后端运行于本机 Host 启动的独立子进程。扩展不预装，发现和安装不执行入口；在 BOFT 设置的「扩展市场 → 已安装」或 [Console 的扩展页](../operations/codexhost-console.md)启用后才会加载。Web、其他 Desktop 窗口和远程 Host 的侧栏行不是 v1 的界面扩展目标。
 
-BOFT 设置的「Codex 插件」页用于管理原生 Codex 插件。已启用的 Desktop 扩展如果提供独立设置页，会显示在「关于」上方的「插件设置」分组。
+BOFT 设置的「Agents → 桌面集成」单独显示 Renderer Adapter 状态；使用 Agents 页的「扫描环境」按钮可刷新状态。已启用的 Desktop 扩展如果提供独立设置页，会显示在「关于」上方的「插件设置」分组。
 
 启用、禁用和更新文件不重启 Desktop、不重载窗口。Controller 比较 manifest、脚本和样式的内容 hash；只改时间戳不重新激活，内容变化时先回收旧实例再启动新实例。文件监听用于加速，Controller 也会重新扫描（周期兜底为 30 秒）。窗口重载时，如果 Controller 在线，就按最新启用集合恢复；如果 Controller 离线，重载后的窗口不加载扩展，直到 Controller 重新连上并按最新配置对账。对于尚未重载的窗口，Controller 重新连接时保留 hash 未变且仍在运行的实例。
 
@@ -49,6 +49,8 @@ $CODEXHOST_DATA_DIR/desktop-extensions/  # 默认 ~/.codexhost/desktop-extension
 - 文件上限：manifest 128 KiB、脚本 2 MiB、样式 256 KiB。最多发现 64 个扩展，单次注入的快照最多 8 MiB。
 
 ## 市场与包管理
+
+从 Codex Desktop 左侧导航栏的 BOFT 图标进入设置，在 **Agents → 扩展市场** 可直接浏览目录。安装后切换到「已安装」开启、禁用或卸载；也可通过「导入插件」从链接或 ZIP 安装。
 
 市场后端默认读取独立索引库的 `main/catalog.json`，GitHub Raw 不可用时尝试 jsDelivr；两者均不可用时返回空的内置回退列表，仍可通过链接或 ZIP 安装扩展。进程内缓存 5 分钟；`CODEXHOST_DESKTOP_EXTENSIONS_CATALOG_URL` 可改为 HTTP(S) 地址或本地绝对路径。详见[独立索引库模板](../../registry/desktop-extensions/README.md)。
 

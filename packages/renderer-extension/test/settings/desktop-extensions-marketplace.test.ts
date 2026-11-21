@@ -219,6 +219,7 @@ function textOf(node: unknown): string {
 function mountPage(
   locale: "en" | "zh-CN",
   getClient: () => RendererDesktopExtensionsClient | null,
+  tab: "installed" | "marketplace" = "installed",
 ) {
   const document = new FakeDocument();
   const content = document.createElement("div");
@@ -229,6 +230,9 @@ function mountPage(
     signal: scope.signal,
     runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
   });
+  if (tab === "installed") {
+    must(descendants(content).find((el) => el.dataset.tab === "installed")).click();
+  }
   return {
     content,
     dispose() {
@@ -373,6 +377,36 @@ afterEach(() => {
 });
 
 describe("Desktop extensions marketplace, detail actions, and import modal", () => {
+  it("opens the market and shows installable extensions once the local Host connects", async () => {
+    vi.useFakeTimers();
+    let client: RendererDesktopExtensionsClient | null = null;
+    const mounted = mountPage("zh-CN", () => client, "marketplace");
+    try {
+      const marketTab = must(
+        descendants(mounted.content).find((el) => el.dataset.tab === "marketplace"),
+      );
+      expect(marketTab.getAttribute("aria-selected")).toBe("true");
+      expect(textOf(mounted.content)).toContain("无法管理 Desktop 扩展");
+
+      client = {
+        listDesktopExtensions: async () => sampleInstalledList({ extensions: [] }),
+        listDesktopExtensionCatalog: async () => sampleCatalog({ extensions: [CATALOG_TREE] }),
+        installDesktopExtension: vi.fn(),
+      };
+      await vi.advanceTimersToNextTimerAsync();
+
+      expect(marketTab.getAttribute("aria-selected")).toBe("true");
+      expect(textOf(marketTab)).toBe("市场 (1)");
+      const card = must(
+        descendants(mounted.content).find((el) => el.dataset.extensionId === CATALOG_TREE.id),
+      );
+      expect(textOf(card)).toContain("侧栏委派树");
+      expect(must(descendants(card).find((el) => el.textContent === "安装")).disabled).toBe(false);
+    } finally {
+      mounted.dispose();
+    }
+  });
+
   it("switches between Installed and Marketplace tabs with counts, update badges, fallback notice, trust badges, category filter, and search", async () => {
     const listDesktopExtensionCatalog = vi
       .fn()

@@ -804,15 +804,13 @@
 }
 
 .settings-connections-content,
-.settings-plugins-content,
 .settings-connections-layout,
 .settings-connection-list,
 .settings-connection-rows {
   min-width: 0;
 }
 
-.settings-connections-content,
-.settings-plugins-content {
+.settings-connections-content {
   display: grid;
   gap: 12px;
 }
@@ -843,6 +841,26 @@
   background: var(--settings-surface);
   border: 1px solid var(--settings-border);
   border-radius: 10px;
+}
+
+.settings-renderer-adapter {
+  margin-top: 24px;
+}
+
+.settings-renderer-adapter h2 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 20px;
+}
+
+.settings-renderer-adapter__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 52px;
+  padding: 8px 10px;
 }
 
 .settings-connection-host-header {
@@ -2099,14 +2117,16 @@
   border-radius: 8px;
 }
 
-/* Soft status copy and the Update action should not sit in a framed card. */
 .settings-update-panel[data-update-state="unavailable"],
 .settings-update-panel[data-update-state="failed"],
-.settings-update-panel[data-update-state="error"],
-.settings-update-panel[data-update-state="available"] {
+.settings-update-panel[data-update-state="error"] {
   padding: 4px 0 0;
   border: 0;
   border-radius: 0;
+}
+
+.settings-update-panel[data-inline] {
+  padding: 14px 16px;
 }
 
 .settings-update-panel__status-row {

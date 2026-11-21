@@ -122,9 +122,6 @@ export interface RendererSettingsMessages {
   readonly sessionImportRetrying: string;
   readonly connectionsDescription: string;
   readonly accountsDescription: string;
-  readonly pluginsDescription: string;
-  readonly pluginsRefresh: string;
-  readonly pluginsRefreshing: string;
   readonly accountColumnAccount: string;
   readonly accountConnected: string;
   readonly accountDefaultBadge: string;
@@ -167,6 +164,7 @@ export interface RendererSettingsMessages {
   readonly accountResetCredits: string;
   readonly accountResetCreditsDetails: string;
   readonly accountResetCreditsCardExpiry: string;
+  readonly connectionDesktopIntegration: string;
   readonly connectionAdapter: string;
   readonly connectionHosts: string;
   readonly connectionLocalHost: string;
@@ -196,7 +194,6 @@ export interface RendererSettingsMessages {
   readonly connectionStatusUnsupported: string;
   readonly connectionComponent: string;
   readonly connectionStatus: string;
-  readonly connectionAction: string;
   readonly connectionHostsScrollLeft: string;
   readonly connectionHostsScrollRight: string;
   readonly launchPathLabel: string;
@@ -296,7 +293,6 @@ export interface RendererSettingsMessages {
   readonly updateFailed: string;
   readonly updateRetry: string;
   readonly updateManualNpmDescription: string;
-  readonly updateWindowsNpmDescription: string;
   readonly updateWindowsInstallerDescription: string;
   readonly updateManualTitle: string;
   readonly updateManualFallbackDescription: string;
@@ -428,9 +424,6 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   sessionImportPathCopyFailed: "Copy failed",
   sessionImportRetryOpen: "Try opening again",
   sessionImportRetrying: "Opening...",
-  pluginsDescription: "Extend and manage Codex plugins.",
-  pluginsRefresh: "Scan environment",
-  pluginsRefreshing: "Scanning...",
   connectionsDescription:
     "View runtime status by Host. Select an item to inspect details or complete its setup.",
   accountsDescription: "View the current Codex identity and quotas, plus other Agent accounts.",
@@ -478,6 +471,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   accountResetCredits: "Reset cards",
   accountResetCreditsDetails: "Reset card details",
   accountResetCreditsCardExpiry: "Card {index} · expires {time}",
+  connectionDesktopIntegration: "Desktop integration",
   connectionAdapter: "Renderer adapter",
   connectionHosts: "Hosts",
   connectionLocalHost: "Local",
@@ -509,7 +503,6 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionStatusUnsupported: "Unsupported",
   connectionComponent: "Component",
   connectionStatus: "Status",
-  connectionAction: "Actions",
   connectionHostsScrollLeft: "Show previous Hosts",
   connectionHostsScrollRight: "Show more Hosts",
   launchPathLabel: "Installed application path",
@@ -628,8 +621,6 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateFailed: "Update failed.",
   updateRetry: "Retry",
   updateManualNpmDescription: "To update manually, quit BOFT CLI and run this command:",
-  updateWindowsNpmDescription:
-    "Automatic updates are unavailable on Windows. Quit BOFT CLI and run this command in a terminal:",
   updateWindowsInstallerDescription:
     "To update manually, download and run the installer for this system.",
   updateManualTitle: "Manual update",
@@ -671,11 +662,10 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   aboutConsoleFailed: "The console could not be opened",
   pageLabels: Object.freeze({
     connections: "Agents",
-    plugins: "Codex Plugins",
     "mobile-web": "Phone & browser",
     appearance: "Appearance",
     "remote-connections": "Remote connections",
-    "desktop-extensions": "Plugins",
+    "desktop-extensions": "Extension Marketplace",
     accounts: "Accounts",
     "session-import": "Sessions",
     "usage-statistics": "Usage statistics",
@@ -785,9 +775,6 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   sessionImportPathCopyFailed: "复制失败",
   sessionImportRetryOpen: "重试打开",
   sessionImportRetrying: "正在打开……",
-  pluginsDescription: "扩展和管理 Codex 的插件。",
-  pluginsRefresh: "扫描环境",
-  pluginsRefreshing: "正在扫描...",
   connectionsDescription: "按 Host 查看运行时状态。选择一项，在右侧检查详情或完成配置。",
   accountsDescription: "查看当前 Codex 身份与额度，以及其他 Agent 账号。",
   accountConnected: "账号",
@@ -833,6 +820,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   accountResetCredits: "重置卡",
   accountResetCreditsDetails: "重置卡详情",
   accountResetCreditsCardExpiry: "第 {index} 张 · {time}到期",
+  connectionDesktopIntegration: "桌面集成",
   connectionAdapter: "Renderer 适配器",
   connectionHosts: "Host 列表",
   connectionLocalHost: "本地",
@@ -863,7 +851,6 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionStatusUnsupported: "不支持",
   connectionComponent: "组件",
   connectionStatus: "状态",
-  connectionAction: "操作",
   connectionHostsScrollLeft: "查看前面的 Host",
   connectionHostsScrollRight: "查看更多 Host",
   launchPathLabel: "应用安装路径",
@@ -972,8 +959,6 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateRetry: "重试",
   updateManualNpmDescription:
     "如需手动更新，请在终端运行以下命令。更新完成后，请退出 Codex 并通过 boft 重新启动。",
-  updateWindowsNpmDescription:
-    "Windows 暂不支持自动更新。请退出 BOFT CLI，在终端运行以下命令完成更新。",
   updateWindowsInstallerDescription: "如需手动更新，请下载并运行适用于当前系统的安装包。",
   updateManualTitle: "手动更新",
   updateManualFallbackDescription:
@@ -1012,11 +997,10 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   aboutConsoleFailed: "控制台打开失败",
   pageLabels: Object.freeze({
     connections: "Agents",
-    plugins: "Codex 插件",
     "mobile-web": "手机与浏览器",
     appearance: "外观",
     "remote-connections": "远程连接",
-    "desktop-extensions": "插件",
+    "desktop-extensions": "扩展市场",
     accounts: "账号",
     "session-import": "会话",
     "usage-statistics": "用量统计",

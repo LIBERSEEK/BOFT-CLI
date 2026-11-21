@@ -157,6 +157,8 @@ Launcher 启动的本地 Host Runtime 在 `127.0.0.1` 的随机端口开放控�
 
 ## 更新
 
+Codex Desktop 左侧导航栏的 BOFT 图标位于「更多」和已固定插件之后。有新版本时图标显示蓝点，点击直接打开 BOFT 设置的「更新」页；平时点击打开默认设置页。更新页在 Host 确认当前安装可以升级时显示「更新」按钮，适用于 npm（含 Windows）、macOS DMG 和 Windows 安装包。手动更新可使用 `npm install -g @liberseek/boft-cli@latest` 或从 [BOFT CLI 发布页](https://github.com/LIBERSEEK/BOFT-CLI/releases/latest)下载安装包。
+
 更新页面展示当前服务实例启动或从活动更新锁恢复的任务状态。重新启动后，恢复最近一次更新在过去 24 小时内结束的结果；存在 `serviceStopOutput` 时，以纯文本显示 Host 停止时报告的被中断任务数。超过 24 小时的历史任务不恢复；没有停止输出的失败结果仍保留，避免部分停止失败后重连丢失结果。恢复的结果每次读取均检查时限，不无限期缓存；当前实例启动或从活动锁接管的任务仍可保留本次结果。页面刷新可继续查看同一任务；重试切换到新任务。历史状态文件按原有保留策略清理。
 
 共享 Host 为 Web、Desktop 和 Console 提供同一份更新协调器。后台检查和下载不停止服务；原生 Host 监管进程接管同一份已准备请求，在受监管的 Node 子进程树外启动 Updater。Updater 校验所有者身份并确认全局更新锁已转移给自身后，通过当前安装的旧 Launcher `stop-for-update` 依次停止受管理 GUI、Web 和 Host，再安装。安装阶段其他客户端不能重新拉起服务；Updater 的恢复进程可以启动目标服务。请求使用明确的数据目录，停止和恢复都拒绝接管另一安装的运行服务。

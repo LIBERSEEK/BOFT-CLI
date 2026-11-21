@@ -258,6 +258,7 @@ function mountPage(
     signal: scope.signal,
     runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
   });
+  must(descendants(content).find((el) => el.dataset.tab === "installed")).dispatch("click");
   return {
     content,
     document,
@@ -368,7 +369,7 @@ describe("Desktop extensions settings page", () => {
     expect(formatExtensionStarCount(10_000)).toBe("10k");
   });
 
-  it("registers desktop-extensions as the second default settings page with Plugins bilingual labels", () => {
+  it("registers the marketplace with an explicit bilingual label", () => {
     const zhPages = createDefaultRendererSettingsPages(rendererSettingsMessages("zh-CN"));
     const enPages = createDefaultRendererSettingsPages(rendererSettingsMessages("en"));
     expect(zhPages.map(({ id }) => id).slice(0, 3)).toEqual([
@@ -381,8 +382,8 @@ describe("Desktop extensions settings page", () => {
       "desktop-extensions",
       "mobile-web",
     ]);
-    expect(zhPages[1]?.label).toBe("插件");
-    expect(enPages[1]?.label).toBe("Plugins");
+    expect(zhPages[1]?.label).toBe("扩展市场");
+    expect(enPages[1]?.label).toBe("Extension Marketplace");
   });
 
   it("renders custom extension icons, blocks unsafe protocols, falls back on image error, and maps all 6 categories to Lucide vector icons", async () => {

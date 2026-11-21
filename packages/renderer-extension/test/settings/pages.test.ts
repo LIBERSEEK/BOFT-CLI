@@ -2148,13 +2148,8 @@ describe("Renderer Connections page", () => {
           candidate.dataset.connectionItem !== undefined && candidate.dataset.connectionItem !== "",
       ),
     ).toHaveLength(2);
-    expect(visibleText(content)).not.toContain("Renderer 适配器");
+    expect(visibleText(content)).toContain("Renderer 适配器");
     expect(visibleText(content)).not.toContain("CH");
-    expect(
-      descendants(content).some(
-        (candidate) => candidate.dataset.connectionItem === "renderer-adapter",
-      ),
-    ).toBe(false);
     expect(visibleText(content)).toContain("公司");
     expect(visibleText(content)).toContain("pi exited with code 1");
     expect(elementWithClass(content, "settings-connection-host-tabs")).toBeDefined();
@@ -2684,28 +2679,29 @@ describe("Renderer Connections page", () => {
   });
 });
 
-describe("Renderer Plugin page", () => {
-  it("renders Renderer adapter status and refresh diagnostics", async () => {
+describe("Agents page diagnostics and updates", () => {
+  it("shows desktop integration without a Host and updates its status after an environment scan", async () => {
     const refreshRequest = deferred<undefined>();
+    let adapter: RendererConnectionSnapshot["adapter"] = {
+      state: "ready",
+      reason: "ready",
+      modelUpdates: 1,
+      hook: "request-bridge",
+    };
     const diagnostics: RendererConnectionDiagnostics = {
-      snapshot: vi.fn((): RendererConnectionSnapshot => ({
-        adapter: {
-          state: "ready",
-          reason: "ready",
-          modelUpdates: 1,
-          hook: "request-bridge",
-        },
-        hosts: [],
-      })),
-      refresh: vi.fn(() => refreshRequest.promise),
-      subscribe: vi.fn(() => () => undefined),
+      snapshot: () => ({ adapter, hosts: [] }),
+      async refresh() {
+        await refreshRequest.promise;
+        adapter = { state: "installing", reason: "installing", modelUpdates: 0, hook: null };
+      },
+      subscribe: () => () => undefined,
     };
     const page = createDefaultRendererSettingsPages(
       rendererSettingsMessages("zh-CN"),
       () => null,
       () => diagnostics,
-    ).find(({ id }) => id === "plugins");
-    if (!page) throw new Error("Plugin page is not registered");
+    ).find(({ id }) => id === "connections");
+    if (!page) throw new Error("Agents page is not registered");
 
     const document = new FakeDocument();
     const content = document.createElement("main");
@@ -2716,37 +2712,28 @@ describe("Renderer Plugin page", () => {
       runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
     });
 
-    expect(visibleText(content)).toContain("插件");
-    expect(visibleText(content)).toContain("Renderer 适配器");
-    expect(visibleText(content)).not.toContain("CH");
-    const adapterRow = descendants(content).find(
-      (candidate) => candidate.dataset.connectionItem === "renderer-adapter",
-    );
-    if (!adapterRow) throw new Error("Renderer adapter row is not rendered");
-    const brandMark = descendants(adapterRow).find((candidate) =>
-      candidate.className.split(" ").includes("settings-connection-row__mark--logo"),
-    );
-    expect(brandMark).toBeDefined();
+    const section = elementWithClass(content, "settings-renderer-adapter");
+    if (!section) throw new Error("Desktop integration section is not rendered");
+    expect(visibleText(section)).toContain("桌面集成");
+    expect(visibleText(section)).toContain("Renderer 适配器");
+    expect(visibleText(section)).toContain("正常");
+    const brandMark = elementWithClass(section, "settings-connection-row__mark--logo");
     expect(brandMark?.children).toContain("brand-icon");
-    expect(visibleText(content)).toContain("正常");
-    expect(visibleText(content)).toContain("组件");
-    expect(visibleText(content)).toContain("状态");
-    expect(visibleText(content)).toContain("操作");
-    expect(diagnostics.subscribe).toHaveBeenCalledOnce();
 
     const refresh = descendants(content).find(
-      ({ tagName, dataset }) => tagName === "button" && dataset.pluginAction === "refresh",
+      ({ tagName, dataset }) => tagName === "button" && dataset.connectionAction === "refresh",
     );
-    if (!refresh) throw new Error("Plugin refresh button is not rendered");
+    if (!refresh) throw new Error("Environment scan button is not rendered");
     refresh.dispatch("click");
     expect(refresh.disabled).toBe(true);
     expect(visibleNotesText(refresh)).toContain("正在扫描...");
-    expect(diagnostics.refresh).toHaveBeenCalledWith();
     refreshRequest.resolve(undefined);
     await vi.waitFor(() => expect(refresh.disabled).toBe(false));
     expect(visibleNotesText(refresh)).toContain("扫描环境");
+    expect(visibleText(section)).toContain("安装中");
 
     cleanup?.();
+    scope.dispose();
   });
 
   it("updates rows in place, preserves unselected inspector DOM, and keeps uninstalled Harnesses in More across refreshes", async () => {
@@ -3739,18 +3726,19 @@ describe("Renderer Updates page", () => {
   });
 
   it.each([
-    ["npm" as const, "如需手动更新", false],
-    ["windows-installer" as const, "如需手动更新，请下载并运行适用于当前系统的安装包。", true],
+    ["npm", true],
+    ["npm", false],
+    ["windows-installer", true],
   ])(
-    "offers the appropriate Windows update for %s installations",
-    async (installation, expected, automatic) => {
+    "offers an automatic Windows update for %s only when the Host allows it (%s)",
+    async (installation, automatic) => {
       const client = {
-        checkUpdate: vi.fn(async () => ({
+        checkUpdate: vi.fn(async (): Promise<UpdateCheckResult> => ({
           ...updateCheck(),
           installation,
           installationAvailable: automatic,
         })),
-        startUpdate: vi.fn(),
+        startUpdate: vi.fn(async () => ({ status: updateStatus("succeeded", installation) })),
         readUpdateStatus: vi.fn(async () => ({ status: null })),
       };
       const page = createDefaultRendererSettingsPages(
@@ -3768,24 +3756,12 @@ describe("Renderer Updates page", () => {
         runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
       });
 
-      await vi.waitFor(() => {
-        expect(visibleText(content)).toContain(expected);
-        expect(visibleText(elementWithClass(content, "settings-update-panel"))).toContain(
-          "有新版本可用",
-        );
-      });
-      if (installation === "npm") {
-        expect(visibleText(content)).toContain("暂不支持自动更新");
-      } else {
-        expect(visibleText(content)).not.toContain("暂不支持自动更新");
-      }
-      const update = descendants(elementWithClass(content, "settings-update-panel")).find(
-        ({ tagName }) => tagName === "button",
-      );
+      const panel = elementWithClass(content, "settings-update-panel");
+      await vi.waitFor(() => expect(visibleText(panel)).toContain("有新版本可用"));
+      const update = descendants(panel).find(({ tagName }) => tagName === "button");
       expect(Boolean(update)).toBe(automatic);
       if (installation === "npm") {
         expect(visibleText(content)).toContain("npm install -g @liberseek/boft-cli@latest");
-        expect(client.startUpdate).not.toHaveBeenCalled();
       } else {
         const link = descendants(content).find(
           ({ tagName, href }) =>
@@ -3794,6 +3770,11 @@ describe("Renderer Updates page", () => {
               "https://github.com/LIBERSEEK/BOFT-CLI/releases/download/v1.2.3/boft-cli-1.2.3-windows-x64.exe",
         );
         expect(link).toMatchObject({ target: "_blank", rel: "noopener noreferrer" });
+      }
+      if (update) {
+        update.dispatch("click");
+        await vi.waitFor(() => expect(panel.dataset.updateState).toBe("succeeded"));
+        expect(client.startUpdate).toHaveBeenCalledOnce();
       }
 
       cleanup?.();
