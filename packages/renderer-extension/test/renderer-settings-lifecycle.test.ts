@@ -38,7 +38,6 @@ vi.mock("../src/settings/trigger.js", () => ({
     refresh: triggerRefresh,
     setSelected: vi.fn(),
     setUpdateAvailable: triggerSetUpdateAvailable,
-    setSelected: vi.fn(),
     dispose: vi.fn(),
   })),
 }));
