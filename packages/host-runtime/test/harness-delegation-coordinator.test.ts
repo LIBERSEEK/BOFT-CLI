@@ -12,6 +12,7 @@ import { CodexTurnProjector, type ExternalHarnessId } from "@codexhost/protocol-
 import {
   harnessIdSchema,
   harnessModelCatalogSchema,
+  harnessModelRefSchema,
   harnessPreferencePatchSchema,
   harnessThinkingOptionIdSchema,
   hostThreadIdSchema,
@@ -631,9 +632,9 @@ describe("HarnessDelegationCoordinator", () => {
     }
   });
 
-  const primary = { model: { id: "fake-model-v1.primary" } };
-  const secondary = { model: { id: "fake-model-v1.secondary" } };
-  const retired = { model: { id: "retired" } };
+  const primary = { model: harnessModelRefSchema.parse({ id: "fake-model-v1.primary" }) };
+  const secondary = { model: harnessModelRefSchema.parse({ id: "fake-model-v1.secondary" }) };
+  const retired = { model: harnessModelRefSchema.parse({ id: "retired" }) };
   const low = { thinkingOptionId: harnessThinkingOptionIdSchema.parse("low") };
   const high = { thinkingOptionId: harnessThinkingOptionIdSchema.parse("high") };
   const off = { thinkingOptionId: harnessThinkingOptionIdSchema.parse("off") };
@@ -686,9 +687,9 @@ describe("HarnessDelegationCoordinator", () => {
         model: { id: "fake-model-v1.primary" },
         thinkingOptionId: "high",
       });
-      await expect(
-        value.coordinator.start({ ...input, model: { id: "retired" } }),
-      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+      await expect(value.coordinator.start({ ...input, ...retired })).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+      });
       await expect(
         value.coordinator.start({
           ...input,
@@ -918,6 +919,7 @@ describe("HarnessDelegationCoordinator", () => {
         const recoveryError = {
           code: "INTERNAL_ERROR",
           message: "External Thread read failed",
+          details: { externalThreadCode: -32076 },
         };
         await expect(
           value.coordinator.read({ threadId: started.threadId, view }),
@@ -930,6 +932,51 @@ describe("HarnessDelegationCoordinator", () => {
       }
     },
   );
+
+  it("does not classify a pending Session release as a missing Thread", async () => {
+    const value = await fixture();
+    try {
+      const { threadId } = await value.coordinator.start({
+        harnessId: "pi",
+        task: "synthetic pending release",
+        parentThreadId: "parent",
+      });
+      const thread = value.registered[0];
+      if (!thread) throw new Error("delegated Thread was not registered");
+      thread.running = false;
+      thread.activeTurnId = null;
+      value.runtime.markSessionUnavailable(thread);
+      const close = vi.spyOn(thread.session, "close").mockRejectedValue(new Error("private cause"));
+      try {
+        const error = {
+          code: "INTERNAL_ERROR",
+          message: expect.stringContaining("External Session shutdown could not be confirmed"),
+          details: { externalThreadCode: -32075 },
+        };
+        const sendError = { ...error, details: { ...error.details, notStarted: true } };
+        // Resolution first hits the release failure; the next locate hits the same blocker.
+        for (const message of ["send", "retry"]) {
+          await expect(value.coordinator.send({ threadId, message })).rejects.toMatchObject(
+            sendError,
+          );
+        }
+        expect(value.delivered).toEqual(["synthetic pending release"]);
+        for (const view of ["result", "messages"] as const) {
+          await expect(value.coordinator.read({ threadId, view })).rejects.toMatchObject(error);
+        }
+        await expect(value.coordinator.cancel({ threadId })).rejects.toMatchObject(error);
+        await expect(
+          value.coordinator.exportThread({ threadId, out: path.join(value.directory, "out.json") }),
+        ).rejects.toMatchObject(error);
+        await expect(value.repository.find(threadId)).resolves.toMatchObject({ state: "ready" });
+      } finally {
+        close.mockRestore();
+        await thread.session.close();
+      }
+    } finally {
+      await value.close();
+    }
+  });
 
   it("retains a missing-Thread error if an external mapping vanishes during resolution", async () => {
     const value = await fixture();
@@ -1051,7 +1098,7 @@ describe("HarnessDelegationCoordinator", () => {
         { id: started.turnId, status: "failed", items: [], error: { message: "process exited" } },
       ];
       thread.projectedTerminalTurnId = hostTurnIdSchema.parse(started.turnId);
-      vi.spyOn(thread.session, "readSnapshot").mockResolvedValue({
+      const readSnapshot = vi.spyOn(thread.session, "readSnapshot").mockResolvedValue({
         ok: false,
         error: { code: "nativeFailure", message: "Harness is gone", retryable: false },
       });
@@ -1076,6 +1123,21 @@ describe("HarnessDelegationCoordinator", () => {
       await expect(
         value.coordinator.read({ threadId: started.threadId, view: "result" }),
       ).rejects.toMatchObject({ code: "INTERNAL_ERROR" });
+
+      // A failed release during refresh is not an ordinary snapshot error.
+      thread.projectedTerminalTurnId = hostTurnIdSchema.parse(started.turnId);
+      readSnapshot.mockResolvedValueOnce({
+        ok: false,
+        error: { code: "invalidState", message: "Harness is gone", retryable: false },
+      });
+      vi.spyOn(thread.session, "close").mockRejectedValueOnce(new Error("native cleanup failed"));
+      await expect(
+        value.coordinator.read({ threadId: started.threadId, view: "result" }),
+      ).rejects.toMatchObject({
+        code: "INTERNAL_ERROR",
+        message: expect.stringContaining("External Session shutdown could not be confirmed"),
+        details: { externalThreadCode: -32075 },
+      });
     } finally {
       await value.close();
     }

@@ -21,7 +21,9 @@ Desktop 原生 Browser IPC 要求调用进程位于当前 Desktop 的进程树�
 
 ## Desktop 工具配置的生命周期
 
-共享 Host 使用最近接入且仍在线的 Desktop 提供的 Browser 授权、临时 MCP 覆盖与 app tools 管道。这些配置在连接断开时失效。共享 app-server 完成正在执行的官方任务，空闲后在下一次原生请求前按仍有效的配置重建。没有在线 Desktop 时，后端沿用原生启动参数，浏览器授权由官方工具按当前环境判定。Windows Remote Control 在内存中保留其原生启动配置，Desktop 工具授权仍随连接失效，不写入启动配置。
+共享 Host 使用最近接入且仍在线的 Desktop 提供的 Browser 授权、临时 MCP 覆盖与 app tools 管道。接入端点发生变化时，Host 会退役空闲的 app-server；若有正在执行的官方任务，则等任务完成后，在下一次原生请求前按仍有效的配置重建。连接断开时，其工具配置失效。没有在线 Desktop 时，后端沿用原生启动参数，浏览器授权由官方工具按当前环境判定。Windows Remote Control 在内存中保留其原生启动配置，Desktop 工具授权仍随连接失效，不写入启动配置。
+
+Windows 共享 Host 同时提供 Remote Control 监听时，原生进程沿用首次确认的可执行文件与启动参数。每个本地 Desktop 连接单独提供当前工具端点。断开最近的 Desktop 后，下一次空闲请求使用上一个仍在线的 Desktop 的端点。Remote Control 观察者可以在此过程中继续使用原有 Thread。
 
 ## 原生 Codex Fork 的模型继承
 

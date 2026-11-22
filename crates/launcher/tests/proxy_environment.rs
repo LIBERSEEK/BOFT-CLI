@@ -1,7 +1,7 @@
 use std::process::Command;
 
 fn command() -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_codexhost"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_boft"));
     command.arg("proxy-environment");
     // Explicit empty values prevent the test machine's system proxy from filling them.
     for name in [
