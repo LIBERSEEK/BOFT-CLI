@@ -10,6 +10,7 @@ describe("platform packagers", () => {
     const source = await readFile(path.join(root, "scripts/release/macos/package.sh"), "utf8");
     expect(source).toContain('CONTENTS="$APP_PATH/Contents"');
     expect(source).toContain('RESOURCES="$CONTENTS/Resources"');
+    expect(source).toContain('"$CONTENTS/Helpers/CodexHost.app"');
     expect(source).toContain("codesign --verify --deep --strict");
     expect(source).toContain('runtime/node" -e');
     expect(source).not.toContain("--options runtime");
@@ -162,8 +163,8 @@ describe("platform packagers", () => {
     );
     const uninstall = installer.split(/\[UninstallRun\]\r?\n/u)[1].split(/\r?\n\[/u)[0];
     expect(uninstall.trim().split(/\r?\n/u)).toEqual([
-      'Filename: "{app}\\bin\\codexhost.exe"; Parameters: "stop"; Flags: runhidden; RunOnceId: "StopCodexhostServices"',
-      'Filename: "{app}\\bin\\codexhost.exe"; Parameters: "autostart off"; Flags: runhidden; RunOnceId: "DisableCodexhostAutostart"',
+      'Filename: "{app}\\bin\\boft.exe"; Parameters: "stop"; Flags: runhidden; RunOnceId: "StopCodexhostServices"',
+      'Filename: "{app}\\bin\\boft.exe"; Parameters: "autostart off"; Flags: runhidden; RunOnceId: "DisableCodexhostAutostart"',
     ]);
     expect(installer.split("[Code]")[1]).not.toMatch(/autostart|unins|Serve/u);
     expect(installer).not.toMatch(/\[Registry\]|RegDelete|taskkill|powershell/iu);

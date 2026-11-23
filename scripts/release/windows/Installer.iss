@@ -28,6 +28,7 @@ ArchitecturesInstallIn64BitMode=arm64
 [Files]
 ; Extract the new helper before touching an existing installation, including older versions.
 Source: "{#PayloadRoot}\libexec\boft-updater.exe"; DestName: "boft-install-helper.exe"; Flags: dontcopy
+; Includes libexec\codexhost-shell.exe when present in the payload.
 Source: "{#PayloadRoot}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 
 [InstallDelete]
@@ -43,8 +44,8 @@ Name: "{userprograms}\BOFT CLI console"; Filename: "{app}\bin\boft-start.exe"; P
 Name: "{app}"
 
 [UninstallRun]
-Filename: "{app}\bin\codexhost.exe"; Parameters: "stop"; Flags: runhidden; RunOnceId: "StopCodexhostServices"
-Filename: "{app}\bin\codexhost.exe"; Parameters: "autostart off"; Flags: runhidden; RunOnceId: "DisableCodexhostAutostart"
+Filename: "{app}\bin\boft.exe"; Parameters: "stop"; Flags: runhidden; RunOnceId: "StopCodexhostServices"
+Filename: "{app}\bin\boft.exe"; Parameters: "autostart off"; Flags: runhidden; RunOnceId: "DisableCodexhostAutostart"
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"
