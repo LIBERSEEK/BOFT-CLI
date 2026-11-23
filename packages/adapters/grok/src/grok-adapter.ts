@@ -155,7 +155,7 @@ import {
   type GrokProjectedToolItem,
 } from "./grok-tool-output.js";
 import {
-  decodeGrokModelRef,
+  normalizeStoredGrokModelRef,
   modelStateFromInitialize,
   modelStateFromSessionResponse,
   stateForGrokModel,
@@ -888,7 +888,7 @@ class GrokHarnessSession implements HarnessSession {
     this.#configuring = true;
     try {
       const contextWindow = this.#modelState.defaultContextWindowTokensByModel.get(model.id);
-      await this.#transport.setModel(decodeGrokModelRef(model), thinkingOptionId, contextWindow);
+      await this.#transport.setModel(model.id, thinkingOptionId, contextWindow);
       if (contextWindow !== undefined) {
         this.#modelState.contextWindowTokensByModel = new Map([
           ...this.#modelState.contextWindowTokensByModel,
@@ -1743,6 +1743,7 @@ class GrokHarnessSession implements HarnessSession {
 }
 
 export class GrokAdapter implements HarnessAdapter {
+  readonly normalizeStoredModelRef = normalizeStoredGrokModelRef;
   readonly credentialExport = {
     read: () =>
       this.#closePromise
@@ -2077,9 +2078,7 @@ export class GrokAdapter implements HarnessAdapter {
             : {
                 kind: "create",
                 permissionModeId: requestedPermissionModeId,
-                ...(input.kind === "create" && input.model
-                  ? { modelId: decodeGrokModelRef(input.model) }
-                  : {}),
+                ...(input.kind === "create" && input.model ? { modelId: input.model.id } : {}),
               },
         );
       }
@@ -2186,7 +2185,7 @@ export class GrokAdapter implements HarnessAdapter {
           modelState.contextWindowTokensByModel.get(modelState.currentModel.id) !== contextWindow)
       ) {
         await transport.setModel(
-          decodeGrokModelRef(modelState.currentModel),
+          modelState.currentModel.id,
           modelState.currentThinkingOptionId,
           contextWindow,
         );

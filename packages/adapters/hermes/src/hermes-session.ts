@@ -71,7 +71,6 @@ import {
 } from "./hermes-transport.js";
 import {
   catalogAlignedModelLabel,
-  decodeHermesModelRefId,
   isHermesModeId,
   projectHermesModelState,
 } from "./hermes-models.js";
@@ -1028,10 +1027,7 @@ export class HermesSession implements HarnessSession {
   }
 
   async #selectModel(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>> {
-    const native = decodeHermesModelRefId(command.model.id);
-    if (!native) {
-      return err("invalidRequest", "Model Ref does not belong to Hermes");
-    }
+    const native = command.model.id;
     try {
       await this.#transport.setModel(native);
     } catch (error) {

@@ -6,6 +6,7 @@ import path from "node:path";
 import type { HostSubagentState, HostThreadSnapshot } from "@codexhost/harness-adapter";
 import {
   MappingStore,
+  hasDisplacedAntigravityTurn,
   type CommitReadyThreadInput,
   type CreateDelegationInput,
   type CreateProvisionalThreadInput,
@@ -28,6 +29,7 @@ import {
   type TodoPlan,
 } from "@codexhost/protocol-core";
 import {
+  THREAD_STEER_STRICT_TARGET_FIELD,
   hostThreadIdSchema,
   hostTurnIdSchema,
   type HarnessId,
@@ -82,11 +84,16 @@ export interface ExternalThreadStore {
     mappings: StoredTurnMappingV1[],
   ): Promise<StoredThreadRecordV1>;
   saveFailedTurn(hostThreadId: HostThreadId, failure: FailedTurn): Promise<StoredThreadRecordV1>;
+  repairAntigravityTurnMappings: MappingStore["repairAntigravityTurnMappings"];
   reconcileTurnMappings(
     hostThreadId: HostThreadId,
     mappings: StoredTurnMappingV1[],
   ): Promise<StoredThreadRecordV1>;
-  setTitle(hostThreadId: HostThreadId, title: string): Promise<StoredThreadRecordV1>;
+  setTitle(
+    hostThreadId: HostThreadId,
+    title: string,
+    options?: { ifUnnamed?: boolean },
+  ): Promise<StoredThreadRecordV1>;
   setCwd(hostThreadId: HostThreadId, cwd: string): Promise<StoredThreadRecordV1>;
   touch(hostThreadId: HostThreadId): Promise<StoredThreadRecordV1>;
   setTransportModelId(
@@ -241,8 +248,12 @@ export class ExternalThreadRepository {
     return this.store.commitReady({ hostThreadId, nativeSessionRef, turnMappings });
   }
 
-  setTitle(hostThreadId: HostThreadId, title: string): Promise<StoredThreadRecordV1> {
-    return this.store.setTitle(hostThreadId, title);
+  setTitle(
+    hostThreadId: HostThreadId,
+    title: string,
+    options?: { ifUnnamed?: boolean },
+  ): Promise<StoredThreadRecordV1> {
+    return this.store.setTitle(hostThreadId, title, options);
   }
 
   setCwd(hostThreadId: HostThreadId, cwd: string): Promise<StoredThreadRecordV1> {
@@ -537,9 +548,22 @@ export class ExternalThreadRepository {
       }
     }
 
+    if (!record.subagent && record.turnMappings.some(hasDisplacedAntigravityTurn)) {
+      record = await this.store.repairAntigravityTurnMappings(
+        record.hostThreadId,
+        record.revision,
+        snapshot.turns.map(({ nativeTurnRef, checkpoint }) => ({
+          nativeTurnRef,
+          ...(checkpoint ? { nativeCheckpointRef: checkpoint } : {}),
+        })),
+      );
+    }
+
     const mappingsByNative = new Map<string, HostTurnId>();
+    const mappedHostTurns = new Set(record.turnMappings.map(({ hostTurnId }) => hostTurnId));
     for (const failure of failures) {
-      if (failure.nativeTurnRef)
+      // A failure's ref is only a recovery hint for an unmapped Host Turn.
+      if (failure.nativeTurnRef && !mappedHostTurns.has(failure.hostTurnId))
         mappingsByNative.set(nativeTurnKey(failure.nativeTurnRef), failure.hostTurnId);
     }
     for (const mapping of record.turnMappings) {
@@ -690,6 +714,7 @@ export function externalThreadValue(input: {
     threadSource: record.subagent ? "subAgentThreadSpawn" : null,
     modelProvider: "codexhost",
     cliVersion: "codexhost",
+    [THREAD_STEER_STRICT_TARGET_FIELD]: true,
     createdAt,
     updatedAt,
     recencyAt: updatedAt,

@@ -1,148 +1,76 @@
-import {
-  HARNESS_MODEL_REF_MAX_LENGTH,
-  harnessModelCatalogSchema,
-  harnessModelRefSchema,
-} from "@codexhost/shared-contracts";
+import { HARNESS_MODEL_REF_MAX_LENGTH, harnessModelRefSchema } from "@codexhost/shared-contracts";
 import { describe, expect, it } from "vitest";
-import {
-  decodeGrokModelRef,
-  encodeGrokModelRef,
-  modelStateFromInitialize,
-  modelStateFromSessionResponse,
-  parseGrokModelState,
-} from "../src/grok-models.js";
 
-describe("Grok Model refs", () => {
-  it("keeps existing transport-safe model IDs unchanged", () => {
-    expect(encodeGrokModelRef("grok-4.6_fast.v1~test")).toEqual({ id: "grok-4.6_fast.v1~test" });
-    expect(decodeGrokModelRef(harnessModelRefSchema.parse({ id: "grok-4.6" }))).toBe("grok-4.6");
-  });
+import { normalizeStoredGrokModelRef, parseGrokModelState } from "../src/grok-models.js";
 
-  it.each([
-    "magpie/group/codex-grok",
-    "magpie/group/gpt-6.1-sol",
-    "magpie/deepseek/pro",
-    "magpie/openrouter/anthropic/claude-sonnet-4:thinking",
-    "magpie/relay/Opus 5.5",
-    "magpie/relay/模型 α",
-    " magpie/relay/Opus 5.5 ",
-  ])("round-trips %j without colliding with native IDs resembling encoded refs", (modelId) => {
-    const ref = encodeGrokModelRef(modelId);
-    if (!ref) throw new Error("Missing encoded Model Ref");
-    const lookalike = encodeGrokModelRef(ref.id);
-    if (!lookalike) throw new Error("Missing escaped Model Ref");
-    expect(harnessModelRefSchema.safeParse(ref).success).toBe(true);
-    expect(ref.id).not.toContain("/");
-    expect(lookalike.id).not.toBe(ref.id);
-    expect(decodeGrokModelRef(ref)).toBe(modelId);
-    expect(decodeGrokModelRef(lookalike)).toBe(ref.id);
-  });
-
-  it.each(["", " ", "grok\n", "grok\u0000", "a/".repeat(256)])(
-    "rejects invalid or unrepresentable native IDs: %j",
-    (modelId) => {
-      expect(encodeGrokModelRef(modelId)).toBeNull();
-      expect(
-        parseGrokModelState({
-          currentModelId: modelId,
-          availableModels: [{ modelId, name: "Invalid" }],
-        }),
-      ).toBeNull();
+const native500K = "magpie/grok-2/grok-4.7";
+const alias272K = "magpie-grok47";
+const nativeIds = [native500K, alias272K, "grok-4.6", "grok-4.5"];
+const availableModels = [
+  {
+    modelId: native500K,
+    name: "Magpie Grok 4.7 (500K)",
+    _meta: {
+      totalContextTokens: 500000,
+      contextWindows: [256000, 500000],
+      reasoningEffort: "high",
+      reasoningEfforts: [{ id: "high", label: "High" }],
     },
-  );
+  },
+  {
+    modelId: alias272K,
+    name: "Magpie Grok 4.7 (272K)",
+    _meta: { totalContextTokens: 272000, contextWindows: [256000] },
+  },
+  {
+    modelId: "grok-4.6",
+    name: "Grok 4.6",
+    _meta: { totalContextTokens: 256000 },
+  },
+  {
+    modelId: "grok-4.5",
+    name: "Grok 4.5",
+    _meta: { totalContextTokens: 128000 },
+  },
+];
 
-  it("preserves the existing Model Ref length limit", () => {
-    expect(encodeGrokModelRef("a".repeat(HARNESS_MODEL_REF_MAX_LENGTH))).not.toBeNull();
-    expect(encodeGrokModelRef("a".repeat(HARNESS_MODEL_REF_MAX_LENGTH + 1))).toBeNull();
-  });
-
-  it.each(["grok-model~", "grok-model~Z3Jvay00LjY", "grok-model~bWFncGllL2dyb3VwL2NvZGV4LWdyb2s."])(
-    "rejects noncanonical encoded refs: %s",
-    (id) => {
-      expect(() => decodeGrokModelRef(harnessModelRefSchema.parse({ id }))).toThrow(
-        "Invalid Grok Model Ref",
-      );
-    },
-  );
-});
-
-describe("Grok ACP Model catalog", () => {
-  const modelId = "magpie/group/codex-grok";
-  const models = {
-    currentModelId: modelId,
-    availableModels: [
-      { modelId: "invalid\u0000model", name: "Invalid" },
-      { modelId: "grok-4.6", name: "Grok 4.6" },
-      {
-        modelId,
-        name: "Codex Grok via Magpie",
-        _meta: {
-          reasoningEffort: "high",
-          reasoningEfforts: [{ id: "high", label: "High" }],
-          totalContextTokens: 256000,
-          contextWindows: [256000, 500000],
-        },
-      },
-    ],
-  };
-
-  it("projects initialize and session catalogs with slash IDs and their metadata", () => {
-    const initialized = modelStateFromInitialize({
-      protocolVersion: 1,
-      _meta: { modelState: models },
-    });
-    const loaded = modelStateFromSessionResponse({ models });
-    if (!initialized) throw new Error("Missing Magpie Model state");
-    expect(loaded).toEqual(initialized);
-    const state = initialized;
-    expect(harnessModelCatalogSchema.safeParse(state.catalog).success).toBe(true);
-    expect(state.catalog.models).toHaveLength(2);
-    expect(state.catalog.defaultModel).toEqual(state.currentModel);
-    expect(decodeGrokModelRef(state.currentModel)).toBe(modelId);
-    expect(state.currentThinkingOptionId).toBe("high");
-    expect(state.contextWindowTokensByModel.get(state.currentModel.id)).toBe(256000);
-    expect(state.defaultContextWindowTokensByModel.get(state.currentModel.id)).toBe(500000);
-  });
-
-  it("requires the current model to be advertised", () => {
-    expect(parseGrokModelState({ ...models, currentModelId: "magpie/group/missing" })).toBeNull();
-  });
-
-  it.each(["magpie/grok-2/grok-4.7", "magpie-grok47"])(
-    "keeps the full catalog and distinct context windows when %s is current",
+describe("Grok native Model Refs", () => {
+  it.each([native500K, alias272K])(
+    "retains the complete four-model catalog when %s is current",
     (currentModelId) => {
-      const availableModels = [
-        {
-          modelId: "magpie/grok-2/grok-4.7",
-          name: "500K",
-          _meta: { totalContextTokens: 500_000, contextWindows: [256_000, 500_000] },
-        },
-        {
-          modelId: "magpie-grok47",
-          name: "272K",
-          _meta: { totalContextTokens: 272_000, contextWindows: [256_000] },
-        },
-        { modelId: "grok-4.6", name: "Grok 4.6" },
-        { modelId: "grok-4.5", name: "Grok 4.5" },
-      ];
       const state = parseGrokModelState({ currentModelId, availableModels });
-      if (!state) throw new Error("Missing Grok Model catalog");
-      const refs = state.catalog.models.map(({ ref }) => ref);
-      expect(refs.map(decodeGrokModelRef)).toEqual(availableModels.map(({ modelId }) => modelId));
-      expect(decodeGrokModelRef(state.currentModel)).toBe(currentModelId);
+      expect(state).not.toBeNull();
+      if (!state) throw new Error("Expected a Grok Model catalog");
+
+      expect(state.catalog.models).toHaveLength(4);
+      expect(state.catalog.models.map(({ ref }) => ref.id)).toEqual(nativeIds);
+      expect(state.currentModel.id).toBe(currentModelId);
       expect(state.catalog.defaultModel).toEqual(state.currentModel);
-      expect(refs.map(({ id }) => state.contextWindowTokensByModel.get(id))).toEqual([
-        500_000,
-        272_000,
-        undefined,
-        undefined,
-      ]);
-      expect(refs.map(({ id }) => state.defaultContextWindowTokensByModel.get(id))).toEqual([
-        500_000,
-        undefined,
-        undefined,
-        undefined,
-      ]);
+      expect(state.contextWindowTokensByModel.get(native500K)).toBe(500000);
+      expect(state.contextWindowTokensByModel.get(alias272K)).toBe(272000);
+      expect(state.defaultContextWindowTokensByModel.get(native500K)).toBe(500000);
+      expect(state.defaultContextWindowTokensByModel.has(alias272K)).toBe(false);
+      for (const { ref } of state.catalog.models) {
+        expect(harnessModelRefSchema.safeParse(ref).success).toBe(true);
+      }
     },
   );
+
+  it("resolves a stored encoded Ref to the same native Model", () => {
+    const state = parseGrokModelState({ currentModelId: native500K, availableModels });
+    if (!state) throw new Error("Expected a Grok Model catalog");
+    const saved = harnessModelRefSchema.parse({
+      id: `grok-model-v1.${Buffer.from(native500K).toString("base64url")}`,
+    });
+    expect(normalizeStoredGrokModelRef(saved, state.catalog)).toEqual({ id: native500K });
+  });
+
+  it("applies the Ref length budget to the native ID", () => {
+    const id = "/".repeat(HARNESS_MODEL_REF_MAX_LENGTH);
+    const state = parseGrokModelState({
+      currentModelId: id,
+      availableModels: [{ modelId: id, name: "Long" }],
+    });
+    expect(state?.currentModel).toEqual({ id });
+  });
 });

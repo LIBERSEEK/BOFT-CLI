@@ -109,13 +109,10 @@ export {
   GROK_TRANSPORT_MODEL_PREFIX,
   OPENCODE_TRANSPORT_MODEL_ID,
   OPENCODE_TRANSPORT_MODEL_PREFIX,
-  antigravityTransportModelId,
   hermesTransportModelId,
-  claudeTransportModelId,
   decodeAntigravityTransportModelId,
   decodeClaudeTransportModelId,
   decodeDeepSeekHarnessTransportModelId,
-  deepSeekHarnessTransportModelId,
   decodeGrokTransportModelId,
   decodeOpenCodeTransportModelId,
   decodePiTransportModelId,
@@ -132,9 +129,6 @@ export {
   isOpenCodeTransportModelId,
   isPiTransportModelId,
   modelSelectionForAgent,
-  grokTransportModelId,
-  openCodeTransportModelId,
-  piTransportModelId,
   PI_TRANSPORT_MODEL_ID,
   PI_TRANSPORT_MODEL_PREFIX,
   DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID,
@@ -231,6 +225,18 @@ export type {
   RendererSettingsMessages,
   RendererSettingsWritableLanguageSelection,
 } from "./settings/localization.js";
+export {
+  RELEASE_ANNOUNCEMENT_DIALOG_ATTRIBUTE,
+  formatReleaseAnnouncementContributors,
+  formatReleaseAnnouncementDate,
+  openReleaseAnnouncementDialog,
+  selectReleaseAnnouncementContent,
+} from "./settings/release-announcement-dialog.js";
+export type {
+  ReleaseAnnouncementDialogHandle,
+  ReleaseAnnouncementDialogOptions,
+  SelectedReleaseAnnouncementContent,
+} from "./settings/release-announcement-dialog.js";
 export {
   SETTINGS_SHELL_ATTRIBUTE,
   installRendererSettingsShell,

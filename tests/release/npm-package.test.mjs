@@ -1148,12 +1148,13 @@ describe("npm package release", () => {
     }
   });
 
-  it("keeps all published package names under the codexhost npm org", async () => {
+  it("keeps all published package names under the BOFT CLI npm org", async () => {
     const source = await readFile(
       path.resolve(import.meta.dirname, "../../scripts/release/prepare-npm.mjs"),
       "utf8",
     );
-    expect(source).toContain('NPM_PACKAGE_NAME = "@liberseek/boft-cli"');
+    expect(source).toContain('from "./npm-artifacts.mjs"');
+    expect(NPM_PACKAGE_NAME).toBe("@liberseek/boft-cli");
     expect(Object.values(NPM_PLATFORM_PACKAGE_NAMES)).toEqual([
       "@liberseek/boft-cli-darwin-arm64",
       "@liberseek/boft-cli-darwin-x64",

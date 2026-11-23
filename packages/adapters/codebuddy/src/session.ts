@@ -56,7 +56,6 @@ import {
 import {
   capabilitiesForProfile,
   configuration,
-  nativeModel,
   restoreConfiguration,
   selectConfiguration,
 } from "./configuration.js";
@@ -320,10 +319,7 @@ export class CodeBuddySession implements HarnessSession {
     } else if (this.input.permissionModeId || text(saved.mode))
       await this.#configure("mode", this.input.permissionModeId ?? text(saved.mode));
     if (this.input.model || text(saved.model))
-      await this.#configure(
-        "model",
-        this.input.model ? nativeModel(this.input.model) : text(saved.model),
-      );
+      await this.#configure("model", this.input.model?.id ?? text(saved.model));
     if (this.input.thinkingOptionId || text(saved.thinking))
       await this.#configure("thought_level", this.input.thinkingOptionId ?? text(saved.thinking));
     if (this.#fault || this.#closed)
@@ -372,7 +368,7 @@ export class CodeBuddySession implements HarnessSession {
         locator: {
           ...record(this.#ref.locator),
           configuration: {
-            model: config.state.effectiveModel ? nativeModel(config.state.effectiveModel) : "",
+            model: config.state.effectiveModel?.id ?? "",
             mode: config.state.effectivePermissionModeId ?? "",
             thinking: config.state.effectiveThinkingOptionId ?? "",
           },
@@ -468,7 +464,7 @@ export class CodeBuddySession implements HarnessSession {
 
   #subagentConfiguration(): SubagentConfiguration {
     const state = this.#state;
-    const model = state.effectiveModel ? nativeModel(state.effectiveModel) : undefined;
+    const model = state.effectiveModel?.id;
     return {
       ...(model ? { model } : {}),
       ...(state.effectiveThinkingOptionId
@@ -655,7 +651,7 @@ export class CodeBuddySession implements HarnessSession {
             ? "thought_level"
             : "mode",
         command.type === "model.select"
-          ? nativeModel(command.model)
+          ? command.model.id
           : command.type === "thinking.select"
             ? command.thinkingOptionId
             : command.permissionModeId,

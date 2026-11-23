@@ -31,6 +31,10 @@ export const KNOWN_RENDERER_AGENTS = [
 ] as const;
 export type RendererAgentAvailability =
   "checking" | "ready" | "notInstalled" | "unavailable" | "error";
+export type PickerAgentAvailability = RendererAgentAvailability | "credentialAccessRequired";
+export function isPickerAgentSelectable(status?: PickerAgentAvailability): boolean {
+  return status === "ready" || status === "credentialAccessRequired";
+}
 export type ComposerAgentPhase = "draft" | "locked";
 
 interface AgentConfiguration {

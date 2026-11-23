@@ -1436,14 +1436,15 @@ describe("ClaudeSdkTransport root safety", () => {
 });
 
 describe("ClaudeSdkTransport Model control", () => {
-  it("passes create-time Model and delegates setter without sending input", async () => {
+  it("passes the exact create-time Model to the SDK and delegates the setter without sending input", async () => {
     const value = fixture();
+    const id = " provider/模型 [1m] & (test) ";
     const selected = new ClaudeSdkTransport({
       command: process.execPath,
       cwd: process.cwd(),
       sessionId: "00000000-0000-4000-8000-000000000009",
       openMode: "create",
-      model: "custom-model",
+      model: id,
       permissionMode: "default",
       thinkingOptionId: harnessThinkingOptionIdSchema.parse("auto"),
       closeTimeoutMs: 100,
@@ -1454,7 +1455,7 @@ describe("ClaudeSdkTransport Model control", () => {
     });
 
     await selected.start();
-    expect(options(value).model).toBe("custom-model");
+    expect(options(value).model).toBe(id);
     await selected.setModel("sonnet");
     await selected.setModel(undefined);
     expect(value.fakeQuery.setModel).toHaveBeenNthCalledWith(1, "sonnet");

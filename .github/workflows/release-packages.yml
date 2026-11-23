@@ -129,7 +129,7 @@ jobs:
             runner: macos-26
             rustTarget: aarch64-apple-darwin
           - target: macos-x64
-            runner: macos-15-intel
+            runner: macos-26
             rustTarget: x86_64-apple-darwin
           - target: windows-x64
             runner: windows-latest
