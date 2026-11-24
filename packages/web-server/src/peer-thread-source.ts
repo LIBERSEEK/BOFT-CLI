@@ -1,8 +1,13 @@
 import { z } from "zod";
 import {
+  harnessCommandCatalogSchema,
   REMOTE_PEER_ID_PATTERN,
   remotePeerHostId,
+  skillsListResultSchema,
   threadOwnershipSchema,
+  type HarnessCommandCatalog,
+  type SkillsListParams,
+  type SkillsListResult,
 } from "@codexhost/shared-contracts";
 import { ChHarnessCatalog } from "./ch-harness-catalog.ts";
 import { ChRealtime } from "./ch-realtime.ts";
@@ -18,6 +23,7 @@ import { SessionListTiming } from "./session-list-timing.ts";
 import { EventHub, RpcError } from "./transport.ts";
 
 const MAX_CATALOG_PAGES = 100;
+const REMOTE_THREAD_DEBOUNCE_MS = 450;
 const legacyListPageSchema = z.object({
   data: z.array(remoteThreadRowSchema),
   nextCursor: z.string().nullable(),
@@ -49,6 +55,7 @@ export interface PeerThreadSourceOptions {
   onThreadChanged(threadId: string): unknown;
   onUsageChanged?: (threadId: string) => void;
   onCatalogInspectionChanged?: () => void;
+  onSkillsChanged?: () => void;
   onConnection(online: boolean): void;
   onReset?: (epoch: string, full: boolean) => void;
   onProjection?: ProjectionListener;
@@ -83,50 +90,106 @@ export class PeerThreadSource {
   private readonly knownHarnesses = new Map<string, string>();
   private readonly stopCatalogInvalidation: () => void;
   private epoch: string | undefined;
+  private listedForEpoch: string | undefined;
+  private inFlightListEpoch: string | undefined;
+  private skillsListUnavailable = false;
+  private threadCommandsUnavailable = false;
+  private harnessCommandsUnavailable = false;
 
   constructor(private readonly options: PeerThreadSourceOptions) {
     this.hostId = options.hostId;
     this.host = options.host;
     // Isolated EventHub with no subscribers: never broadcasts local global harness-inspection-changed.
-    this.catalog = new ChHarnessCatalog(options.host, new EventHub(""));
+    this.catalog = new ChHarnessCatalog(
+      options.host,
+      new EventHub(""),
+      undefined,
+      undefined,
+      undefined,
+      () => options.host.manifestEpoch(),
+    );
     this.stopCatalogInvalidation = options.host.realtime.subscribe((event) => {
       if (event.type === "harness-inspection-changed" || event.type === "hello") {
         options.onCatalogInspectionChanged?.();
       }
+      if (event.type === "hello") {
+        this.skillsListUnavailable = false;
+        this.threadCommandsUnavailable = false;
+        this.harnessCommandsUnavailable = false;
+        options.onSkillsChanged?.();
+      } else if (event.type === "skills-changed") {
+        options.onSkillsChanged?.();
+      }
     });
     this.tree = new ChThreadTree(options.host);
-    this.realtime = new ChRealtime(options.host.realtime, {
-      thread: async (threadId) => {
-        await options.onThreadChanged(threadId);
-      },
-      usage: (threadId) => {
-        options.onUsageChanged?.(threadId);
-      },
-      catalog: async () => {
-        await options.onCatalogChanged();
-      },
-      connection: (online) => {
-        options.onConnection(online);
-      },
-      reset: (epoch, full) => {
-        if (full && this.epoch === epoch) {
-          for (const view of this.histories.values()) view.forgetKnownTurns();
-        }
-        if (this.epoch && this.epoch !== epoch) {
-          for (const view of this.histories.values()) {
-            view.retire();
-            view.log.reconnectFollowers();
+    this.realtime = new ChRealtime(
+      options.host.realtime,
+      {
+        thread: async (threadId) => {
+          await options.onThreadChanged(threadId);
+        },
+        usage: (threadId) => {
+          options.onUsageChanged?.(threadId);
+        },
+        catalog: async (reason) => {
+          if (
+            reason === "hello" &&
+            this.epoch !== undefined &&
+            (this.listedForEpoch === this.epoch || this.inFlightListEpoch === this.epoch)
+          ) {
+            return;
           }
-          this.histories.clear();
-        }
-        this.epoch = epoch;
-        options.onReset?.(epoch, full);
+          await options.onCatalogChanged();
+        },
+        connection: (online) => {
+          if (!online) {
+            this.listedForEpoch = undefined;
+            this.inFlightListEpoch = undefined;
+          }
+          options.onConnection(online);
+        },
+        reset: (epoch, full) => {
+          if (full && this.epoch === epoch) {
+            this.listedForEpoch = undefined;
+            this.inFlightListEpoch = undefined;
+            for (const view of this.histories.values()) view.forgetKnownTurns();
+          }
+          if (this.epoch && this.epoch !== epoch) {
+            this.listedForEpoch = undefined;
+            this.inFlightListEpoch = undefined;
+            for (const view of this.histories.values()) {
+              view.retire();
+              view.log.reconnectFollowers();
+            }
+            this.histories.clear();
+          }
+          this.epoch = epoch;
+          options.onReset?.(epoch, full);
+        },
+        error: () => {},
       },
-      error: () => {},
-    });
+      { threadDebounceMs: REMOTE_THREAD_DEBOUNCE_MS },
+    );
   }
 
-  async listThreads(): Promise<PeerThreadListResult> {
+  async listThreads(options?: {
+    onPage?: (partial: PeerThreadListResult) => void;
+  }): Promise<PeerThreadListResult> {
+    const startEpoch = this.epoch ?? this.host.manifestEpoch();
+    this.inFlightListEpoch = startEpoch;
+    try {
+      return await this.runListThreads(startEpoch, options?.onPage);
+    } finally {
+      if (this.inFlightListEpoch === startEpoch) {
+        this.inFlightListEpoch = undefined;
+      }
+    }
+  }
+
+  private async runListThreads(
+    startEpoch: string | undefined,
+    onPage?: (partial: PeerThreadListResult) => void,
+  ): Promise<PeerThreadListResult> {
     const rows = new Map<string, ChThread>();
     const harnessIds = new Map<string, string>();
     const archivedIds = new Set<string>();
@@ -149,9 +212,14 @@ export class PeerThreadSource {
         pages++;
         const { page } = await readSessionPage(this.host, timing, false, cursor, async () => []);
         const pageById = new Map<string, ChThread>();
+        const pageRows: ChThread[] = [];
         for (const rawRow of page.threads) {
           const row: ChThread = { ...rawRow, turns: [] };
-          rows.set(row.id, row);
+          const existingHarness = harnessIds.get(row.id);
+          if (cursor === undefined || !existingHarness || existingHarness === "codex") {
+            rows.set(row.id, row);
+            pageRows.push(row);
+          }
           pageById.set(row.id, row);
         }
         for (const id of page.archivedThreadIds) archivedIds.add(id);
@@ -159,11 +227,25 @@ export class PeerThreadSource {
           const row = pageById.get(item.threadId) ?? rows.get(item.threadId);
           if (item.owner === "external" && item.harnessId && row?.modelProvider === "codexhost") {
             harnessIds.set(item.threadId, item.harnessId);
-          } else if (item.owner === "codex") {
+          } else if (item.owner === "codex" && !harnessIds.has(item.threadId)) {
             harnessIds.set(item.threadId, "codex");
           }
         }
         const next = nextCatalogCursor(page, false);
+        if (onPage && pageRows.length > 0) {
+          const pageHarnessIds = new Map<string, string>();
+          for (const row of pageRows) {
+            const hid = harnessIds.get(row.id);
+            if (hid) pageHarnessIds.set(row.id, hid);
+          }
+          onPage({
+            rows: pageRows,
+            harnessIds: pageHarnessIds,
+            archivedIds: new Set(archivedIds),
+            parents: {},
+            ownershipAvailable,
+          });
+        }
         if (next === null) break;
         if (seenCursors.has(next) || next === cursor) {
           throw new RpcError("remote/read-failed", "Remote catalog cursor did not advance");
@@ -204,10 +286,10 @@ export class PeerThreadSource {
             result.thread.modelProvider === "codexhost"
           ) {
             harnessIds.set(id, owner.harnessId);
-          } else if (owner.owner === "codex") {
+          } else if (owner.owner === "codex" && !harnessIds.has(id)) {
             harnessIds.set(id, "codex");
           }
-        } else if (result.thread.modelProvider !== "codexhost") {
+        } else if (result.thread.modelProvider !== "codexhost" && !harnessIds.has(id)) {
           harnessIds.set(id, "codex");
         }
         if ((result.thread as { archived?: unknown }).archived === true) {
@@ -225,6 +307,10 @@ export class PeerThreadSource {
     for (const [id, row] of rows) this.knownRows.set(id, row);
     this.knownHarnesses.clear();
     for (const [id, harnessId] of harnessIds) this.knownHarnesses.set(id, harnessId);
+    const finishedEpoch = this.epoch ?? this.host.manifestEpoch();
+    if (startEpoch !== undefined && startEpoch === finishedEpoch) {
+      this.listedForEpoch = finishedEpoch;
+    }
 
     return {
       rows: [...rows.values()],
@@ -304,6 +390,58 @@ export class PeerThreadSource {
     return this.realtime.follow(threadId);
   }
 
+  async listSkills(params: SkillsListParams): Promise<SkillsListResult> {
+    if (this.skillsListUnavailable) {
+      return { revision: 0, complete: true, skills: [] };
+    }
+    try {
+      return skillsListResultSchema.parse(await this.host.request("codexhost/skills/list", params));
+    } catch (error) {
+      if (isMethodUnavailableError(error)) {
+        this.skillsListUnavailable = true;
+        return { revision: 0, complete: true, skills: [] };
+      }
+      throw error;
+    }
+  }
+
+  async inspectThreadCommands(threadId: string): Promise<HarnessCommandCatalog> {
+    if (this.threadCommandsUnavailable) {
+      return { commands: [] };
+    }
+    try {
+      return harnessCommandCatalogSchema.parse(
+        await this.host.request("codexhost/thread/commands/inspect", { threadId }),
+      );
+    } catch (error) {
+      if (isMethodUnavailableError(error)) {
+        this.threadCommandsUnavailable = true;
+        return { commands: [] };
+      }
+      throw error;
+    }
+  }
+
+  async inspectHarnessCommands(harnessId: string, cwd?: string): Promise<HarnessCommandCatalog> {
+    if (this.harnessCommandsUnavailable) {
+      return { commands: [] };
+    }
+    try {
+      return harnessCommandCatalogSchema.parse(
+        await this.host.request("codexhost/harness/commands/inspect", {
+          harnessId,
+          ...(cwd ? { cwd } : {}),
+        }),
+      );
+    } catch (error) {
+      if (isMethodUnavailableError(error)) {
+        this.harnessCommandsUnavailable = true;
+        return { commands: [] };
+      }
+      throw error;
+    }
+  }
+
   discard(threadId: string): void {
     const existing = this.histories.get(threadId);
     if (!existing) return;
@@ -338,7 +476,7 @@ const PEER_HARNESS_ICON_PREFIX = "/harness-icons/peer/";
 export async function resolvePeerHarnessIcon(
   peers: PeerHarnessIconProvider,
   pathname: string,
-): Promise<{ contentType: string; body: Buffer } | undefined> {
+): Promise<{ contentType: string; body: Buffer; stale?: boolean } | undefined> {
   if (!pathname.startsWith(PEER_HARNESS_ICON_PREFIX)) return undefined;
   const rest = pathname.slice(PEER_HARNESS_ICON_PREFIX.length);
   const parts = rest.split("/");
@@ -353,19 +491,75 @@ export async function resolvePeerHarnessIcon(
   }
   if (!REMOTE_PEER_ID_PATTERN.test(peerId) || !target) return undefined;
   const hostId = remotePeerHostId(peerId);
-  if (peers.client(hostId)?.state !== "connected") return undefined;
   const source = peers.source(hostId);
   if (!source) return undefined;
+  const state = peers.client(hostId)?.state;
+  if (state === "connecting") {
+    // Serve previously cached plugin icons during transient reconnects instead of 404.
+    const cached = source.catalog.cachedList();
+    if (!cached) return undefined;
+    if (target === "presentation.json") {
+      return {
+        contentType: "application/json",
+        body: Buffer.from(JSON.stringify(harnessIconStyles(cached))),
+        stale: true,
+      };
+    }
+    const cachedAsset = source.catalog.cachedIcon(target);
+    return cachedAsset ? { ...cachedAsset, stale: true } : undefined;
+  }
+  if (state !== "connected") return undefined;
+  const cached = source.catalog.cachedList();
+  const resolvedCurrent = source.catalog.hasResolvedCurrentList();
+  if (cached) {
+    if (!source.catalog.hasFreshList()) {
+      void source.catalog.list().catch(() => undefined);
+    }
+    if (target === "presentation.json") {
+      return {
+        contentType: "application/json",
+        body: Buffer.from(JSON.stringify(harnessIconStyles(cached))),
+        ...(resolvedCurrent ? {} : { stale: true }),
+      };
+    }
+    const cachedAsset = source.catalog.cachedIcon(target);
+    if (cachedAsset) {
+      return resolvedCurrent ? cachedAsset : { ...cachedAsset, stale: true };
+    }
+    // Only treat a missing icon as authoritative when the current generation's list has resolved;
+    // otherwise wait for the in-flight refresh so newly installed plugins do not 404 prematurely.
+    if (resolvedCurrent) return undefined;
+  }
+  const generationBefore = source.catalog.currentGeneration();
   try {
     if (target === "presentation.json") {
       const plugins = await source.catalog.list();
+      const stale =
+        source.catalog.currentGeneration() !== generationBefore ||
+        !source.catalog.hasResolvedCurrentList();
       return {
         contentType: "application/json",
         body: Buffer.from(JSON.stringify(harnessIconStyles(plugins))),
+        ...(stale ? { stale: true } : {}),
       };
     }
-    return await source.catalog.icon(target);
+    const asset = await source.catalog.icon(target);
+    if (!asset) return undefined;
+    const stale =
+      source.catalog.currentGeneration() !== generationBefore ||
+      !source.catalog.hasResolvedCurrentList();
+    return stale ? { ...asset, stale: true } : asset;
   } catch {
-    return undefined;
+    const fallback = source.catalog.cachedList();
+    if (!fallback) return undefined;
+    if (target === "presentation.json") {
+      return {
+        contentType: "application/json",
+        body: Buffer.from(JSON.stringify(harnessIconStyles(fallback))),
+        stale: true,
+      };
+    }
+    const cachedAsset = source.catalog.cachedIcon(target);
+    return cachedAsset ? { ...cachedAsset, stale: true } : undefined;
   }
 }

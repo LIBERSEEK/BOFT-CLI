@@ -1,6 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { realpath } from "node:fs/promises";
-import path from "node:path";
 import type { JsonObject, JsonRpcRequest, JsonValue } from "@codexhost/protocol-core";
 import {
   THREAD_TREE_MAX_NODES,
@@ -66,7 +64,6 @@ export class ThreadTreeWatch {
   readonly #read = new Set<string>();
   readonly #interactions = new Map<string | number, string>();
   readonly #stopEvents: () => void;
-  #archiveDirectory: Promise<string | null> | undefined;
   #stopOwner: (() => void) | undefined;
   #owner: ThreadTreeSnapshot | null = null;
   #closed = false;
@@ -80,7 +77,6 @@ export class ThreadTreeWatch {
 
   constructor(
     private readonly options: {
-      codexHome: string;
       tree: Pick<ThreadTree, "read">;
       repository: Pick<ExternalThreadRepository, "listSummaries">;
       events: ClientChannelEvents;
@@ -290,7 +286,10 @@ export class ThreadTreeWatch {
     if (!this.options.externalOnly) {
       const candidates = [...bounded.ids].filter(
         (id) =>
-          !external.has(id) && !this.options.shared?.knowsTreeOwner(id) && !this.#read.has(id),
+          !external.has(id) &&
+          !this.options.shared?.knowsTreeOwner(id) &&
+          !this.#read.has(id) &&
+          this.#official.get(id)?.status === undefined,
       );
       const reads = this.#readInitial(candidates);
       if (initial) {
@@ -333,7 +332,7 @@ export class ThreadTreeWatch {
             harnessId,
             ...(title ? { title } : {}),
             status,
-            archived: record?.archived ?? (shared ? owner?.archived : observed?.archived) ?? false,
+            archived: record?.archived ?? owner?.archived ?? observed?.archived ?? false,
           },
         ];
       }),
@@ -344,18 +343,6 @@ export class ThreadTreeWatch {
       nodes,
       truncated: bounded.truncated,
     };
-  }
-
-  async #officialArchived(thread: JsonObject): Promise<boolean | undefined> {
-    if (typeof thread.archived === "boolean") return thread.archived;
-    if (typeof thread.path !== "string" || !path.isAbsolute(thread.path)) return;
-    const directory = path.dirname(path.normalize(thread.path));
-    if (path.basename(directory) !== "archived_sessions") return;
-    const archiveDirectory = path.resolve(this.options.codexHome, "archived_sessions");
-    if (directory === archiveDirectory) return true;
-    this.#archiveDirectory ??= realpath(archiveDirectory).catch(() => null);
-    const resolved = await this.#archiveDirectory;
-    if (resolved !== null && directory === resolved) return true;
   }
 
   async #readInitial(ids: string[]): Promise<void> {
@@ -369,21 +356,19 @@ export class ThreadTreeWatch {
           while (this.#subscriptions.size && generation === this.#officialGeneration) {
             const id = batch.shift();
             if (!id) break;
-            if (this.#read.has(id)) continue;
+            if (this.#read.has(id) || this.#official.get(id)?.status !== undefined) continue;
             this.#read.add(id);
             const thread = await this.options.readOfficial(id).then(
               (reply) =>
                 object(reply.result) && object(reply.result.thread) ? reply.result.thread : null,
               () => null,
             );
-            if (thread?.id !== id) continue;
-            const archived = await this.#officialArchived(thread);
-            if (!this.#read.has(id) || this.#closed || generation !== this.#officialGeneration)
+            if (thread?.id !== id || this.#closed || generation !== this.#officialGeneration)
               continue;
             const before = this.#official.get(id);
             this.#official.set(id, {
               ...(typeof thread.name === "string" ? { title: thread.name } : {}),
-              ...(archived === undefined ? {} : { archived }),
+              ...(typeof thread.archived === "boolean" ? { archived: thread.archived } : {}),
               ...before,
               status: before?.status ?? officialStatus(thread.status),
             });

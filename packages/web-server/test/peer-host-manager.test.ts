@@ -397,10 +397,19 @@ it("pairs authenticated mobile callers with independent peers and recovers event
       { connectionUrl: `${origin}/#token=${secret}` },
       local,
     );
-  await assert.rejects(add(a.origin, token, false), /local session/i);
+  const unauthenticated = await rpc.dispatch(methods.add, {
+    args: { connectionUrl: `${a.origin}/#token=${token}` },
+  });
+  assert.equal(unauthenticated.ok, false);
+  assert.equal(unauthenticated.error.code, "auth/required");
+  assert.equal(
+    (await invoke<{ ok: boolean }>("test", { connectionUrl: `${a.origin}/#token=${token}` }, false))
+      .ok,
+    true,
+  );
   await assert.rejects(add("http://localhost:100"), /itself/);
   await assert.rejects(add(a.origin, "bad"), /token/);
-  const [one] = await Promise.all([add(a.origin), add(b.origin)]);
+  const [one] = await Promise.all([add(a.origin, token, false), add(b.origin)]);
   if (process.platform !== "win32") {
     assert.equal(statSync(join(root, "remote-peers-v1.json")).mode & 0o777, 0o600);
   }
@@ -1030,11 +1039,17 @@ it("preserves peer manifest across same-origin reconnect/update and clears it on
   assert.equal(hostSnapshot()?.projects?.[0]?.name, "Beta");
   assert.equal(hostSnapshot()?.epoch, peerB.epoch);
 
-  // Disabling the peer must also clear the cached manifest.
+  // Disabling the peer clears the cached manifest and removes it from hosts() while keeping it in list.
   await invoke("update", { peerId, enabled: false });
-  assert.equal(hostSnapshot()?.state, "disabled");
-  assert.equal(hostSnapshot()?.projects, undefined);
-  assert.equal(hostSnapshot()?.epoch, undefined);
+  assert.equal(hostSnapshot(), undefined);
+  assert.equal(manager.client(hostId)?.manifest, undefined);
+  const listedAfterDisable = await invoke<{
+    peers: Array<{ peerId: string; enabled: boolean; state: string; projectCount: number }>;
+  }>("list", {});
+  const disabledSummary = listedAfterDisable.peers.find((peer) => peer.peerId === peerId);
+  assert.equal(disabledSummary?.enabled, false);
+  assert.equal(disabledSummary?.state, "disabled");
+  assert.equal(disabledSummary?.projectCount, 0);
 });
 
 it("accepts writable and read-only peer thread status through readRemoteThreadStatus", async (t) => {
@@ -1159,4 +1174,209 @@ it("accepts writable and read-only peer thread status through readRemoteThreadSt
     { hostId, threadId: "t-1" },
   );
   assert.equal(explicitFalse.readOnly, false);
+});
+
+it("skips origin check on same-origin update, keeps connection on rename, filters disabled peers from hosts(), and sends lightweight status snapshots", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "peer-update-fast-"));
+  const token = "fast-secret";
+  const epoch = randomUUID();
+  let streamConnections = 0;
+  const snapshotBodies: Array<Record<string, unknown>> = [];
+  const openStreams: ServerResponse[] = [];
+  const server = createServer(async (req, res) => {
+    if (req.headers.authorization !== "Bearer " + token) {
+      res.writeHead(401).end();
+      return;
+    }
+    const url = new URL(req.url ?? "/", "http://localhost");
+    if (url.pathname === "/api/peer/v1/manifest") {
+      res.end(
+        JSON.stringify({
+          version: "1",
+          epoch,
+          platform: process.platform,
+          hostname: "fast-peer",
+          homeDir: root,
+          projects: [{ id: "ws-1", name: "Repo", path: root, threadIds: [] }],
+        }),
+      );
+      return;
+    }
+    if (url.pathname === "/api/ch/v1/events") {
+      streamConnections += 1;
+      openStreams.push(res);
+      res.writeHead(200);
+      res.write(
+        JSON.stringify({ type: "hello", version: 1, cursor: { epoch, sequence: 1 }, reset: true }) +
+          "\n",
+      );
+      return;
+    }
+    if (url.pathname === "/api/ch/v1/snapshot") {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.from(chunk as Uint8Array));
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as Record<
+        string,
+        unknown
+      >;
+      snapshotBodies.push(body);
+      res.end(
+        JSON.stringify({
+          result: {
+            cursor: { epoch, sequence: 1 },
+            activeTurnId: "turn-active",
+            thread: {
+              id: String(body.threadId ?? "t-1"),
+              cwd: root,
+              modelProvider: "openai",
+              createdAt: 1,
+              updatedAt: 2,
+              status: { type: "active" },
+              turns: [],
+            },
+            turnsPage: {
+              data: [{ id: "turn-done", status: "completed", items: [], fingerprint: "fp-done-1" }],
+              nextCursor: null,
+            },
+            configuration: {},
+            interactions: [],
+          },
+        }),
+      );
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+
+  let originsCalls = 0;
+  const store = new PeerHostStore(new DataDir(root));
+  store.save([
+    {
+      peerId: "offline-enabled",
+      name: "Offline Peer",
+      origin: "http://127.0.0.1:1",
+      token: "unused",
+      enabled: true,
+      createdAt: "now",
+      updatedAt: "now",
+    },
+  ]);
+  const manager = new PeerHostManager(
+    store,
+    async () => {
+      originsCalls += 1;
+      return [];
+    },
+    new EventHub(root),
+    { allowLoopback: true },
+  );
+  t.after(() => {
+    manager.close();
+    for (const stream of openStreams) stream.destroy();
+    server.closeAllConnections();
+    server.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  const rpc = new RpcRegistry();
+  manager.register(rpc);
+  const invoke = async <T = Record<string, unknown>>(
+    action: keyof typeof methods,
+    input: object = {},
+  ): Promise<T> => {
+    const res = await rpc.dispatch(
+      methods[action],
+      { args: input },
+      { local: true, credential: "local", release() {} },
+    );
+    assert.equal(res.ok, true);
+    return res.value as T;
+  };
+
+  const added = await invoke<{ peer: { peerId: string; hostId: string; color?: string } }>("add", {
+    connectionUrl: `${origin}/#token=${token}`,
+    color: "purple",
+  });
+  const { peerId, hostId } = added.peer;
+  assert.equal(added.peer.color, "purple");
+  assert.equal(manager.hosts().find((h) => h.hostId === hostId)?.color, "purple");
+  // Legacy records without a persisted color load cleanly with color omitted.
+  assert.equal(
+    manager.hosts().find((h) => h.hostId === "remote-peer:offline-enabled")?.color,
+    undefined,
+  );
+  for (let i = 0; i < 40 && streamConnections < 1; i++) await sleep(20);
+  assert.equal(originsCalls, 1);
+
+  // Status snapshot requests compact payloads with truncateToolOutput and learned knownTurns.
+  const call = createCompositeRemoteCall(manager, async () => {
+    throw Error("No Desktop");
+  });
+  await readRemoteThreadStatus(call, { hostId, threadId: "t-1" });
+  await readRemoteThreadStatus(call, { hostId, threadId: "t-1" });
+  assert.deepEqual(snapshotBodies[0], {
+    threadId: "t-1",
+    knownTurns: [],
+    truncateToolOutput: true,
+  });
+  assert.deepEqual(snapshotBodies[1], {
+    threadId: "t-1",
+    knownTurns: [{ id: "turn-done", fingerprint: "fp-done-1" }],
+    truncateToolOutput: true,
+  });
+
+  // Name-only and color-only updates neither call origins() nor reconnect the client/source.
+  const clientBeforeRename = manager.client(hostId);
+  const sourceBeforeRename = manager.source(hostId);
+  const streamsBeforeRename = streamConnections;
+  originsCalls = 0;
+  await invoke("update", { peerId, name: "Renamed Fast" });
+  assert.equal(originsCalls, 0);
+  assert.equal(manager.client(hostId), clientBeforeRename);
+  assert.equal(manager.source(hostId), sourceBeforeRename);
+  assert.equal(streamConnections, streamsBeforeRename);
+  assert.equal(manager.hosts().find((h) => h.hostId === hostId)?.displayName, "Renamed Fast");
+  assert.equal(manager.hosts().find((h) => h.hostId === hostId)?.color, "purple");
+
+  const recolored = await invoke<{ peer: { color?: string } }>("update", {
+    peerId,
+    color: "amber",
+  });
+  assert.equal(originsCalls, 0);
+  assert.equal(manager.client(hostId), clientBeforeRename);
+  assert.equal(manager.source(hostId), sourceBeforeRename);
+  assert.equal(streamConnections, streamsBeforeRename);
+  assert.equal(recolored.peer.color, "amber");
+  assert.equal(manager.hosts().find((h) => h.hostId === hostId)?.color, "amber");
+  assert.equal(store.load().find((r) => r.peerId === peerId)?.color, "amber");
+
+  const cleared = await invoke<{ peer: { color?: string } }>("update", {
+    peerId,
+    color: null,
+  });
+  assert.equal(originsCalls, 0);
+  assert.equal(manager.client(hostId), clientBeforeRename);
+  assert.equal(streamConnections, streamsBeforeRename);
+  assert.equal(cleared.peer.color, undefined);
+  assert.equal(manager.hosts().find((h) => h.hostId === hostId)?.color, undefined);
+  assert.equal(store.load().find((r) => r.peerId === peerId)?.color, undefined);
+
+  // Disabling does not call origins(), excludes the peer from hosts(), keeps it in list,
+  // and still keeps enabled-but-offline peers in hosts().
+  originsCalls = 0;
+  await invoke("update", { peerId, enabled: false });
+  assert.equal(originsCalls, 0);
+  assert.equal(
+    manager.hosts().some((h) => h.hostId === hostId),
+    false,
+  );
+  assert.equal(
+    manager.hosts().some((h) => h.hostId === "remote-peer:offline-enabled"),
+    true,
+  );
+  const allPeers = await invoke<{ peers: Array<{ peerId: string; enabled: boolean }> }>("list");
+  assert.equal(allPeers.peers.find((p) => p.peerId === peerId)?.enabled, false);
 });

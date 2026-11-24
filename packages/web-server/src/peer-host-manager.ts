@@ -17,8 +17,6 @@ export interface PeerHostManagerOptions {
   projector?: (threadId: string) => PeerThreadProjector;
 }
 
-const LOCAL_ONLY_ACTIONS = new Set(["add", "update", "remove", "test"]);
-
 export class PeerHostManager {
   private clients = new Map<string, PeerHostClient>();
   private sources = new Map<string, PeerThreadSource>();
@@ -29,6 +27,7 @@ export class PeerHostManager {
   onThreadChanged?: (hostId: string, threadId: string) => unknown;
   onUsageChanged?: (hostId: string, threadId: string) => void;
   onCatalogInspectionChanged?: (hostId: string) => void;
+  onSkillsChanged?: (hostId: string) => void;
   onConnection?: (hostId: string, online: boolean) => void;
   onReset?: (hostId: string, epoch: string, full: boolean) => void;
 
@@ -78,6 +77,7 @@ export class PeerHostManager {
         onThreadChanged: (threadId) => this.onThreadChanged?.(next.hostId, threadId),
         onUsageChanged: (threadId) => this.onUsageChanged?.(next.hostId, threadId),
         onCatalogInspectionChanged: () => this.onCatalogInspectionChanged?.(next.hostId),
+        onSkillsChanged: () => this.onSkillsChanged?.(next.hostId),
         onConnection: (online) => this.onConnection?.(next.hostId, online),
         onReset: (epoch, full) => this.onReset?.(next.hostId, epoch, full),
         ...(this.projector ? { projector: this.projector } : {}),
@@ -114,14 +114,17 @@ export class PeerHostManager {
   }
 
   hosts() {
-    return [...this.clients.values()].map((p) => ({
-      hostId: c.remotePeerHostId(p.record.peerId),
-      online: p.state === "connected",
-      displayName: p.record.name,
-      state: p.state,
-      projects: p.manifest?.projects,
-      epoch: p.manifest?.epoch,
-    }));
+    return [...this.clients.values()]
+      .filter((p) => p.record.enabled)
+      .map((p) => ({
+        hostId: c.remotePeerHostId(p.record.peerId),
+        online: p.state === "connected",
+        displayName: p.record.name,
+        ...(p.record.color !== undefined ? { color: p.record.color } : {}),
+        state: p.state,
+        projects: p.manifest?.projects,
+        epoch: p.manifest?.epoch,
+      }));
   }
 
   call(op: c.RemoteSessionOperation) {
@@ -134,12 +137,6 @@ export class PeerHostManager {
     for (const [action, method] of Object.entries(c.REMOTE_PEERS_METHODS))
       rpc.register(method, async (args, ctx) => {
         if (!ctx.auth) throw new RpcError("auth/required", "Authentication required");
-        if (LOCAL_ONLY_ACTIONS.has(action) && !ctx.auth.local) {
-          throw new RpcError(
-            "auth/local-required",
-            "Manage remote peers from a local session on this machine.",
-          );
-        }
         const input = requestOf(args);
         if (action === "list") return { peers: [...this.clients.values()].map((p) => p.summary()) };
         if (action === "add" || action === "test") {
@@ -155,9 +152,11 @@ export class PeerHostManager {
           const now = new Date().toISOString();
           const explicitName =
             "name" in p && typeof p.name === "string" && p.name.trim() ? p.name.trim() : undefined;
-          const record = {
+          const explicitColor = "color" in p ? p.color : undefined;
+          const record: PeerRecord = {
             peerId: randomUUID(),
             name: explicitName ?? new URL(conn.origin).hostname,
+            ...(explicitColor !== undefined ? { color: explicitColor } : {}),
             origin: conn.origin,
             token: conn.token,
             enabled: true,
@@ -176,7 +175,15 @@ export class PeerHostManager {
             record.name = client.manifest.hostname;
           }
           if (action === "test")
-            return c.remotePeerTestResultSchema.parse({ ...client.summary(), ok: true });
+            return c.remotePeerTestResultSchema.parse({
+              ...client.summary(),
+              projects: client.manifest?.projects.map(({ id, name, path }) => ({
+                id,
+                name,
+                path,
+              })),
+              ok: true,
+            });
           this.store.save([...this.records(), record]);
           const installed = this.install(record, client);
           this.changed(installed.hostId);
@@ -208,9 +215,12 @@ export class PeerHostManager {
                     linkOptions,
                   )
                 : old;
-            await this.check(conn.origin);
-            if (this.get(peerId) !== client) throw Error("Peer changed");
-            const record = {
+            if (conn.origin !== old.origin) {
+              await this.check(conn.origin);
+              if (this.get(peerId) !== client) throw Error("Peer changed");
+            }
+            const nextColor = p.color === undefined ? old.color : (p.color ?? undefined);
+            const record: PeerRecord = {
               ...old,
               origin: conn.origin,
               token: conn.token,
@@ -218,7 +228,21 @@ export class PeerHostManager {
               name: p.name ?? old.name,
               updatedAt: new Date().toISOString(),
             };
+            if (nextColor !== undefined) {
+              record.color = nextColor;
+            } else {
+              delete record.color;
+            }
             this.store.save(this.records().map((r) => (r.peerId === peerId ? record : r)));
+            if (
+              record.enabled === old.enabled &&
+              record.origin === old.origin &&
+              record.token === old.token
+            ) {
+              client.record = record;
+              this.changed(client.hostId);
+              return { peer: client.summary() };
+            }
             const next = this.install(record);
             this.changed(next.hostId);
             return { peer: next.summary() };

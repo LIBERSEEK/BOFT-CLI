@@ -9,7 +9,9 @@ import { requestRemoteSession, RemoteSessionError } from "@codexhost/desktop-con
 import { z } from "zod";
 import {
   harnessConfigurationStateSchema,
+  hostThreadIdSchema,
   REMOTE_PEER_HOST_ID_PREFIX,
+  remotePeerColorSchema,
   remotePeerPromptParamsSchema,
   remoteQueueSnapshotSchema,
   remoteSessionOperationSchema,
@@ -20,8 +22,10 @@ import {
   REMOTE_IDENTITY_MAX_LENGTH,
   WEB_FOLLOW_PROJECTION_KEYS,
   webToolOutputReferenceSchema,
+  type HarnessCommandCatalog,
   type RemotePeerPromptParams,
   type RemoteSessionOperation,
+  type SkillsListResult,
 } from "@codexhost/shared-contracts";
 import { ChThreadHistory } from "./ch-thread-history.ts";
 import { threadListTitle } from "./ch-thread-title.ts";
@@ -77,12 +81,14 @@ import {
 } from "./remote-workspaces.ts";
 
 const PREFIX = "web-remote:";
+const PEER_CATALOG_REFRESH_MIN_INTERVAL_MS = 600;
 const hostsSchema = z.array(
   z.object({
     hostId: z.string().min(1),
     online: z.boolean(),
     epoch: z.string().min(1).optional(),
     displayName: z.string().optional(),
+    color: remotePeerColorSchema.optional(),
     state: z.string().optional(),
     projects: z
       .array(
@@ -158,6 +164,7 @@ export interface RemotePeerProvider {
   onThreadChanged?: (hostId: string, threadId: string) => unknown;
   onUsageChanged?: (hostId: string, threadId: string) => void;
   onCatalogInspectionChanged?: (hostId: string) => void;
+  onSkillsChanged?: (hostId: string) => void;
   onConnection?: (hostId: string, online: boolean) => void;
   onReset?: (hostId: string, epoch: string, full: boolean) => void;
 }
@@ -217,6 +224,7 @@ export class RemoteSessions {
     onThreadChanged: (hostId: string, threadId: string) => Promise<void>;
     onUsageChanged: (hostId: string, threadId: string) => void;
     onCatalogInspectionChanged: (hostId: string) => void;
+    onSkillsChanged: (hostId: string) => void;
     onConnection: (hostId: string, online: boolean) => void;
     onReset: (hostId: string, epoch: string, full: boolean) => void;
   };
@@ -240,6 +248,7 @@ export class RemoteSessions {
       onThreadChanged: (hostId, threadId) => this.handlePeerThreadChanged(hostId, threadId),
       onUsageChanged: (hostId, threadId) => this.handlePeerUsageChanged(hostId, threadId),
       onCatalogInspectionChanged: (hostId) => this.handlePeerCatalogInspectionChanged(hostId),
+      onSkillsChanged: () => this.handlePeerSkillsChanged(),
       onConnection: (hostId, online) => this.handlePeerConnection(hostId, online),
       onReset: (hostId, epoch) => this.handlePeerReset(hostId, epoch),
     };
@@ -247,11 +256,12 @@ export class RemoteSessions {
       peers.onThreadChanged ??= this.peerHandlers.onThreadChanged;
       peers.onUsageChanged ??= this.peerHandlers.onUsageChanged;
       peers.onCatalogInspectionChanged ??= this.peerHandlers.onCatalogInspectionChanged;
+      peers.onSkillsChanged ??= this.peerHandlers.onSkillsChanged;
       peers.onConnection ??= this.peerHandlers.onConnection;
       peers.onReset ??= this.peerHandlers.onReset;
     }
     this.timer = setInterval(() => {
-      if (this.controls.size) void this.refresh().catch(() => undefined);
+      if (this.controls.size) void this.refreshBackground().catch(() => undefined);
     }, 30_000);
     this.timer.unref();
   }
@@ -293,17 +303,28 @@ export class RemoteSessions {
       if (entry.controls) delete entry.controls.inspection;
     }
   }
+  private handlePeerSkillsChanged(): void {
+    if (this.closed) return;
+    this.events.emit("codexhost/skills/changed");
+  }
   private handlePeerConnection(hostId: string, online: boolean): void {
     if (this.closed || online) return;
+    this.syncedPeerSources.delete(hostId);
+    this.clearPeerChangeTimer(hostId);
     const host = this.hosts.get(hostId);
     if (host) host.online = false;
     for (const entry of this.entries.values()) {
       if (entry.identity.hostId === hostId) this.offline(entry);
     }
+    this.publishDraftSummaries(hostId);
     this.syncGroups();
   }
   private handlePeerReset(hostId: string, epoch: string): void {
     if (this.closed) return;
+    const synced = this.syncedPeerSources.get(hostId);
+    if (synced && synced.epoch !== epoch) {
+      this.syncedPeerSources.delete(hostId);
+    }
     for (const [id, entry] of this.entries) {
       if (entry.identity.hostId !== hostId) continue;
       if (entry.epoch && entry.epoch !== epoch) {
@@ -322,8 +343,73 @@ export class RemoteSessions {
   private peerAttachmentsSupported(hostId: string): boolean {
     return this.attachments.supported(this.peerEndpoint(hostId));
   }
+  private peerWorkspaceFilesSupported(hostId: string): boolean {
+    const peer = this.peerEndpoint(hostId);
+    return peer?.state === "connected" && peer.manifest?.capabilities?.workspaceFiles === 1;
+  }
+  private peerOfficePreviewSupported(hostId: string): boolean {
+    const peer = this.peerEndpoint(hostId);
+    return (
+      peer?.state === "connected" &&
+      peer.manifest?.capabilities?.workspaceFiles === 1 &&
+      peer.manifest?.capabilities?.officePreview === 1
+    );
+  }
+  resolveDraftCanonicalId(sessionId: string): {
+    readonly isDraft: boolean;
+    readonly canonicalId?: string;
+    readonly hostId?: string;
+  } {
+    const draft = this.drafts.get(sessionId);
+    if (!draft) return { isDraft: false };
+    return {
+      isDraft: true,
+      ...(draft.canonicalId !== undefined ? { canonicalId: draft.canonicalId } : {}),
+      hostId: draft.target.hostId,
+    };
+  }
+  peerClient(hostId: string): PeerAttachmentEndpoint | undefined {
+    return this.peerEndpoint(hostId);
+  }
+  private draftOnline(hostId: string): boolean {
+    const host = this.hosts.get(hostId);
+    if (host !== undefined) return host.online;
+    const peer = this.peerEndpoint(hostId);
+    if (peer !== undefined) return peer.state === "connected";
+    return true;
+  }
   private draftSummary(draft: RemoteProjectDraft) {
-    return draft.summary(this.peerAttachmentsSupported(draft.target.hostId));
+    const online = this.draftOnline(draft.target.hostId);
+    return draft.summary(
+      online && this.peerAttachmentsSupported(draft.target.hostId),
+      this.hosts.get(draft.target.hostId)?.color,
+      online,
+    );
+  }
+  private publishDraftSummaries(hostId?: string): void {
+    if (this.closed) return;
+    for (const draft of this.drafts.values()) {
+      if (draft.canonicalId) continue;
+      if (hostId !== undefined && draft.target.hostId !== hostId) continue;
+      const summary = this.draftSummary(draft);
+      this.events.emit("api-session/added", summary);
+      for (const sink of this.controls) {
+        sink.push({
+          type: "projection",
+          sessionId: draft.id,
+          key: "remoteHost",
+          value: summary.projections.values.remoteHost,
+          seq: 0,
+        });
+        sink.push({
+          type: "projection",
+          sessionId: draft.id,
+          key: "attachmentInput",
+          value: summary.projections.values.attachmentInput,
+          seq: 0,
+        });
+      }
+    }
   }
   async uploadFile(
     id: string,
@@ -478,9 +564,35 @@ export class RemoteSessions {
   }
   private refreshPending = false;
   private fullRefreshPending = false;
+  private backgroundRefreshPending = false;
   private pendingHostIds = new Set<string>();
+  private syncedPeerSources = new Map<
+    string,
+    { source: PeerThreadSource; epoch: string | undefined; listedAt: number }
+  >();
+  private inFlightPeerSources = new Map<string, PeerThreadSource>();
+  private peerChangeTimers = new Map<string, NodeJS.Timeout>();
+  private clearPeerChangeTimer(hostId: string): void {
+    const timer = this.peerChangeTimers.get(hostId);
+    if (!timer) return;
+    clearTimeout(timer);
+    this.peerChangeTimers.delete(hostId);
+  }
+  private isPeerSynced(host: RemoteWorkspaceHost, source: PeerThreadSource): boolean {
+    const synced = this.syncedPeerSources.get(host.hostId);
+    return (
+      synced !== undefined &&
+      synced.source === source &&
+      (host.epoch === undefined || synced.epoch === host.epoch)
+    );
+  }
   private hasPendingRefresh(): boolean {
-    return this.refreshPending || this.fullRefreshPending || this.pendingHostIds.size > 0;
+    return (
+      this.refreshPending ||
+      this.fullRefreshPending ||
+      this.backgroundRefreshPending ||
+      this.pendingHostIds.size > 0
+    );
   }
   private startRefresh(): Promise<void> {
     this.listing ??= this.list().finally(() => {
@@ -492,19 +604,72 @@ export class RemoteSessions {
     });
     return this.listing;
   }
-  hostsChanged(hostId?: string): void {
-    if (this.closed) return;
-    if (hostId) this.pendingHostIds.add(hostId);
-    else this.fullRefreshPending = true;
+  private queueHostRefresh(hostId: string): void {
+    this.clearPeerChangeTimer(hostId);
+    this.pendingHostIds.add(hostId);
     if (this.listing || this.archiveWrites) {
       this.refreshPending = true;
       return;
     }
     void this.startRefresh().catch(() => undefined);
   }
+  hostsChanged(hostId?: string): void {
+    if (this.closed) return;
+    if (!hostId) {
+      for (const id of [...this.peerChangeTimers.keys()]) this.clearPeerChangeTimer(id);
+      this.fullRefreshPending = true;
+      if (this.listing || this.archiveWrites) {
+        this.refreshPending = true;
+        return;
+      }
+      void this.startRefresh().catch(() => undefined);
+      return;
+    }
+    const peerSource = this.peers?.source(hostId);
+    if (!peerSource) {
+      this.syncedPeerSources.delete(hostId);
+      this.queueHostRefresh(hostId);
+      return;
+    }
+    const synced = this.syncedPeerSources.get(hostId);
+    const sameSynced = synced !== undefined && synced.source === peerSource;
+    const inFlight = this.inFlightPeerSources.get(hostId) === peerSource;
+    const elapsed = sameSynced
+      ? Date.now() - synced.listedAt
+      : PEER_CATALOG_REFRESH_MIN_INTERVAL_MS;
+    if (inFlight || (sameSynced && elapsed < PEER_CATALOG_REFRESH_MIN_INTERVAL_MS)) {
+      if (this.peerChangeTimers.has(hostId)) return;
+      const delay = inFlight
+        ? PEER_CATALOG_REFRESH_MIN_INTERVAL_MS
+        : Math.max(50, PEER_CATALOG_REFRESH_MIN_INTERVAL_MS - elapsed);
+      const timer = setTimeout(() => {
+        this.peerChangeTimers.delete(hostId);
+        if (this.closed) return;
+        this.queueHostRefresh(hostId);
+      }, delay);
+      timer.unref();
+      this.peerChangeTimers.set(hostId, timer);
+      return;
+    }
+    this.queueHostRefresh(hostId);
+  }
+  private refreshBackground(): Promise<void> {
+    if (this.closed) return Promise.resolve();
+    this.backgroundRefreshPending = true;
+    if (this.archiveWrites) {
+      this.refreshPending = true;
+      return this.listing ?? Promise.resolve();
+    }
+    return this.startRefresh();
+  }
   refresh(hostId?: string): Promise<void> {
-    if (hostId) this.pendingHostIds.add(hostId);
-    else this.fullRefreshPending = true;
+    if (hostId) {
+      this.clearPeerChangeTimer(hostId);
+      this.pendingHostIds.add(hostId);
+    } else {
+      for (const id of [...this.peerChangeTimers.keys()]) this.clearPeerChangeTimer(id);
+      this.fullRefreshPending = true;
+    }
     if (this.archiveWrites) {
       this.refreshPending = true;
       return this.listing ?? Promise.resolve();
@@ -513,9 +678,12 @@ export class RemoteSessions {
   }
   private async list(): Promise<void> {
     if (this.archiveWrites) return;
-    const fullRefresh = this.fullRefreshPending || this.pendingHostIds.size === 0;
+    const explicitFullRefresh =
+      this.fullRefreshPending || (!this.backgroundRefreshPending && this.pendingHostIds.size === 0);
+    const backgroundRefresh = this.backgroundRefreshPending;
     const dirtyHosts = new Set(this.pendingHostIds);
     this.fullRefreshPending = false;
+    this.backgroundRefreshPending = false;
     this.pendingHostIds.clear();
     const previouslyOnline = new Set(
       [...this.hosts.values()].filter((host) => host.online).map((host) => host.hostId),
@@ -533,10 +701,38 @@ export class RemoteSessions {
       this.discoveryUnavailable = true;
       for (const entry of this.entries.values()) this.offline(entry);
       for (const host of this.hosts.values()) host.online = false;
+      this.syncedPeerSources.clear();
+      this.publishDraftSummaries();
       this.syncGroups();
       return;
     }
+    const previousHosts = this.hosts;
     this.hosts = new Map(hosts.map((host) => [host.hostId, host]));
+    const metadataChangedHostIds = new Set<string>();
+    const draftChangedHostIds = new Set<string>();
+    for (const host of hosts) {
+      const prev = previousHosts.get(host.hostId);
+      if (
+        prev !== undefined &&
+        (prev.displayName !== host.displayName || prev.color !== host.color)
+      ) {
+        metadataChangedHostIds.add(host.hostId);
+        draftChangedHostIds.add(host.hostId);
+      } else if (prev !== undefined && prev.online !== host.online) {
+        draftChangedHostIds.add(host.hostId);
+      }
+    }
+    if (metadataChangedHostIds.size > 0) {
+      for (const [id, entry] of this.entries) {
+        if (!metadataChangedHostIds.has(entry.identity.hostId)) continue;
+        const nextSummary = this.summary(id, entry);
+        entry.view?.log.setProjection("remoteHost", nextSummary.projections.values.remoteHost);
+        this.events.emit("api-session/added", nextSummary);
+      }
+    }
+    for (const hostId of draftChangedHostIds) {
+      this.publishDraftSummaries(hostId);
+    }
     for (const [id, entry] of this.entries) {
       if (
         entry.identity.hostId.startsWith("remote-peer:") &&
@@ -557,16 +753,39 @@ export class RemoteSessions {
     for (const hostId of [...this.peerArchivedIds.keys()]) {
       if (!this.hosts.has(hostId)) this.peerArchivedIds.delete(hostId);
     }
+    for (const hostId of [...this.syncedPeerSources.keys()]) {
+      const host = this.hosts.get(hostId);
+      const peerSource = this.peers?.source(hostId);
+      if (!host || !host.online || !peerSource || !this.isPeerSynced(host, peerSource)) {
+        this.syncedPeerSources.delete(hostId);
+      }
+    }
+    for (const hostId of [...this.peerChangeTimers.keys()]) {
+      const host = this.hosts.get(hostId);
+      if (!host || !host.online || !this.peers?.source(hostId)) {
+        this.clearPeerChangeTimer(hostId);
+      }
+    }
     const present = new Set(hosts.filter((host) => host.online).map((host) => host.hostId));
     for (const entry of this.entries.values())
       if (!present.has(entry.identity.hostId)) this.offline(entry);
+    // Publish updated host states and manifest project folders immediately instead of
+    // leaving the UI on a stale `connecting` placeholder while multi-page catalog reads run.
+    this.syncGroups();
     await Promise.all(
       hosts
-        .filter(
-          (host) =>
-            host.online &&
-            (fullRefresh || dirtyHosts.has(host.hostId) || !previouslyOnline.has(host.hostId)),
-        )
+        .filter((host) => {
+          if (!host.online) return false;
+          if (
+            explicitFullRefresh ||
+            dirtyHosts.has(host.hostId) ||
+            !previouslyOnline.has(host.hostId)
+          )
+            return true;
+          if (!backgroundRefresh) return false;
+          const peerSource = this.peers?.source(host.hostId);
+          return !(peerSource && this.isPeerSynced(host, peerSource));
+        })
         .map(async (host) => {
           const peerSource = this.peers?.source(host.hostId);
           if (peerSource) {
@@ -666,18 +885,96 @@ export class RemoteSessions {
         (entry) => entry.identity.hostId === host.hostId && entry.createdEpoch,
       ),
     );
+    this.inFlightPeerSources.set(host.hostId, source);
+    // Warm plugin metadata/icons in parallel with catalog paging so harness names
+    // and sidebar logos are ready as soon as page 1 renders, without blocking list commit.
+    void source.catalog
+      .list()
+      .then(() => {
+        if (this.closed || this.peers?.source(host.hostId) !== source) return;
+        // Read the generation-guarded cached list so a late pre-invalidation response never overwrites newer names.
+        const currentPlugins = source.catalog.cachedList();
+        if (!currentPlugins) return;
+        const names = new Map<string, string>(
+          currentPlugins.map((plugin) => [plugin.id, plugin.name]),
+        );
+        for (const [id, entry] of this.entries) {
+          if (entry.identity.hostId !== host.hostId || !entry.peerHarnessIdentity) continue;
+          const resolvedName = names.get(entry.peerHarnessIdentity.id);
+          if (!resolvedName || resolvedName === entry.peerHarnessIdentity.name) continue;
+          entry.peerHarnessIdentity = { id: entry.peerHarnessIdentity.id, name: resolvedName };
+          const nextSummary = this.summary(id, entry);
+          entry.view?.log.setProjection("harnessIdentity", entry.peerHarnessIdentity);
+          this.events.emit("api-session/added", nextSummary);
+        }
+      })
+      .catch(() => undefined);
     try {
-      const listed = await source.listThreads();
-      const uniqueHarnesses = [...new Set(listed.harnessIds.values())];
-      const harnessNames = new Map(
-        await Promise.all(
-          uniqueHarnesses.map(
-            async (harnessId) =>
-              [harnessId, await source.catalog.name(harnessId).catch(() => harnessId)] as const,
-          ),
-        ),
+      const listed = await source.listThreads({
+        onPage: (partial) => {
+          if (
+            this.closed ||
+            archiveRevision !== this.archiveRevision ||
+            this.peers?.source(host.hostId) !== source
+          ) {
+            return;
+          }
+          const cachedPlugins = source.catalog.cachedList();
+          const cachedNames = new Map<string, string>(
+            cachedPlugins?.map((plugin) => [plugin.id, plugin.name]),
+          );
+          let published = false;
+          for (const row of partial.rows) {
+            const id = remoteSessionId(host.hostId, row.id);
+            const harnessId = partial.harnessIds.get(row.id);
+            const peerHarnessIdentity = harnessId
+              ? {
+                  id: harnessId,
+                  name: harnessId === "codex" ? "Codex" : (cachedNames.get(harnessId) ?? harnessId),
+                }
+              : undefined;
+            const previous = this.entries.get(id);
+            const beforeSummary = previous ? JSON.stringify(this.summary(id, previous)) : undefined;
+            const current: Entry = previous
+              ? Object.assign(previous, {
+                  row: { ...row, turns: [] },
+                  online: true,
+                  archived: partial.archivedIds.has(row.id),
+                  peerOwnershipAvailable: partial.ownershipAvailable,
+                  ...(host.epoch ? { epoch: host.epoch } : {}),
+                })
+              : {
+                  identity: { hostId: host.hostId, threadId: row.id },
+                  row: { ...row, turns: [] },
+                  online: true,
+                  archived: partial.archivedIds.has(row.id),
+                  ...(host.epoch ? { epoch: host.epoch } : {}),
+                  configurationRevision: 0,
+                  peerOwnershipAvailable: partial.ownershipAvailable,
+                };
+            if (peerHarnessIdentity) current.peerHarnessIdentity = peerHarnessIdentity;
+            this.entries.set(id, current);
+            const nextSummary = this.summary(id, current);
+            if (beforeSummary !== JSON.stringify(nextSummary)) {
+              this.events.emit("api-session/added", nextSummary);
+              published = true;
+            }
+          }
+          if (published) this.syncGroups();
+        },
+      });
+      const cachedPlugins = source.catalog.cachedList();
+      const harnessNames = new Map<string, string>(
+        cachedPlugins?.map((plugin) => [plugin.id, plugin.name]),
       );
-      if (this.closed || archiveRevision !== this.archiveRevision) return;
+      harnessNames.set("codex", "Codex");
+      if (
+        this.closed ||
+        archiveRevision !== this.archiveRevision ||
+        this.peers?.source(host.hostId) !== source
+      ) {
+        return;
+      }
       this.peerArchivedIds.set(host.hostId, new Set(listed.archivedIds));
       const found = new Map<string, Entry>();
       for (const row of listed.rows) {
@@ -759,6 +1056,10 @@ export class RemoteSessions {
           current.view.log.setProjection("title", nextSummary.projections.values.title);
           current.view.log.setProjection("remoteHost", nextSummary.projections.values.remoteHost);
           current.view.log.setProjection(
+            "nativeDiscovery",
+            nextSummary.projections.values.nativeDiscovery,
+          );
+          current.view.log.setProjection(
             "attachmentInput",
             nextSummary.projections.values.attachmentInput,
           );
@@ -780,10 +1081,22 @@ export class RemoteSessions {
         }
       }
       this.syncArchives();
+      this.syncedPeerSources.set(host.hostId, {
+        source,
+        epoch: host.epoch,
+        listedAt: Date.now(),
+      });
     } catch {
+      if (this.closed || this.peers?.source(host.hostId) !== source) return;
+      this.syncedPeerSources.delete(host.hostId);
       host.online = false;
       for (const entry of this.entries.values()) {
         if (entry.identity.hostId === host.hostId) this.offline(entry);
+      }
+      this.publishDraftSummaries(host.hostId);
+    } finally {
+      if (this.inFlightPeerSources.get(host.hostId) === source) {
+        this.inFlightPeerSources.delete(host.hostId);
       }
     }
   }
@@ -1132,9 +1445,18 @@ export class RemoteSessions {
   private summary(id: string, entry: Entry) {
     const attachmentsSupported =
       entry.online && this.peerAttachmentsSupported(entry.identity.hostId);
+    const workspaceFilesSupported =
+      entry.online && this.peerWorkspaceFilesSupported(entry.identity.hostId);
+    const officePreviewSupported =
+      entry.online && this.peerOfficePreviewSupported(entry.identity.hostId);
+    const nativeDiscovery =
+      entry.identity.hostId.startsWith(REMOTE_PEER_HOST_ID_PREFIX) &&
+      !entry.row.parentThreadId &&
+      entry.row.canAcceptDirectInput !== false;
     const harnessIdentity =
       remoteHarnessIdentity(entry) ??
       (entry.row.modelProvider !== "codexhost" ? { id: "codex", name: "Codex" } : undefined);
+    const host = this.hosts.get(entry.identity.hostId);
     return {
       sessionId: id,
       cwd: "",
@@ -1150,11 +1472,12 @@ export class RemoteSessions {
           title: threadListTitle({ ...entry.row, id: entry.identity.threadId }),
           remoteHost: {
             ...entry.identity,
-            displayName: remoteHostDisplayName(
-              this.hosts.get(entry.identity.hostId) ?? { hostId: entry.identity.hostId },
-            ),
+            displayName: remoteHostDisplayName(host ?? { hostId: entry.identity.hostId }),
             state: entry.online ? "connected" : "disconnected",
+            ...(host?.color !== undefined ? { color: host.color } : {}),
             filePreview: attachmentsSupported,
+            workspaceFiles: workspaceFilesSupported,
+            officePreview: officePreviewSupported,
           },
           ...(harnessIdentity ? { harnessIdentity } : {}),
           ...(entry.peerOwnershipAvailable && entry.peerTreeParent !== undefined
@@ -1162,7 +1485,7 @@ export class RemoteSessions {
             : {}),
           threadReference: this.reference(entry),
           nativeConnection: { state: entry.online ? "connected" : "reconnecting" },
-          nativeDiscovery: false,
+          nativeDiscovery,
           remoteHistoryError: entry.historyError ?? null,
           attachmentInput: { enabled: attachmentsSupported },
           ...(attachmentsSupported ? { imageLimits: WEB_IMAGE_LIMITS } : {}),
@@ -1808,7 +2131,7 @@ export class RemoteSessions {
             archivedSessionIds: this.syncArchives(),
           };
         }
-        void this.refresh().catch(() => undefined);
+        void this.refreshBackground().catch(() => undefined);
         const local = await next();
         return {
           ...(local as object),
@@ -1828,6 +2151,20 @@ export class RemoteSessions {
       }>(args);
       const id = request.sessionId ?? request.address?.sessionId ?? request.agentId ?? args.agentId;
       if (typeof id !== "string" || !id.startsWith(PREFIX)) return next();
+      if (method === "fileReferences/list") return next();
+      if (method === "commands/list") return [];
+      if (method === "session/openWorkspacePath") {
+        throw new RpcError(
+          "session/open-unavailable",
+          "Remote sessions cannot open files on the Hub host.",
+        );
+      }
+      if (method === "codexhost/executeThreadCommand") {
+        throw new RpcError(
+          "remote/unsupported",
+          "Direct command execution is unavailable for remote Threads.",
+        );
+      }
       if (method === "session/prompt") {
         const pending = this.pendingFirstTurns.get(id);
         if (pending) return this.firstTurn(pending, request as Record<string, unknown>);
@@ -1843,6 +2180,10 @@ export class RemoteSessions {
             return draft.catalog(this.draftCatalogLoader(draft));
           case "session/projections":
             return this.draftSummary(draft).projections;
+          case "codexhost/skills/list":
+            return this.listDraftSkills(draft);
+          case "codexhost/threadCommands":
+            return this.inspectDraftCommands(draft);
           case "session/selectModel": {
             await draft.select(input, this.draftCatalogLoader(draft));
             const summary = this.draftSummary(draft);
@@ -1891,7 +2232,13 @@ export class RemoteSessions {
       const draft = this.drafts.get(id);
       if (draft && !draft.canonicalId) {
         draft.lastUsed = Date.now();
-        draft.follow(sink, this.peerAttachmentsSupported(draft.target.hostId));
+        const online = this.draftOnline(draft.target.hostId);
+        draft.follow(
+          sink,
+          online && this.peerAttachmentsSupported(draft.target.hostId),
+          this.hosts.get(draft.target.hostId)?.color,
+          online,
+        );
         return true;
       }
       const threadId = draft?.canonicalId ?? id;
@@ -1916,11 +2263,94 @@ export class RemoteSessions {
       return true;
     });
   }
+  private requireOnlinePeerSource(hostId: string): PeerThreadSource {
+    if (this.closed) throw new RpcError("remote/offline", "Remote session gateway is closed");
+    const host = this.hosts.get(hostId);
+    if (host && !host.online) {
+      throw new RpcError("remote/offline", "Remote peer is offline.");
+    }
+    const peer = this.peerEndpoint(hostId);
+    if (peer && peer.state !== "connected") {
+      throw new RpcError("remote/offline", "Remote peer is offline.");
+    }
+    const peerSource = this.peers?.source(hostId);
+    if (!peerSource) {
+      throw new RpcError("remote/offline", "Remote peer is offline.");
+    }
+    return peerSource;
+  }
+  private async listDraftSkills(draft: RemoteProjectDraft): Promise<SkillsListResult> {
+    if (!draft.target.hostId.startsWith(REMOTE_PEER_HOST_ID_PREFIX)) {
+      throw new RpcError("skills/unavailable", "Skills are unavailable for this remote host.");
+    }
+    if (draft.selection?.provider === "codex") {
+      throw new RpcError("skills/unavailable", "Codex uses its native Skills.");
+    }
+    const peerSource = this.requireOnlinePeerSource(draft.target.hostId);
+    return peerSource.listSkills({ cwd: draft.target.cwd });
+  }
+  private async listThreadSkills(id: string): Promise<SkillsListResult> {
+    const identity = remoteSessionIdentity(id);
+    if (!identity) throw new RpcError("remote/identity-invalid", "Remote identity required");
+    if (!identity.hostId.startsWith(REMOTE_PEER_HOST_ID_PREFIX)) {
+      throw new RpcError("skills/unavailable", "Skills are unavailable for this remote host.");
+    }
+    let entry = this.entries.get(id);
+    if (!entry) {
+      await this.refresh(identity.hostId);
+      entry = this.entries.get(id);
+    }
+    if (!entry) throw new RpcError("remote/not-found", "Remote Thread not found");
+    if (!entry.online) throw new RpcError("remote/offline", "Remote peer is offline.");
+    const peerSource = this.requireOnlinePeerSource(identity.hostId);
+    if (entry.row.parentThreadId || entry.row.canAcceptDirectInput === false) {
+      throw new RpcError("skills/unavailable", "Skills require an editable remote Thread.");
+    }
+    if (viewHarnessId(entry) === "codex") {
+      throw new RpcError("skills/unavailable", "Codex uses its native Skills.");
+    }
+    return peerSource.listSkills({ threadId: hostThreadIdSchema.parse(identity.threadId) });
+  }
+  private async inspectDraftCommands(draft: RemoteProjectDraft): Promise<HarnessCommandCatalog> {
+    if (!draft.target.hostId.startsWith(REMOTE_PEER_HOST_ID_PREFIX)) {
+      throw new RpcError("command/unavailable", "Commands are unavailable for this remote host.");
+    }
+    if (draft.selection?.provider !== "codex") {
+      return { commands: [] };
+    }
+    const peerSource = this.requireOnlinePeerSource(draft.target.hostId);
+    return peerSource.inspectHarnessCommands("codex", draft.target.cwd);
+  }
+  private async inspectThreadCommands(id: string): Promise<HarnessCommandCatalog> {
+    const identity = remoteSessionIdentity(id);
+    if (!identity) throw new RpcError("remote/identity-invalid", "Remote identity required");
+    if (!identity.hostId.startsWith(REMOTE_PEER_HOST_ID_PREFIX)) {
+      throw new RpcError("command/unavailable", "Commands are unavailable for this remote host.");
+    }
+    let entry = this.entries.get(id);
+    if (!entry) {
+      await this.refresh(identity.hostId);
+      entry = this.entries.get(id);
+    }
+    if (!entry) throw new RpcError("remote/not-found", "Remote Thread not found");
+    if (!entry.online) throw new RpcError("remote/offline", "Remote peer is offline.");
+    const peerSource = this.requireOnlinePeerSource(identity.hostId);
+    if (entry.row.parentThreadId || entry.row.canAcceptDirectInput === false) {
+      throw new RpcError("command/unavailable", "Commands require an editable remote Thread.");
+    }
+    return peerSource.inspectThreadCommands(identity.threadId);
+  }
   private async handle(
     method: string,
     id: string,
     request: Record<string, unknown>,
   ): Promise<unknown> {
+    if (method === "codexhost/skills/list") {
+      return this.listThreadSkills(id);
+    }
+    if (method === "codexhost/threadCommands") {
+      return this.inspectThreadCommands(id);
+    }
     if (method === "session/attachment") {
       const identity = remoteSessionIdentity(id);
       if (!identity) throw new RpcError("remote/identity-invalid", "Remote identity required");
@@ -2218,6 +2648,10 @@ export class RemoteSessions {
   close(): void {
     this.closed = true;
     clearInterval(this.timer);
+    for (const timer of this.peerChangeTimers.values()) clearTimeout(timer);
+    this.peerChangeTimers.clear();
+    this.syncedPeerSources.clear();
+    this.inFlightPeerSources.clear();
     this.followLifetime.abort();
     if (this.peers) {
       if (this.peers.onThreadChanged === this.peerHandlers.onThreadChanged)
@@ -2226,6 +2660,8 @@ export class RemoteSessions {
         delete this.peers.onUsageChanged;
       if (this.peers.onCatalogInspectionChanged === this.peerHandlers.onCatalogInspectionChanged)
         delete this.peers.onCatalogInspectionChanged;
+      if (this.peers.onSkillsChanged === this.peerHandlers.onSkillsChanged)
+        delete this.peers.onSkillsChanged;
       if (this.peers.onConnection === this.peerHandlers.onConnection)
         delete this.peers.onConnection;
       if (this.peers.onReset === this.peerHandlers.onReset) delete this.peers.onReset;
