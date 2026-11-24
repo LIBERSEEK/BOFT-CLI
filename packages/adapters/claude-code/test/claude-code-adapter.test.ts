@@ -6396,10 +6396,10 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
-  it("resumes a stored Fable alias using the catalog Model and its Thinking options", async () => {
+  it("resumes a stored Fable alias using the latest catalog Model and its Thinking options", async () => {
     const { adapter, dependencies, transports } = fixture();
     const cwd = "/synthetic";
-    const currentId = "claude-fable-5-1";
+    const currentId = "claude-fable-5-2";
     dependencies.createInspector = () => ({
       close: async () => undefined,
       inspect: async () => ({
@@ -6407,8 +6407,20 @@ describe("Claude Code HarnessAdapter", () => {
         canSelectPermissionMode: true,
         models: [
           {
-            value: currentId,
+            value: "claude-fable-5",
+            displayName: "Fable 5",
+            supportedEffortLevels: ["low", "medium", "high"],
+            supportsThinkingOff: false,
+          },
+          {
+            value: "claude-fable-5-1",
             displayName: "Fable 5.1",
+            supportedEffortLevels: ["low", "medium", "high", "xhigh"],
+            supportsThinkingOff: false,
+          },
+          {
+            value: currentId,
+            displayName: "Fable 5.2",
             supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
             supportsThinkingOff: false,
           },

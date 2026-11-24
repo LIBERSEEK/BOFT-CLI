@@ -73,6 +73,7 @@ describe("platform packagers", () => {
 
     expect(workflow).toContain("boft-cli-*.dmg");
     expect(workflow).toContain("boft-cli-*.exe");
+    expect(workflow).toContain("boft-cli-*.tar.gz");
     expect(workflow).not.toContain("codexhost-*.msi");
     expect(workflow).toContain("npm run release:npm --");
     expect(workflow).toContain("Build npm package from installer outputs");
@@ -116,6 +117,8 @@ describe("platform packagers", () => {
     expect(publishRelease).toContain('"boft-cli-${VERSION}-windows-arm64.exe"');
     expect(publishRelease).toContain('"boft-cli-${VERSION}-macos-x64.dmg"');
     expect(publishRelease).toContain('"boft-cli-${VERSION}-macos-arm64.dmg"');
+    expect(publishRelease).toContain('"boft-cli-${VERSION}-linux-x64.tar.gz"');
+    expect(publishRelease).toContain('"boft-cli-${VERSION}-linux-arm64.tar.gz"');
     expect(publishRelease).not.toContain('"codexhost-${VERSION}');
     expect(workflow).not.toContain("softprops/action-gh-release");
     expect(workflow).not.toContain("codexhost-*.sha256");

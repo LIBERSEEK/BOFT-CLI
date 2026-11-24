@@ -59,6 +59,7 @@ const storedThreadCoreV1Shape = {
   importSourceRef: nativeSessionRefSchema.optional(),
   cwd: nonBlankTextSchema.max(16_384),
   title: z.string().max(4_096),
+  titleIsPromptFallback: z.literal(true).optional(),
   archived: z.boolean(),
   // 兼容旧版 v1 记录：缺少置顶字段时按未置顶迁移，避免破坏既有任务历史。
   isPinned: z.boolean().default(false),

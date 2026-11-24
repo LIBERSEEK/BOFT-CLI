@@ -43,12 +43,30 @@ it("persists migrated Model Refs and retries only Harnesses without a catalog", 
   const model = adapter.catalog.models[1]?.ref;
   assert(model, "Expected a second Model in the fake catalog");
   const unavailable = new FakeHarnessAdapter(harnessIdSchema.parse("opencode"));
+  const recoveredModel = unavailable.catalog.models[0]?.ref;
+  assert(recoveredModel, "Expected a Model in the OpenCode catalog");
+  const native = new FakeHarnessAdapter(harnessIdSchema.parse("antigravity"));
+  const nativeProbeStarted = Promise.withResolvers<undefined>();
+  const finishNativeProbe = Promise.withResolvers<undefined>();
+  const inspectNative = native.inspect.bind(native);
+  vi.spyOn(native, "inspect").mockImplementation(async (input) => {
+    nativeProbeStarted.resolve(undefined);
+    await finishNativeProbe.promise;
+    return inspectNative(input);
+  });
   const inspect = vi.spyOn(adapter, "inspect");
   const delayedInspect = vi.spyOn(unavailable, "inspect");
   delayedInspect.mockRejectedValueOnce(new Error("Catalog unavailable"));
   const fixture = createFixture({
     externalAdapters: new Map([
-      ["opencode", unavailable],
+      ["antigravity", native],
+      [
+        "opencode",
+        Object.assign(unavailable, {
+          normalizeStoredModelRef: (ref: { id: string }) =>
+            ref.id === "offline-ref" ? recoveredModel : undefined,
+        }),
+      ],
       [
         "pi",
         Object.assign(adapter, {
@@ -59,6 +77,7 @@ it("persists migrated Model Refs and retries only Harnesses without a catalog", 
     ]),
   });
   const file = path.join(fixture.mappingStoreDirectory, "harness-preferences-v1.json");
+  const antigravity = { model: { id: "native-model" } };
   const before =
     JSON.stringify({
       version: 1,
@@ -68,7 +87,10 @@ it("persists migrated Model Refs and retries only Harnesses without a catalog", 
           favorites: { pi: ["legacy-model", model.id, "retired"], opencode: ["offline-ref"] },
           newThread: {
             lastHarness: "pi",
-            byHarness: { pi: { model: { id: "legacy-model" }, thinkingOptionId: "low" } },
+            byHarness: {
+              pi: { model: { id: "legacy-model" }, thinkingOptionId: "low" },
+              antigravity,
+            },
           },
           delegation: { byHarness: { pi: { model: { id: "legacy-model" } } } },
         },
@@ -87,15 +109,28 @@ it("persists migrated Model Refs and retries only Harnesses without a catalog", 
     };
     const migrated = {
       favorites: { pi: [model.id, "retired"], opencode: ["offline-ref"] },
-      newThread: { lastHarness: "pi", byHarness: { pi: { model, thinkingOptionId: "low" } } },
+      newThread: {
+        lastHarness: "pi",
+        byHarness: { pi: { model, thinkingOptionId: "low" }, antigravity },
+      },
       delegation: { byHarness: { pi: { model } } },
     };
-    expect(await get(81)).toMatchObject({ result: { revision: 8, values: migrated } });
+    const first = await Promise.race([
+      get(81),
+      nativeProbeStarted.promise.then(() => {
+        throw new Error(
+          "Reading preferences started a catalog probe without a Model Ref migration",
+        );
+      }),
+    ]);
+    expect(first).toMatchObject({ result: { revision: 8, values: migrated } });
     expect(JSON.parse(readFileSync(file, "utf8")).scopes.external).toEqual(migrated);
     expect(inspect).toHaveBeenCalledTimes(1);
     expect(delayedInspect).toHaveBeenCalledTimes(1);
 
-    expect(await get(82)).toMatchObject({ result: { revision: 8, values: migrated } });
+    expect(await get(82)).toMatchObject({
+      result: { revision: 9, values: { favorites: { opencode: [recoveredModel.id] } } },
+    });
     expect(inspect).toHaveBeenCalledTimes(1);
     expect(delayedInspect).toHaveBeenCalledTimes(2);
 
@@ -103,16 +138,17 @@ it("persists migrated Model Refs and retries only Harnesses without a catalog", 
       id: 83,
       method: HARNESS_PREFERENCES_PATCH_METHOD,
       params: {
-        expectedRevision: 8,
+        expectedRevision: 9,
         operations: [{ kind: "favorite", harnessId: "pi", modelId: model.id, enabled: false }],
       },
     });
     expect(await fixture.collector.waitFor((message) => requestId(message, 83))).toMatchObject({
-      result: { revision: 9, values: { favorites: { pi: ["retired"] } } },
+      result: { revision: 10, values: { favorites: { pi: ["retired"] } } },
     });
     expect(inspect).toHaveBeenCalledTimes(1);
     expect(delayedInspect).toHaveBeenCalledTimes(2);
   } finally {
+    finishNativeProbe.resolve(undefined);
     await stopFixture(fixture);
   }
 });

@@ -70,9 +70,9 @@
 
 ## 快速使用
 
-**下载安装包**（macOS、Windows）
+**下载安装包**（macOS、Windows、Linux）
 
-前往 [最新版本](https://github.com/LIBERSEEK/BOFT-CLI/releases/latest) 下载与系统和 CPU 架构匹配的安装包：macOS 选择 DMG，Windows 选择 EXE。也支持 [x64/ARM64 Linux](docs/platforms/linux/linux.zh-CN.md)。
+前往 [最新版本](https://github.com/LIBERSEEK/BOFT-CLI/releases/latest) 下载与系统和 CPU 架构匹配的安装包：macOS 选择 DMG，Windows 选择 EXE，Linux 选择 `.tar.gz`，详见 [Linux 安装指南](docs/platforms/linux/linux.zh-CN.md#压缩包)。
 
 或使用 npm：
 
