@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import * as c from "@codexhost/shared-contracts";
+import { PeerChHostClient } from "./peer-ch-host-client.ts";
 import { PeerHostClient } from "./peer-host-client.ts";
 import { parseConnectionLink, type PeerHostStore, type PeerRecord } from "./peer-host-store.ts";
+import { PeerThreadSource, type PeerThreadProjector } from "./peer-thread-source.ts";
 import { RpcError, type EventHub, type RpcRegistry } from "./transport.ts";
 import { requestOf } from "./store.ts";
 import type { RemoteSessionCall } from "./remote-session-delivery.ts";
@@ -11,15 +13,24 @@ export interface PeerHostManagerOptions {
   allowLoopback?: boolean;
   /** Override NDJSON event stream idle timeout in milliseconds. */
   streamIdleTimeoutMs?: number;
+  /** Optional placeholder attachment/image projector for Peer thread views. */
+  projector?: (threadId: string) => PeerThreadProjector;
 }
 
 const LOCAL_ONLY_ACTIONS = new Set(["add", "update", "remove", "test"]);
 
 export class PeerHostManager {
   private clients = new Map<string, PeerHostClient>();
+  private sources = new Map<string, PeerThreadSource>();
   private readonly allowLoopback: boolean;
   private readonly streamIdleTimeoutMs: number | undefined;
+  private readonly projector: ((threadId: string) => PeerThreadProjector) | undefined;
   onChange?: (hostId?: string) => void;
+  onThreadChanged?: (hostId: string, threadId: string) => unknown;
+  onUsageChanged?: (hostId: string, threadId: string) => void;
+  onCatalogInspectionChanged?: (hostId: string) => void;
+  onConnection?: (hostId: string, online: boolean) => void;
+  onReset?: (hostId: string, epoch: string, full: boolean) => void;
 
   constructor(
     private store: PeerHostStore,
@@ -29,6 +40,7 @@ export class PeerHostManager {
   ) {
     this.allowLoopback = options.allowLoopback === true;
     this.streamIdleTimeoutMs = options.streamIdleTimeoutMs;
+    this.projector = options.projector;
     for (const record of store.load()) this.install(record);
   }
 
@@ -37,19 +49,53 @@ export class PeerHostManager {
     this.onChange?.(hostId);
   };
 
-  private createClient(record: PeerRecord) {
+  private createClient(record: PeerRecord, initialManifest?: c.RemotePeerManifest) {
     return new PeerHostClient(record, this.changed, {
       ...(this.streamIdleTimeoutMs === undefined
         ? {}
         : { streamIdleTimeoutMs: this.streamIdleTimeoutMs }),
+      ...(initialManifest === undefined ? {} : { initialManifest }),
     });
   }
 
-  private install(record: PeerRecord, client = this.createClient(record)) {
-    this.clients.get(record.peerId)?.close();
-    this.clients.set(record.peerId, client);
-    void client.start();
-    return client;
+  private install(record: PeerRecord, client?: PeerHostClient) {
+    const previous = this.clients.get(record.peerId);
+    const inheritedManifest =
+      !client && record.enabled && previous && previous.record.origin === record.origin
+        ? previous.manifest
+        : undefined;
+    const next = client ?? this.createClient(record, inheritedManifest);
+    this.sources.get(record.peerId)?.close();
+    this.sources.delete(record.peerId);
+    previous?.close();
+    this.clients.set(record.peerId, next);
+    if (record.enabled) {
+      const host = new PeerChHostClient(next.chTransport());
+      const source = new PeerThreadSource({
+        hostId: next.hostId,
+        host,
+        onCatalogChanged: () => this.onChange?.(next.hostId),
+        onThreadChanged: (threadId) => this.onThreadChanged?.(next.hostId, threadId),
+        onUsageChanged: (threadId) => this.onUsageChanged?.(next.hostId, threadId),
+        onCatalogInspectionChanged: () => this.onCatalogInspectionChanged?.(next.hostId),
+        onConnection: (online) => this.onConnection?.(next.hostId, online),
+        onReset: (epoch, full) => this.onReset?.(next.hostId, epoch, full),
+        ...(this.projector ? { projector: this.projector } : {}),
+      });
+      this.sources.set(record.peerId, source);
+    }
+    void next.start();
+    return next;
+  }
+
+  client(hostId: string): PeerHostClient | undefined {
+    const peerId = c.peerIdFromRemoteHostId(hostId);
+    return peerId === undefined ? undefined : this.clients.get(peerId);
+  }
+
+  source(hostId: string): PeerThreadSource | undefined {
+    const peerId = c.peerIdFromRemoteHostId(hostId);
+    return peerId === undefined ? undefined : this.sources.get(peerId);
   }
 
   private get(id: string) {
@@ -141,6 +187,8 @@ export class PeerHostManager {
         switch (action) {
           case "remove":
             this.store.save(this.records().filter((r) => r.peerId !== peerId));
+            this.sources.get(peerId)?.close();
+            this.sources.delete(peerId);
             client.close();
             this.clients.delete(peerId);
             this.changed(client.hostId);
@@ -201,6 +249,8 @@ export class PeerHostManager {
   }
 
   close() {
+    for (const s of this.sources.values()) s.close();
+    this.sources.clear();
     for (const p of this.clients.values()) p.close();
   }
 }

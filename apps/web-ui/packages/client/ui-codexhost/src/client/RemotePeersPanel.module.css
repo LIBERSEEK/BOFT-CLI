@@ -216,6 +216,10 @@
   opacity: 0.85;
 }
 
+.peerRow[data-peer-state="disabled"] .peerName {
+  color: var(--dsw-alias-label-secondary);
+}
+
 .peerActions {
   flex: none;
   display: inline-flex;
@@ -223,14 +227,8 @@
   gap: 4px;
 }
 
-.addDirBtn {
-  color: var(--dsw-alias-label-secondary);
-  font-size: 12.5px;
-  font-weight: 500;
-}
-
-.addDirBtn:hover:not(:disabled) {
-  color: var(--dsw-alias-label-primary);
+.peerSwitch {
+  margin-left: 6px;
 }
 
 .peerErrorNote {
@@ -524,5 +522,9 @@
 
   .peerMain {
     gap: 8px;
+  }
+
+  .peerSwitch {
+    margin-left: 4px;
   }
 }

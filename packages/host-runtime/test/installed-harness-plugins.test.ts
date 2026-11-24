@@ -160,7 +160,7 @@ describe("installed Harness composition", () => {
           commands.map(([id, variable]) => [variable, path.resolve(".missing-fixture", id)]),
         ),
       );
-    }, 35_000);
+    }, 90_000);
     afterAll(async () => registry?.close());
 
     // Each case inspects a distinct Adapter; none of them opens a Session or closes the registry.

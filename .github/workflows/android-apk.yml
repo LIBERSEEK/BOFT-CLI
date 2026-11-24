@@ -38,16 +38,8 @@ jobs:
           name: boft-android-debug
           path: apps/android-shell/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
-      - name: Check whether APK signing is configured
-        id: signing
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-        run: |
-          if [[ -n "$ANDROID_KEYSTORE_BASE64" ]]; then
-            echo 'configured=true' >> "$GITHUB_OUTPUT"
-          fi
       - name: Build signed release APK
-        if: steps.signing.outputs.configured == 'true'
+        id: build-release-apk
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -55,12 +47,17 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
+          if [ -z "${ANDROID_KEYSTORE_BASE64:-}" ]; then
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           KEYSTORE_FILE="${RUNNER_TEMP}/codexhost-release.jks"
           trap 'rm -f "$KEYSTORE_FILE"' EXIT
           printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_FILE"
           ANDROID_KEYSTORE_FILE="$KEYSTORE_FILE" ./gradlew assembleRelease
+          echo "signed=true" >> "$GITHUB_OUTPUT"
       - name: Upload signed release APK
-        if: steps.signing.outputs.configured == 'true'
+        if: steps.build-release-apk.outputs.signed == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: boft-android-release
