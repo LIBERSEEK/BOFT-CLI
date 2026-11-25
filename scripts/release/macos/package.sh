@@ -132,6 +132,8 @@ cat > "$CONTENTS/Info.plist" <<PLIST
   <true/>
   <key>NSHighResolutionCapable</key>
   <true/>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>BOFT CLI uses the microphone for voice input.</string>
 </dict>
 </plist>
 PLIST

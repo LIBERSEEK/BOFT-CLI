@@ -7,6 +7,7 @@ import {
 } from "./harness-permission-modes.js";
 import { HARNESS_TRANSPORT_MODEL_ID_MAX_LENGTH } from "./harness-route-limit.js";
 import { harnessIdSchema, hostThreadIdSchema, hostTurnIdSchema } from "./ids.js";
+import { threadHandoffMetadataSchema } from "./thread-handoff.js";
 import { threadUsageSnapshotSchema } from "./thread-usage.js";
 
 export const HARNESS_MODEL_REF_MAX_LENGTH = 512;
@@ -390,6 +391,7 @@ const codexThreadInspectionSchema = z
     effectivePermissionModeId: harnessPermissionModeIdSchema.optional(),
     history: harnessHistoryCapabilitiesSchema.optional(),
     supportsThreadReferences: z.literal(true).optional(),
+    handoff: threadHandoffMetadataSchema.optional(),
   })
   .strict();
 
@@ -409,6 +411,7 @@ const externalThreadInspectionSchema = z
     usage: threadUsageSnapshotSchema.optional(),
     /** True when the thread is a read-only child thread materialized for a subagent. */
     subagent: z.boolean().optional(),
+    handoff: threadHandoffMetadataSchema.optional(),
     locked: z.literal(true),
   })
   .strict();

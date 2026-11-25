@@ -696,10 +696,12 @@ function updatesPage(
         panel.dataset.updateState = viewPhase;
         delete panel.dataset.inline;
         panel.replaceChildren();
-        const head = createPanelHead(document, viewPhase, message);
         setManualFallback(viewPhase === "failed");
-        panel.append(head);
+        panel.append(createPanelHead(document, viewPhase, message));
         appendServiceStopOutput(status);
+        if (status?.phase === "failed") {
+          appendUniqueUpdateError(document, panel, status.error, new Set([message]));
+        }
         if (
           status?.phase === "downloading" &&
           status.totalBytes !== undefined &&
