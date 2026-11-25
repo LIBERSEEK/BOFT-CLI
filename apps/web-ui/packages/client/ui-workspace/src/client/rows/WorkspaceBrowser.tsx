@@ -85,14 +85,14 @@ import {
 import { pinOrderSource } from "../pin-order.ts";
 import { threadTreeOrderSource, workspaceTreeMembers } from "../thread-tree-order.ts";
 import { ThreadTreeViewProvider, useThreadTreeView } from "./ThreadTreeView.tsx";
-import { ProjectRowItem, SearchResultItem, SessionNodeItem } from "./Rows.tsx";
+import { ProjectRowItem, RemoteHostFolderRow, SearchResultItem, SessionNodeItem } from "./Rows.tsx";
 import { ThreadTreeRows } from "./ThreadTreeControls.tsx";
 import { AnimatedRows } from "./AnimatedRows.tsx";
 import { PinnedSection } from "./PinnedSection.tsx";
 import { SessionListError } from "./SessionListError.tsx";
 import { SessionListExpansion } from "./SessionListExpansion.tsx";
 import { SectionHeading } from "./SectionHeading.tsx";
-import { HostScopeFilter } from "./HostScopeFilter.tsx";
+import { HostScopeTabBar } from "./HostScopeFilter.tsx";
 import {
   APPLY_HOST_SCOPE_WORKSPACE_SELECTION_EVENT,
   ensureWorkspaceVisibleInHostScope,
@@ -412,8 +412,6 @@ type SessionTreeProps = Pick<
     revealSessionId?: SessionId | undefined;
     /** Acknowledge that the chosen Session row has been revealed. */
     onSessionRevealed: (sessionId: SessionId) => void;
-    /** Optional host/workspace scope filter control mounted in the section header. */
-    hostScopeFilterControl?: ReactNode;
     /** Whether the host/workspace scope filter is actively narrowing visible rows. */
     hostScopeFiltered?: boolean;
     /** Whether the effective host scope is narrowed to one specific remote host. */
@@ -421,6 +419,11 @@ type SessionTreeProps = Pick<
     /** Reset the host/workspace scope filter to show all hosts and workspaces. */
     onResetHostScope?: () => void;
   };
+
+/** Section-expansion key for a collapsible remote host folder in the Workspaces tree. */
+function remoteHostFolderKey(hostId: string): string {
+  return `remote-host:${hostId}`;
+}
 
 /** The list-empty placeholder — a glyph over the text; the archived-only view names its filter and offers the way back. */
 function EmptySessions({
@@ -486,7 +489,6 @@ function SessionTree({
   onSessionRevealed,
   shortcuts,
   loadMoreSessions,
-  hostScopeFilterControl,
   hostScopeFiltered = false,
   singleRemoteHostScoped = false,
   onResetHostScope,
@@ -679,6 +681,55 @@ function SessionTree({
   const workspaceRoots = rootGroups.filter(
     (group) => group.key !== UNGROUPED_KEY && !sectionOf.has(group.key),
   );
+  const groupRemoteWorkspacesByHost = !singleRemoteHostScoped;
+  const directWorkspaceRoots = groupRemoteWorkspacesByHost
+    ? workspaceRoots.filter((group) => group.remote === undefined)
+    : workspaceRoots;
+  const remoteHostFolders = useMemo(() => {
+    if (!groupRemoteWorkspacesByHost) return [];
+    const countSubtree = (group: GroupNode): number =>
+      1 +
+      (childrenByParent.get(group.key) ?? []).reduce(
+        (total, child) => total + countSubtree(child),
+        0,
+      );
+    const byHostId = new Map<
+      string,
+      {
+        hostId: string;
+        remote: NonNullable<GroupNode["remote"]>;
+        groups: GroupNode[];
+        workspaceCount: number;
+      }
+    >();
+    for (const group of workspaceRoots) {
+      const remote = group.remote;
+      if (remote === undefined) continue;
+      const count = countSubtree(group);
+      const existing = byHostId.get(remote.hostId);
+      if (existing !== undefined) {
+        existing.groups.push(group);
+        existing.workspaceCount += count;
+        if (existing.remote.color === undefined && remote.color !== undefined) {
+          existing.remote = remote;
+        }
+      } else {
+        byHostId.set(remote.hostId, {
+          hostId: remote.hostId,
+          remote,
+          groups: [group],
+          workspaceCount: count,
+        });
+      }
+    }
+    return [...byHostId.values()];
+  }, [childrenByParent, groupRemoteWorkspacesByHost, workspaceRoots]);
+  const revealRemoteHostId = useMemo(() => {
+    if (revealGroup === undefined) return undefined;
+    const rootKey = rootKeyOf.get(revealGroup);
+    if (rootKey === undefined) return undefined;
+    return workspaceRoots.find((group) => group.key === rootKey)?.remote?.hostId;
+  }, [revealGroup, rootKeyOf, workspaceRoots]);
   // Each native section lists its Workspaces in Desktop's order, not the Web Workspace order.
   const sectionRoots = useMemo(() => {
     const roots = new Map(rootGroups.map((group) => [group.key, group]));
@@ -693,11 +744,11 @@ function SessionTree({
     );
   }, [nativeSections, rootGroups, sectionOf]);
   const collapsedWorkspaces = workspaceWindow(
-    workspaceRoots,
+    directWorkspaceRoots,
     WORKSPACE_INITIAL_ROWS,
     keptWorkspaceRoots,
   );
-  const shownWorkspaceRoots = allWorkspacesShown ? workspaceRoots : collapsedWorkspaces.rows;
+  const shownWorkspaceRoots = allWorkspacesShown ? directWorkspaceRoots : collapsedWorkspaces.rows;
   const pinnedSectionExpanded = sectionExpanded(sectionExpansion, PINNED_SECTION_KEY);
   const nativeLayout = nativeSectionLayout(
     nativeSections,
@@ -726,7 +777,11 @@ function SessionTree({
     if (pinnedSectionExpanded)
       for (const node of threadView.rows(pinnedRows)) rowKeys.push(`session:${node.id}`);
   }
-  const renderGroup = (group: GroupNode, depth: number): ReactNode => {
+  const renderGroup = (
+    group: GroupNode,
+    depth: number,
+    options?: { suppressHostCue?: boolean },
+  ): ReactNode => {
     const workspaceId = group.workspaceId;
     const children = childrenByParent.get(group.key) ?? [];
     const sectioned = sectionOf.has(group.key);
@@ -742,7 +797,9 @@ function SessionTree({
       revealSessionId,
     );
     rowKeys.push(`workspace:${group.key}`);
-    const childRows = group.expanded ? children.map((child) => renderGroup(child, depth + 1)) : [];
+    const childRows = group.expanded
+      ? children.map((child) => renderGroup(child, depth + 1, options))
+      : [];
     const sessions = threadView.rows(visible.rows);
     // A tree shown through a descendant also renders in its root's group; keep its keys unique.
     const linked = linkedRoots.get(group.key);
@@ -870,6 +927,7 @@ function SessionTree({
           <ProjectRowItem
             newShortcut={shortcuts.find((row) => row.id === "session.new")}
             group={group}
+            showHost={!singleRemoteHostScoped && options?.suppressHostCue !== true}
             home={home}
             t={t}
             onToggle={() => {
@@ -1071,6 +1129,30 @@ function SessionTree({
         </button>,
       );
     }
+    for (const folder of remoteHostFolders) {
+      const folderKey = remoteHostFolderKey(folder.hostId);
+      const expanded =
+        sectionExpansion?.[folderKey] === true || revealRemoteHostId === folder.hostId;
+      rowKeys.push(folderKey);
+      const childRows = expanded
+        ? folder.groups.map((group) => renderGroup(group, 1, { suppressHostCue: true }))
+        : [];
+      groupRows.push(
+        <div key={folderKey} data-sidebar-group={folderKey} className={css.groupSection}>
+          <RemoteHostFolderRow
+            hostId={folder.hostId}
+            remote={folder.remote}
+            workspaceCount={folder.workspaceCount}
+            expanded={expanded}
+            onToggle={() => {
+              setSectionExpanded(folderKey, !expanded);
+            }}
+            t={t}
+          />
+          {childRows.length > 0 && <div role="group">{childRows}</div>}
+        </div>,
+      );
+    }
   }
   const recentRoot = rootGroups.find((group) => group.key === UNGROUPED_KEY);
   if (recentRoot !== undefined) groupRows.push(renderGroup(recentRoot, 0));
@@ -1088,11 +1170,16 @@ function SessionTree({
           allWorkspacesShown,
           pinnedSectionExpanded,
           workspacesSectionExpanded,
+          remoteHostFolders.map(
+            (folder) =>
+              `${folder.hostId}:${String(sectionExpansion?.[remoteHostFolderKey(folder.hostId)] === true || revealRemoteHostId === folder.hostId)}`,
+          ),
         ])}
       >
         <PinnedSection
           rows={pinnedRows}
           currentId={current}
+          showHost={!singleRemoteHostScoped}
           onOpen={open}
           onRenameRequest={onSessionRenameRequest}
           renderSlot={renderSlot}
@@ -1108,6 +1195,7 @@ function SessionTree({
           sections={nativeLayout}
           groupRows={sectionGroupRows}
           currentId={current}
+          showHost={!singleRemoteHostScoped}
           onOpen={open}
           onRenameRequest={onSessionRenameRequest}
           renderSlot={renderSlot}
@@ -1136,7 +1224,6 @@ function SessionTree({
               setSectionExpanded(WORKSPACES_SECTION_KEY, !workspacesSectionExpanded);
             }}
             rowKey={`section:${WORKSPACES_SECTION_KEY}`}
-            trailing={hostScopeFilterControl}
           />
         )}
         {groupRows}
@@ -1230,8 +1317,8 @@ function FlatList({
   onSessionRevealed,
   renderSlot,
   loadMoreSessions,
-  hostScopeFilterControl,
   hostScopeFiltered = false,
+  singleRemoteHostScoped = false,
   onResetHostScope,
   t,
 }: Pick<
@@ -1252,8 +1339,8 @@ function FlatList({
   | "nativeSections"
   | "onLeaveArchivedOnly"
   | "loadMoreSessions"
-  | "hostScopeFilterControl"
   | "hostScopeFiltered"
+  | "singleRemoteHostScoped"
   | "onResetHostScope"
   | "t"
 > & {
@@ -1322,6 +1409,7 @@ function FlatList({
         <PinnedSection
           rows={pinnedRows}
           currentId={currentId}
+          showHost={!singleRemoteHostScoped}
           onOpen={open}
           onRenameRequest={onSessionRenameRequest}
           renderSlot={renderSlot}
@@ -1336,6 +1424,7 @@ function FlatList({
         <NativeSections
           sections={nativeLayout}
           currentId={currentId}
+          showHost={!singleRemoteHostScoped}
           onOpen={open}
           onRenameRequest={onSessionRenameRequest}
           renderSlot={renderSlot}
@@ -1344,10 +1433,8 @@ function FlatList({
           setSectionExpanded={setSectionExpanded}
           t={t}
         />
-        {(pinnedRows.length > 0 ||
-          nativeSections.length > 0 ||
-          hostScopeFilterControl !== undefined) && (
-          <SectionHeading label={t("section.sessions")} trailing={hostScopeFilterControl} />
+        {(pinnedRows.length > 0 || nativeSections.length > 0) && (
+          <SectionHeading label={t("section.sessions")} />
         )}
         {rows.length === 0 &&
           pinnedRows.length === 0 &&
@@ -1378,6 +1465,7 @@ function FlatList({
               <SessionNodeItem
                 key={node.id}
                 node={node}
+                showHost={!singleRemoteHostScoped}
                 currentId={currentId}
                 now={now}
                 onOpen={open}
@@ -2000,14 +2088,6 @@ function WorkspaceBrowserContent({
     () => (hostScopeFiltered ? JSON.stringify(effectiveHostScopeFilter) : "all"),
     [hostScopeFiltered, effectiveHostScopeFilter],
   );
-  const hostScopeFilterControl = hasRemote ? (
-    <HostScopeFilter
-      workspaces={orderedWorkspaces}
-      state={effectiveHostScopeFilter}
-      onChange={updateHostScopeFilter}
-      t={t}
-    />
-  ) : undefined;
   const openAddRemoteWorkspace = (): void => {
     const selectedRemoteHostId =
       effectiveHostScopeFilter.selectedHost !== "all" &&
@@ -2047,6 +2127,9 @@ function WorkspaceBrowserContent({
         ? undefined
         : nativeSections.find(({ workspaceIds }) => workspaceIds?.includes(workspaceId) === true));
     if (section) actions.setSectionExpanded(`native-section:${section.id}`, true);
+    if (owningWorkspace?.remote !== undefined) {
+      actions.setSectionExpanded(remoteHostFolderKey(owningWorkspace.remote.hostId), true);
+    }
     setRevealSessionId(sessionId);
     setQuery("");
     setSearchExpanded(false);
@@ -2473,6 +2556,15 @@ function WorkspaceBrowserContent({
         </div>
       )}
 
+      {wide && hasRemote && normalizedQuery === "" && (
+        <HostScopeTabBar
+          workspaces={orderedWorkspaces}
+          state={effectiveHostScopeFilter}
+          onChange={updateHostScopeFilter}
+          t={t}
+        />
+      )}
+
       {/* Always-mounted seat keeps the region's flex slot while the list
           itself is wide-only. */}
       <div className={css.listArea}>
@@ -2517,8 +2609,8 @@ function WorkspaceBrowserContent({
               setSectionExpanded={actions.setSectionExpanded}
               revealSessionId={revealSessionId}
               onSessionRevealed={acknowledgeSessionReveal}
-              hostScopeFilterControl={hostScopeFilterControl}
               hostScopeFiltered={hostScopeFiltered}
+              singleRemoteHostScoped={singleRemoteHostScoped}
               onResetHostScope={resetHostScope}
               t={t}
             />
@@ -2551,7 +2643,6 @@ function WorkspaceBrowserContent({
               insertWorkspaceBefore={insertWorkspaceBefore}
               revealSessionId={revealSessionId}
               onSessionRevealed={acknowledgeSessionReveal}
-              hostScopeFilterControl={hostScopeFilterControl}
               hostScopeFiltered={hostScopeFiltered}
               singleRemoteHostScoped={singleRemoteHostScoped}
               onResetHostScope={resetHostScope}

@@ -4024,7 +4024,11 @@ describe("Renderer Updates page", () => {
       });
 
       const panel = elementWithClass(content, "settings-update-panel");
-      await vi.waitFor(() => expect(visibleText(panel)).toContain("有新版本可用"));
+      await vi.waitFor(() =>
+        expect(visibleText(panel)).toContain(
+          automatic ? "有新版本可用" : "新版本已发布，你使用的 npm 源还没有同步",
+        ),
+      );
       const update = descendants(panel).find(({ tagName }) => tagName === "button");
       expect(Boolean(update)).toBe(automatic);
       if (installation === "npm") {
@@ -4048,6 +4052,34 @@ describe("Renderer Updates page", () => {
       scope.dispose();
     },
   );
+
+  it("offers no update until the npm registry has synced the release", async () => {
+    const client = {
+      checkUpdate: vi.fn(async () => ({ ...updateCheck(), installationAvailable: false })),
+      startUpdate: vi.fn(),
+      readUpdateStatus: vi.fn(async () => ({ status: null })),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("zh-CN"),
+      () => client,
+    ).find(({ id }) => id === "updates");
+    if (!page) throw new Error("Updates page is not registered");
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+
+    const panel = elementWithClass(content, "settings-update-panel");
+    await vi.waitFor(() => expect(visibleText(panel)).toContain("npm 源还没有同步"));
+    expect(descendants(panel).some(({ tagName }) => tagName === "button")).toBe(false);
+
+    cleanup?.();
+    scope.dispose();
+  });
 
   it("renders the open-source project introduction on the About page", () => {
     const page = createDefaultRendererSettingsPages(rendererSettingsMessages("zh-CN")).find(

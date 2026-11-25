@@ -74,6 +74,7 @@ import {
 } from "./update-request.js";
 import liberseekLogoVideoUrl from "../assets/logo-animated.mp4";
 import { createRendererUpdateStatusPoll } from "./update-status-poll.js";
+import { describeUpdateFailure } from "./update-failure-messages.js";
 import { RendererRequestTransportError } from "../renderer-request-sender.js";
 
 export const CODEXHOST_GITHUB_REPOSITORY_URL = "https://github.com/LIBERSEEK/BOFT-CLI";
@@ -247,7 +248,7 @@ function statusMessage(
 ): string | null {
   if (!status) return null;
   if (status.phase === "succeeded") return messages.updateSucceeded;
-  if (status.phase === "failed") return status.error ?? messages.updateFailed;
+  if (status.phase === "failed") return describeUpdateFailure(status.error, messages);
   if (status.phase === "waiting-for-exit") return messages.updateWaitingForExit;
   if (status.phase === "installing") {
     return status.installation === "npm" ? messages.updateInstallingNpm : messages.updateInstalling;
@@ -805,7 +806,9 @@ function updatesPage(
           result.error || actionableStatus
             ? messages.updateFailed
             : result.updateAvailable
-              ? messages.updateAvailable
+              ? result.installationAvailable
+                ? messages.updateAvailable
+                : messages.updateWaitingForRegistry
               : messages.updateUpToDate;
         // Every state gets a status line; a bare button in an empty card reads as unfinished.
         const canUpdate = result.updateAvailable && result.installationAvailable;

@@ -395,6 +395,19 @@ export function draftThinkingOptionForModel(
   );
 }
 
+export function retainedThinkingOptionIdForModel(
+  catalog: HarnessModelCatalog,
+  model: HarnessModelRef,
+  resolved: HarnessThinkingOptionId | undefined,
+  previous: HarnessThinkingOptionId | undefined,
+): HarnessThinkingOptionId | undefined {
+  if (resolved) return resolved;
+  // Models without thinking selection must not erase the previously chosen
+  // thinking option, so it can be restored when switching back to a model
+  // that supports it.
+  return thinkingOptionsForModel(catalog, model).length === 0 ? previous : undefined;
+}
+
 export function draftPermissionMode(
   catalog: HarnessPermissionModeCatalog,
   requested: HarnessPermissionModeId | undefined,
@@ -2410,7 +2423,16 @@ export function installRendererBindingProbe(
       }
       if (!isCurrentModelRequest(mounted, generation)) return;
       controller.setExternalModel(mounted.composer, agent, effectiveModel);
-      controller.setExternalThinkingOption(mounted.composer, agent, effectiveThinkingOptionId);
+      controller.setExternalThinkingOption(
+        mounted.composer,
+        agent,
+        retainedThinkingOptionIdForModel(
+          effectiveCatalog,
+          effectiveModel,
+          effectiveThinkingOptionId,
+          previousThinking,
+        ),
+      );
       const effectivePermissionModeId =
         mounted.threadConfiguration?.effectivePermissionModeId ?? previousPermissionModeId;
       if (effectivePermissionModeId) {

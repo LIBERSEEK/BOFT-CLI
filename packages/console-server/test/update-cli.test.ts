@@ -62,7 +62,17 @@ describe("update command", () => {
     const write = vi.fn();
     await runUpdateCommand(target, updates, write);
     expect(updates.start).not.toHaveBeenCalled();
-    expect(write).toHaveBeenLastCalledWith("BOFT 1.0.0 is up to date.");
+    expect(write).toHaveBeenLastCalledWith("BOFT CLI 1.0.0 is up to date.");
+  });
+
+  it("does not start an update the npm registry cannot install yet", async () => {
+    const updates = fixture();
+    const checked = await updates.check(target);
+    updates.check.mockResolvedValue({ ...checked, installationAvailable: false });
+    await expect(runUpdateCommand(target, updates, vi.fn())).rejects.toThrow(
+      "your npm registry does not have it yet",
+    );
+    expect(updates.start).not.toHaveBeenCalled();
   });
 
   it("propagates check and preparation errors", async () => {
