@@ -406,8 +406,6 @@ export async function runHostRuntime(input: {
     input.environment.CODEXHOST_REMOTE_SSH_MANAGED === "1"
       ? undefined
       : createLauncherExternalUrlOpener(input.environment);
-  // The local console reads the statistics; read the native storage ahead of its first visit.
-  if (consoleOpener) usageStatistics.warm();
 
   if (!isRemoteUnixListenerInvocation(input.arguments)) {
     const webOpener = createHostWebOpener(input.environment);

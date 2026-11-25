@@ -17,11 +17,7 @@ describe("Host Runtime composition", () => {
   it("pins a directly launched remote Runtime to its own packaged CLI and Node", () => {
     const root = mkdtempSync(path.join(tmpdir(), "cx-runtime-cli-"));
     const runtime = path.join(root, "app", "host-runtime.mjs");
-    const launcher = path.join(
-      root,
-      "bin",
-      process.platform === "win32" ? "codexhost.exe" : "codexhost",
-    );
+    const launcher = path.join(root, "bin", process.platform === "win32" ? "boft.exe" : "boft");
     try {
       expect(delegationCliEnvironment({}, runtime)).toEqual({});
       mkdirSync(path.dirname(launcher), { recursive: true });

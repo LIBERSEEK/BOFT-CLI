@@ -127,6 +127,8 @@ import { antigravityHome, createAntigravityUsageStatistics } from "./usage-stati
 
 const harnessId = harnessIdSchema.parse("antigravity");
 const SKIP = "dangerously-skip-permissions";
+const QUOTA_REFRESH_COOLDOWN_MS = 60_000;
+
 export const ANTIGRAVITY_WORKSPACE_FILE_INSTRUCTION =
   "[System Instruction: When creating new files in the workspace, use the write_to_file tool. When modifying existing files, use the replace_file_content tool. Never include ArtifactMetadata when calling write_to_file for workspace files; it is reserved for artifacts in the brain directory. Do not use terminal commands such as Set-Content, Out-File, echo, or cat to write code files. For clarification, use ask_question, which is connected to the CodexHost Desktop through a Hook. Use single-choice or text questions. The Hook returns the user's response in its reason while blocking the native auto-skip behavior; do not retry merely because the native tool reports it was blocked.]";
 
@@ -310,6 +312,7 @@ interface ActiveTurn {
   ended: boolean;
   promptPhase: "notSubmitted" | "submitted" | "returned";
   readonly accounting: AbortController;
+  submittedAtMs?: number;
   firstOutputAtMs?: number;
   hasToolCalls?: boolean;
   dbPath?: string;
@@ -353,6 +356,9 @@ export class AntigravitySession implements HarnessSession {
   #active: ActiveTurn | undefined;
   #wakes: AntigravityWakeObserver | undefined;
   #postPromptWake = false;
+  // Intervals during which a prompt was in flight on ACP; wakes started inside
+  // any window streamed into that user Turn and must not be republished.
+  readonly #promptWindows: Array<{ submittedAtMs: number; returnedAtMs: number }> = [];
   #pending = new Map<string, PendingInteraction>();
   #usage: AntigravitySessionUsageTracker | undefined;
   #usageWork: Promise<void> | undefined;
@@ -543,6 +549,19 @@ export class AntigravitySession implements HarnessSession {
           cursor,
           outputLimit: this.#options.adapter.toolOutputLimit,
           canPublish: () => this.#active?.promptPhase !== "returned",
+          streamedIntoPrompt: (startedAtMs) => {
+            if (startedAtMs === undefined) return false;
+            const turn = this.#active;
+            if (
+              turn?.promptPhase === "submitted" &&
+              turn.submittedAtMs !== undefined &&
+              startedAtMs >= turn.submittedAtMs
+            )
+              return true;
+            return this.#promptWindows.some(
+              (window) => startedAtMs >= window.submittedAtMs && startedAtMs <= window.returnedAtMs,
+            );
+          },
           publish: (snapshot) => this.#emit({ type: "turn.autonomous.completed", snapshot }),
         });
       }
@@ -1210,40 +1229,53 @@ export class AntigravitySession implements HarnessSession {
       turn.dbPath = file;
       turn.compactionAfterStep = await readNativeStepWatermark(file);
       if (!this.#isCurrent(turn)) return;
-      const submittedAtMs = Date.now();
+      turn.submittedAtMs = Date.now();
+      const submittedAtMs = turn.submittedAtMs;
       this.#usage?.beginTurn(submittedAtMs, turn.turnId);
       this.#usageTurnId = turn.turnId;
       turn.promptPhase = "submitted";
-      const result = await transport.prompt(parts, {
-        onResponse: () => {
-          turn.promptPhase = "returned";
-        },
-        onEvent: (event) => {
-          if (!this.#isCurrent(turn) || turn.cancelled) return;
-          if (event.type === "agent.text" || event.type === "agent.thought") {
-            turn.firstOutputAtMs ??= Date.now();
-            this.#appendText(
-              turn,
-              event.type === "agent.text" ? "agentMessage" : "reasoning",
-              event.text,
-            );
-          } else if (event.type === "tool.call" || event.type === "tool.update") {
+      let windowRecorded = false;
+      const recordPromptWindow = () => {
+        if (windowRecorded) return;
+        windowRecorded = true;
+        this.#promptWindows.push({ submittedAtMs, returnedAtMs: Date.now() });
+      };
+      // Keep the wire response time: later output is idle, not part of this Turn.
+      const responded = () => {
+        if (turn.promptPhase === "returned") return;
+        turn.promptPhase = "returned";
+        recordPromptWindow();
+      };
+      const result = await transport
+        .prompt(parts, {
+          onResponse: responded,
+          onEvent: (event) => {
+            if (!this.#isCurrent(turn) || turn.cancelled) return;
+            if (event.type === "agent.text" || event.type === "agent.thought") {
+              turn.firstOutputAtMs ??= Date.now();
+              this.#appendText(
+                turn,
+                event.type === "agent.text" ? "agentMessage" : "reasoning",
+                event.text,
+              );
+            } else if (event.type === "tool.call" || event.type === "tool.update") {
+              turn.hasToolCalls = true;
+              turn.firstOutputAtMs ??= Date.now();
+              this.#completeText(turn, { status: "succeeded" });
+              turn.tracker?.handleToolEvent(event);
+            } else this.#sessionEvent(event);
+          },
+          onPermission: (request) => {
             turn.hasToolCalls = true;
-            turn.firstOutputAtMs ??= Date.now();
-            this.#completeText(turn, { status: "succeeded" });
-            turn.tracker?.handleToolEvent(event);
-          } else this.#sessionEvent(event);
-        },
-        onPermission: (request) => {
-          turn.hasToolCalls = true;
-          return this.#permission(turn, request);
-        },
-        onElicitation: (request) => {
-          turn.hasToolCalls = true;
-          return this.#question(turn, request);
-        },
-      });
-      turn.promptPhase = "returned";
+            return this.#permission(turn, request);
+          },
+          onElicitation: (request) => {
+            turn.hasToolCalls = true;
+            return this.#question(turn, request);
+          },
+        })
+        .finally(recordPromptWindow);
+      responded();
       const completedAtMs = Date.now();
       if (!this.#isCurrent(turn)) return;
       outcome =
@@ -1594,6 +1626,7 @@ export class AntigravityAdapter implements HarnessAdapter {
   readonly #abort = new AbortController();
   #closed = false;
   #quota: AntigravityQuotaReading | null = null;
+  #quotaFetchedAt = Number.NEGATIVE_INFINITY;
   #quotaRefresh: Promise<AntigravityQuotaReading | null> | undefined;
   #quotaCwd = process.cwd();
   constructor(readonly options: AntigravityAdapterOptions = {}) {
@@ -1841,8 +1874,15 @@ export class AntigravityAdapter implements HarnessAdapter {
     const quota = await this.#refreshQuota();
     return quota ? projectAntigravityQuota(quota) : null;
   }
-  #refreshQuota(): Promise<AntigravityQuotaReading | null> {
+  #refreshQuota(force = false): Promise<AntigravityQuotaReading | null> {
     if (this.#closed) return Promise.resolve(null);
+    if (
+      !force &&
+      !this.#quotaRefresh &&
+      Date.now() - this.#quotaFetchedAt < QUOTA_REFRESH_COOLDOWN_MS
+    ) {
+      return Promise.resolve(this.#quota);
+    }
     return (this.#quotaRefresh ??= (async () => {
       const command = resolveAntigravityExecutable({
         ...(this.options.command ? { command: this.options.command } : {}),
@@ -1863,11 +1903,13 @@ export class AntigravityAdapter implements HarnessAdapter {
       if (!this.#closed) this.#quota = quota;
       return this.#closed ? null : quota;
     })().finally(() => {
+      if (!this.#closed) this.#quotaFetchedAt = Date.now();
       this.#quotaRefresh = undefined;
     }));
   }
   async inspectAccount() {
-    const credits = await this.refreshCredits();
+    const quota = await this.#refreshQuota(true);
+    const credits = quota ? projectAntigravityQuota(quota) : null;
     if (!credits) return null;
     return {
       credits: {
@@ -1886,6 +1928,7 @@ export class AntigravityAdapter implements HarnessAdapter {
     this.#cache.clear();
     this.#inflight.clear();
     this.#quota = null;
+    this.#quotaFetchedAt = Number.NEGATIVE_INFINITY;
     await Promise.all([...this.#sessions].map((session) => session.close()));
     this.#sessions.clear();
   }
