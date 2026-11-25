@@ -178,6 +178,7 @@ const USAGE: &str = "usage:
   boft desktop-screenshot
   boft broker install|status|stop|uninstall
   boft delegate --help
+  boft host list ...
   boft host info ...
   boft project list ...
   boft harness list|inspect ...
@@ -1835,7 +1836,7 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             Ok(())
         }
         Some("desktop-screenshot") => Err("desktop-screenshot accepts no arguments".into()),
-        Some("host") if arguments.get(1).is_some_and(|arg| arg == "info") => {
+        Some("host") if matches!(arguments.get(1).map(String::as_str), Some("info" | "list")) => {
             run_delegation_cli(arguments)
         }
         Some("host") => host_service::run(&arguments[1..]),

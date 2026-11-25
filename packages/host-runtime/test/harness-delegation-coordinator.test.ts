@@ -21,15 +21,16 @@ import {
 } from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
 
-import {
-  HarnessDelegationCoordinator,
-  sanitizeDelegationTitle,
-} from "../src/harness-delegation-coordinator.js";
+import { boundDelegationToken } from "../src/bearer-token.js";
 import { runDelegationCli } from "../src/delegation-cli.js";
 import { startDelegationControlServer } from "../src/delegation-control-server.js";
 import type { DelegationPendingQuestion, DelegationStartInput } from "../src/delegation-types.js";
 import { ExternalThreadRepository } from "../src/external-thread-repository.js";
 import { ExternalThreadRuntime, type ExternalThread } from "../src/external-thread-runtime.js";
+import {
+  HarnessDelegationCoordinator,
+  sanitizeDelegationTitle,
+} from "../src/harness-delegation-coordinator.js";
 
 async function fixture(
   adapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi")),
@@ -447,6 +448,10 @@ describe("HarnessDelegationCoordinator", () => {
         executionPolicy: "unattended-full-access",
         environment: {
           ...environment,
+          CODEXHOST_RUNTIME_TOKEN: boundDelegationToken(
+            environment.CODEXHOST_RUNTIME_TOKEN,
+            started.threadId,
+          ),
           CODEXHOST_THREAD_ID: started.threadId,
         },
       });
@@ -476,6 +481,10 @@ describe("HarnessDelegationCoordinator", () => {
         kind: "resume",
         environment: {
           ...environment,
+          CODEXHOST_RUNTIME_TOKEN: boundDelegationToken(
+            environment.CODEXHOST_RUNTIME_TOKEN,
+            started.threadId,
+          ),
           CODEXHOST_THREAD_ID: started.threadId,
         },
         nativeRef: { harnessId: "workbuddy" },

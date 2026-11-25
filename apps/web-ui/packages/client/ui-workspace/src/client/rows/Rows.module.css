@@ -563,9 +563,14 @@
 }
 
 /* Expansion is visible immediately after clicking, not only after pointer leave. */
-/* A resting Workspace folder reads at the row's own text weight, as in the
-   Codex sidebar; only the expanded state carries the blue open glyph. */
+/* Keep resting Workspace folders gently quieter than row labels while staying
+   crisp and substantial; hover and expansion restore full emphasis. */
 .projectRow > .slot:not(.folderExpanded) {
+  color: color-mix(in srgb, currentColor 86%, transparent);
+  transition: color 140ms ease;
+}
+
+.projectRow:hover > .slot:not(.folderExpanded) {
   color: inherit;
 }
 
@@ -588,6 +593,17 @@
   white-space: nowrap;
   font-size: 14px;
   line-height: 20px;
+}
+
+/* Soft right-edge fade on full-width sidebar project, session, and search
+   titles so long labels taper cleanly without masking trailing badges, dots,
+   actions, or shrink-to-fit remote host labels (.remoteHostText .title). */
+.projectRow .projectText > .title,
+.sessionRow .title,
+.searchResultTitle {
+  text-overflow: clip;
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent);
 }
 
 .renameInput {
@@ -713,10 +729,6 @@
   .projectRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen)
     :is(.hostBadge, .remoteHostStatusDot) {
     visibility: hidden;
-  }
-
-  .remoteHostRow:is(:hover, :focus-visible) .remoteHostStatusDot {
-    visibility: visible;
   }
 
   .projectRow > .rowActions,

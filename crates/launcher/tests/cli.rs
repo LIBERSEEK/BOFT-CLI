@@ -222,6 +222,7 @@ fn help_prints_usage_to_stdout_and_succeeds() {
             "boft app [--onboarding]",
             "boft launch-prefs get --json",
             "boft desktop-screenshot",
+            "boft host list ...",
             "boft host info ...",
             "boft project list ...",
             "boft harness list|inspect ...",

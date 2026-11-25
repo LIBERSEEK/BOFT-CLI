@@ -67,6 +67,7 @@ function answerCli(file: string, fetchImpl: typeof fetch) {
 
 describe("delegation CLI", () => {
   it.each([
+    ["host", "list", "--help"],
     ["harness", "list", "--help"],
     ["harness", "inspect", "--help"],
     ["delegate", "start", "--help"],
