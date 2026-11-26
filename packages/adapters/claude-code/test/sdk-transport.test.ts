@@ -5,7 +5,15 @@ import os from "node:os";
 import path from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
-import type { PermissionUpdate, Query, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import type {
+  BackgroundTaskSummary,
+  PermissionUpdate,
+  Query,
+  SDKMessage,
+  SessionCronSummary,
+  StopHookInput,
+  query,
+} from "@anthropic-ai/claude-agent-sdk";
 import { harnessThinkingOptionIdSchema } from "@codexhost/shared-contracts";
 
 import {
@@ -1280,6 +1288,21 @@ describe("ClaudeSdkTransport process environment", () => {
     await value.transport.close();
   });
 
+  it("enables Claude Code task tools unless the user already chose a value", async () => {
+    const enabled = fixture("create", "default", harnessThinkingOptionIdSchema.parse("auto"), {});
+    await enabled.transport.start();
+    expect(options(enabled).env?.CLAUDE_CODE_ENABLE_TODO_TOOLS).toBe("1");
+    expect(options(enabled).env).not.toHaveProperty("CLAUDE_CODE_ENABLE_TASKS");
+    await enabled.transport.close();
+
+    const userChoice = fixture("create", "default", harnessThinkingOptionIdSchema.parse("auto"), {
+      CLAUDE_CODE_ENABLE_TODO_TOOLS: "0",
+    });
+    await userChoice.transport.start();
+    expect(options(userChoice).env?.CLAUDE_CODE_ENABLE_TODO_TOOLS).toBe("0");
+    await userChoice.transport.close();
+  });
+
   it("adds the Host Node runtime to the Claude process PATH", async () => {
     const value = fixture("create", "default", harnessThinkingOptionIdSchema.parse("auto"), {
       PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
@@ -1421,14 +1444,15 @@ describe("ClaudeSdkTransport root safety", () => {
 });
 
 describe("ClaudeSdkTransport Model control", () => {
-  it("passes create-time Model and delegates setter without sending input", async () => {
+  it("passes the exact create-time Model to the SDK and delegates the setter without sending input", async () => {
     const value = fixture();
+    const id = " provider/模型 [1m] & (test) ";
     const selected = new ClaudeSdkTransport({
       command: process.execPath,
       cwd: process.cwd(),
       sessionId: "00000000-0000-4000-8000-000000000009",
       openMode: "create",
-      model: "custom-model",
+      model: id,
       permissionMode: "default",
       thinkingOptionId: harnessThinkingOptionIdSchema.parse("auto"),
       closeTimeoutMs: 100,
@@ -1439,7 +1463,7 @@ describe("ClaudeSdkTransport Model control", () => {
     });
 
     await selected.start();
-    expect(options(value).model).toBe("custom-model");
+    expect(options(value).model).toBe(id);
     await selected.setModel("sonnet");
     await selected.setModel(undefined);
     expect(value.fakeQuery.setModel).toHaveBeenNthCalledWith(1, "sonnet");
@@ -1636,6 +1660,50 @@ describe("ClaudeSdkTransport Model control", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it("times out a hanging Model inspection and terminates its spawned child process even when query.close throws", async () => {
+    let spawnedChild:
+      | ReturnType<
+          NonNullable<Parameters<typeof query>[0]["options"]>["spawnClaudeCodeProcess"] &
+            ((...args: never[]) => unknown)
+        >
+      | undefined;
+    let exited = false;
+    const hangingQueryFactory: typeof query = (params) => {
+      const spawnChild = params.options?.spawnClaudeCodeProcess;
+      if (spawnChild) {
+        const child = spawnChild({
+          command: process.execPath,
+          args: ["-e", "setTimeout(() => {}, 60_000)"],
+          cwd: process.cwd(),
+          env: process.env,
+          signal: new AbortController().signal,
+        });
+        spawnedChild = child;
+        child.once("exit", () => {
+          exited = true;
+        });
+      }
+      return {
+        initializationResult: () => new Promise(() => undefined),
+        close: () => {
+          throw new Error("query.close failed");
+        },
+      } as unknown as ReturnType<typeof query>;
+    };
+    const inspector = new ClaudeSdkModelInspector({
+      command: process.execPath,
+      environment: process.env,
+      cwd: process.cwd(),
+      closeTimeoutMs: 100,
+      inspectTimeoutMs: 50,
+      queryFactory: hangingQueryFactory,
+    });
+
+    await expect(inspector.inspect()).rejects.toThrow("Claude SDK Model inspection timed out");
+    expect(spawnedChild).toBeDefined();
+    expect(exited).toBe(true);
   });
 });
 
@@ -2577,6 +2645,8 @@ describe("Claude history replacement fence", () => {
     } as unknown as SDKMessage);
     await new Promise((resolve) => setTimeout(resolve, 0));
     await expect(value.transport.close()).rejects.toThrow("shutdown could not be confirmed");
+    // The closed SDK stream alone does not permit a later close to confirm release.
+    await expect(value.transport.close()).rejects.toThrow("shutdown could not be confirmed");
     expect(value.fakeQuery.stopTask).toHaveBeenCalledWith("still-running");
   });
 
@@ -2614,14 +2684,80 @@ describe("Claude history replacement fence", () => {
     },
   );
 
-  it("rejects close if native output cannot be drained", async () => {
+  it.skipIf(process.platform === "win32")(
+    "does not signal a reused process group when retrying a timed-out shutdown",
+    async () => {
+      const value = fixture();
+      await value.transport.start();
+      const spawnProcess = options(value).spawnClaudeCodeProcess;
+      if (!spawnProcess) throw new Error("Missing native process ownership hook");
+      const child = spawnProcess({
+        command: process.execPath,
+        args: ["-e", ""],
+        signal: new AbortController().signal,
+        cwd: process.cwd(),
+        env: process.env,
+      }) as ChildProcessWithoutNullStreams;
+      await once(child, "exit");
+      if (!child.pid) throw new Error("Missing spawned process ID");
+      const pgid = -child.pid;
+      const realKill = process.kill.bind(process);
+      let groupExists = true;
+      const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+        if (pid !== pgid) return realKill(pid, signal);
+        if (!groupExists) throw Object.assign(new Error("No such group"), { code: "ESRCH" });
+        return true;
+      });
+      try {
+        // The original group outlives its wrapper and does not exit before the deadline.
+        await expect(value.transport.close()).rejects.toThrow("shutdown could not be confirmed");
+        expect(kill).toHaveBeenCalledWith(pgid, "SIGTERM");
+        kill.mockClear();
+
+        // The kernel now reports an unrelated group at the same PGID.
+        await expect(value.transport.close()).rejects.toThrow("shutdown could not be confirmed");
+        expect(kill.mock.calls.filter(([pid]) => pid === pgid)).toEqual([[pgid, 0]]);
+
+        groupExists = false;
+        await expect(value.transport.close()).resolves.toBeUndefined();
+      } finally {
+        kill.mockRestore();
+      }
+    },
+  );
+
+  it("rechecks a late SDK output drain after a failed close without closing the Query again", async () => {
     const value = fixture();
     await value.transport.start();
+    const finishOutput = value.fakeQuery.close.bind(value.fakeQuery);
     const close = vi.spyOn(value.fakeQuery, "close").mockImplementation(() => undefined);
     try {
+      const first = value.transport.close();
+      expect(value.transport.close()).toBe(first);
+      await expect(first).rejects.toThrow("shutdown could not be confirmed");
+      await expect(value.transport.start()).rejects.toThrow("closing");
       await expect(value.transport.close()).rejects.toThrow("shutdown could not be confirmed");
+      finishOutput();
+      const confirmed = value.transport.close();
+      await expect(confirmed).resolves.toBeUndefined();
+      expect(value.transport.close()).toBe(confirmed);
+      expect(close).toHaveBeenCalledOnce();
+      expect(value.onFault).not.toHaveBeenCalled();
     } finally {
-      close.mockRestore();
+      finishOutput();
+    }
+  });
+
+  it("retries an SDK Query close that threw before it could finish output", async () => {
+    const value = fixture();
+    await value.transport.start();
+    vi.spyOn(value.fakeQuery, "close").mockImplementationOnce(() => {
+      throw new Error("failed to close Query");
+    });
+    try {
+      await expect(value.transport.close()).rejects.toThrow("shutdown could not be confirmed");
+      await expect(value.transport.close()).resolves.toBeUndefined();
+    } finally {
       value.fakeQuery.close();
     }
   });
@@ -2964,7 +3100,15 @@ describe("ClaudeSdkTransport autonomous Subagent settlement ordering", () => {
 });
 
 describe("ClaudeSdkTransport native background tasks", () => {
-  it("reports background tasks from the native live set", async () => {
+  async function syncStream(value: ReturnType<typeof fixture>, count: number): Promise<void> {
+    value.fakeQuery.push({
+      type: "rate_limit_event",
+      rate_limit_info: { rateLimitType: "five_hour", utilization: 0.1 },
+    } as unknown as SDKMessage);
+    await vi.waitFor(() => expect(value.onPlanLimit).toHaveBeenCalledTimes(count));
+  }
+
+  it("keeps background work active until terminal task_notification arrives after the live roster empties", async () => {
     const value = fixture();
     await value.transport.start();
     try {
@@ -2975,13 +3119,226 @@ describe("ClaudeSdkTransport native background tasks", () => {
         tasks: [{ task_id: "bash-1", task_type: "local_bash", description: "sleep 5" }],
       } as unknown as SDKMessage);
       await vi.waitFor(() => expect(value.transport.hasBackgroundTasks()).toBe(true));
+
+      // Leaving the live roster moves the task to awaiting-notification until its terminal arrives.
       value.fakeQuery.push({
         type: "system",
         subtype: "background_tasks_changed",
         tasks: [],
       } as unknown as SDKMessage);
+      await syncStream(value, 1);
+      expect(value.transport.hasBackgroundTasks()).toBe(true);
+
+      value.fakeQuery.push({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "bash-1",
+        status: "completed",
+      } as unknown as SDKMessage);
+      await vi.waitFor(() => expect(value.transport.hasBackgroundTasks()).toBe(false));
+
+      // Reverse ordering (terminal notification before roster shrink) must not wedge awaiting state.
+      value.fakeQuery.push({
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [{ task_id: "bash-2", task_type: "local_bash", description: "sleep 1" }],
+      } as unknown as SDKMessage);
+      await vi.waitFor(() => expect(value.transport.hasBackgroundTasks()).toBe(true));
+      value.fakeQuery.push({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "bash-2",
+        status: "failed",
+      } as unknown as SDKMessage);
+      await vi.waitFor(() => expect(value.transport.hasBackgroundTasks()).toBe(false));
+      value.fakeQuery.push({
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [],
+      } as unknown as SDKMessage);
+      await syncStream(value, 2);
+      expect(value.transport.hasBackgroundTasks()).toBe(false);
+
+      // Foreground tasks do not occupy background work unless moved to background later.
+      value.fakeQuery.push({
+        type: "system",
+        subtype: "task_started",
+        task_id: "fg-1",
+        is_backgrounded: false,
+      } as unknown as SDKMessage);
+      await syncStream(value, 3);
+      expect(value.transport.hasBackgroundTasks()).toBe(false);
+
+      value.fakeQuery.push({
+        type: "system",
+        subtype: "task_updated",
+        task_id: "fg-1",
+        patch: { is_backgrounded: true },
+      } as unknown as SDKMessage);
+      await vi.waitFor(() => expect(value.transport.hasBackgroundTasks()).toBe(true));
+      value.fakeQuery.push({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "fg-1",
+        status: "stopped",
+      } as unknown as SDKMessage);
       await vi.waitFor(() => expect(value.transport.hasBackgroundTasks()).toBe(false));
     } finally {
+      await value.transport.close();
+    }
+  });
+
+  it("protects active or unconfirmed process-local session crons until Stop reports none", async () => {
+    const value = fixture();
+    await value.transport.start();
+    const stopHook = options(value).hooks?.Stop?.[0]?.hooks[0];
+    if (!stopHook) throw new Error("Expected Stop hook to be registered");
+    const fireStop = (session_crons?: SessionCronSummary[]) => {
+      const input: StopHookInput = {
+        hook_event_name: "Stop",
+        session_id: "00000000-0000-4000-8000-000000000001",
+        transcript_path: "",
+        cwd: process.cwd(),
+        stop_hook_active: false,
+        ...(session_crons !== undefined ? { session_crons } : {}),
+      };
+      return stopHook(input, undefined, { signal: new AbortController().signal });
+    };
+    try {
+      expect(value.transport.hasBackgroundTasks()).toBe(false);
+
+      // Tool call without Stop confirmation keeps conservative protection.
+      value.fakeQuery.push({
+        type: "assistant",
+        message: {
+          content: [{ type: "tool_use", id: "cron-call-1", name: "CronCreate", input: {} }],
+        },
+      } as unknown as SDKMessage);
+      await vi.waitFor(() => expect(value.transport.hasBackgroundTasks()).toBe(true));
+
+      // A Stop hook without session_crons (older CLI) cannot clear unconfirmed cron state.
+      await expect(fireStop(undefined)).resolves.toEqual({});
+      expect(value.transport.hasBackgroundTasks()).toBe(true);
+
+      // Authoritative non-empty session_crons keeps protection active.
+      await expect(
+        fireStop([{ id: "cron-1", schedule: "*/5 * * * *", recurring: true, prompt: "ping" }]),
+      ).resolves.toEqual({});
+      expect(value.transport.hasBackgroundTasks()).toBe(true);
+
+      // Authoritative empty session_crons clears protection.
+      await expect(fireStop([])).resolves.toEqual({});
+      expect(value.transport.hasBackgroundTasks()).toBe(false);
+
+      // Streamed ScheduleWakeup / CronDelete calls also arm conservative protection until Stop clears them.
+      value.fakeQuery.push({
+        type: "stream_event",
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "tool_use", id: "wakeup-1", name: "ScheduleWakeup" },
+        },
+      } as unknown as SDKMessage);
+      await vi.waitFor(() => expect(value.transport.hasBackgroundTasks()).toBe(true));
+      await expect(fireStop([])).resolves.toEqual({});
+      expect(value.transport.hasBackgroundTasks()).toBe(false);
+    } finally {
+      await value.transport.close();
+    }
+  });
+
+  it("expires awaiting task notifications after the grace window and clears them on empty Stop background_tasks", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_800_000_000_000);
+    const value = fixture();
+    await value.transport.start();
+    const stopHook = options(value).hooks?.Stop?.[0]?.hooks[0];
+    if (!stopHook) throw new Error("Expected Stop hook to be registered");
+    const flush = async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    };
+    const fireStop = (background_tasks?: BackgroundTaskSummary[]) => {
+      const input: StopHookInput = {
+        hook_event_name: "Stop",
+        session_id: "00000000-0000-4000-8000-000000000001",
+        transcript_path: "",
+        cwd: process.cwd(),
+        stop_hook_active: false,
+        ...(background_tasks !== undefined ? { background_tasks } : {}),
+      };
+      return stopHook(input, undefined, { signal: new AbortController().signal });
+    };
+    try {
+      // Normal path: stays active during grace window and clears immediately on task_notification.
+      value.fakeQuery.push({
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [{ task_id: "bash-normal", task_type: "local_bash", description: "sleep 1" }],
+      } as unknown as SDKMessage);
+      await flush();
+      expect(value.transport.hasBackgroundTasks()).toBe(true);
+      value.fakeQuery.push({
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [],
+      } as unknown as SDKMessage);
+      await flush();
+      vi.advanceTimersByTime(10_000);
+      expect(value.transport.hasBackgroundTasks()).toBe(true);
+      value.fakeQuery.push({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "bash-normal",
+        status: "completed",
+      } as unknown as SDKMessage);
+      await flush();
+      expect(value.transport.hasBackgroundTasks()).toBe(false);
+
+      // Dropped task_notification: remains guarded up to the 30s bound, then expires cleanly.
+      value.fakeQuery.push({
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [{ task_id: "bash-dropped", task_type: "local_bash", description: "sleep 1" }],
+      } as unknown as SDKMessage);
+      await flush();
+      expect(value.transport.hasBackgroundTasks()).toBe(true);
+      value.fakeQuery.push({
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [],
+      } as unknown as SDKMessage);
+      await flush();
+      vi.advanceTimersByTime(29_999);
+      expect(value.transport.hasBackgroundTasks()).toBe(true);
+      vi.advanceTimersByTime(1);
+      expect(value.transport.hasBackgroundTasks()).toBe(false);
+
+      // Stop hook clears awaiting tasks only when background_tasks is explicitly empty.
+      value.fakeQuery.push({
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [{ task_id: "bash-stop", task_type: "local_bash", description: "sleep 1" }],
+      } as unknown as SDKMessage);
+      await flush();
+      expect(value.transport.hasBackgroundTasks()).toBe(true);
+      value.fakeQuery.push({
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [],
+      } as unknown as SDKMessage);
+      await flush();
+      await expect(fireStop(undefined)).resolves.toEqual({});
+      expect(value.transport.hasBackgroundTasks()).toBe(true);
+      await expect(
+        fireStop([
+          { id: "other-task", type: "shell", status: "running", description: "still running" },
+        ]),
+      ).resolves.toEqual({});
+      expect(value.transport.hasBackgroundTasks()).toBe(true);
+      await expect(fireStop([])).resolves.toEqual({});
+      expect(value.transport.hasBackgroundTasks()).toBe(false);
+    } finally {
+      vi.useRealTimers();
       await value.transport.close();
     }
   });
@@ -3084,6 +3441,12 @@ describe("ClaudeSdkTransport confirmed background stops", () => {
       );
     } finally {
       liveTasks(value.fakeQuery, []);
+      value.fakeQuery.push({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "agent-1",
+        status: "stopped",
+      } as unknown as SDKMessage);
       await vi.waitFor(() => expect(transport.hasBackgroundTasks()).toBe(false));
       await transport.close();
     }

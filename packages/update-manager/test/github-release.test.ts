@@ -49,6 +49,9 @@ describe("GitHub Release update discovery", () => {
     expect(expectedInstallerAssetName("1.2.3", "macos-arm64")).toBe(
       "boft-cli-1.2.3-macos-arm64.dmg",
     );
+    expect(expectedInstallerAssetName("1.2.3", "linux-x64")).toBe(
+      "boft-cli-1.2.3-linux-x64.tar.gz",
+    );
   });
 
   it("accepts LiberSeek and LIBERSEEK release URLs and rejects other spellings", () => {

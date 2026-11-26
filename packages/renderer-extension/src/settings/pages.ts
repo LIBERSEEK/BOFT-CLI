@@ -8,6 +8,10 @@ import { createRemoteConnectionsPage } from "./remote-connections-page.js";
 import { createMobileWebPage } from "./mobile-web-page.js";
 import type { RemoteConnectionsControl } from "../remote-connections-control.js";
 import type {
+  ReleaseAnnouncement,
+  ReleaseAnnouncementAcknowledgeParams,
+  ReleaseAnnouncementGetParams,
+  ReleaseAnnouncementGetResult,
   UpdateCheckResult,
   UpdateInstallation,
   UpdateStartResult,
@@ -47,7 +51,12 @@ import {
 import type { RendererSettingsPluginPagesSource } from "./desktop-extension-settings-pages.js";
 import type { LoadedSessionsClient } from "./loaded-sessions-table.js";
 import { createReleaseNotesElement } from "./release-notes.js";
+import {
+  openReleaseAnnouncementDialog,
+  type ReleaseAnnouncementDialogHandle,
+} from "./release-announcement-dialog.js";
 import { createAccountsSettingsPage, type RendererCodexAccountClient } from "./accounts-page.js";
+import { createDelegationSettingsPage, type RendererDelegationClient } from "./delegation-page.js";
 import {
   createHarnessSchedulesPage,
   type HarnessSchedulesPageOptions,
@@ -65,6 +74,7 @@ import {
 } from "./update-request.js";
 import liberseekLogoVideoUrl from "../assets/logo-animated.mp4";
 import { createRendererUpdateStatusPoll } from "./update-status-poll.js";
+import { describeUpdateFailure } from "./update-failure-messages.js";
 import { RendererRequestTransportError } from "../renderer-request-sender.js";
 
 export const CODEXHOST_GITHUB_REPOSITORY_URL = "https://github.com/LIBERSEEK/BOFT-CLI";
@@ -105,6 +115,7 @@ export const DEFAULT_RENDERER_SETTINGS_PAGE_IDS = [
   "mobile-web",
   "remote-connections",
   "accounts",
+  "delegation",
   "session-import",
   "usage-statistics",
   "appearance",
@@ -154,6 +165,10 @@ export interface RendererUpdateClient {
   checkUpdate(): Promise<UpdateCheckResult | null>;
   startUpdate(): Promise<UpdateStartResult>;
   readUpdateStatus(): Promise<UpdateStatusResult>;
+  getReleaseAnnouncement?(
+    params?: ReleaseAnnouncementGetParams,
+  ): Promise<ReleaseAnnouncementGetResult | null>;
+  acknowledgeReleaseAnnouncement?(params: ReleaseAnnouncementAcknowledgeParams): Promise<void>;
   /** Opens the local codexhost console; absent on Hosts that cannot. */
   openConsole?(): Promise<unknown>;
   /** Opens an http(s) URL in the OS browser; absent when the Host cannot. */
@@ -219,6 +234,7 @@ function installationLabel(
     return messages.updateInstallationWindowsInstaller;
   }
   if (installation === "macos-dmg") return messages.updateInstallationMacOsDmg;
+  if (installation === "linux-archive") return messages.updateInstallationLinuxArchive;
   return messages.updateInstallationUnknown;
 }
 
@@ -232,7 +248,7 @@ function statusMessage(
 ): string | null {
   if (!status) return null;
   if (status.phase === "succeeded") return messages.updateSucceeded;
-  if (status.phase === "failed") return status.error ?? messages.updateFailed;
+  if (status.phase === "failed") return describeUpdateFailure(status.error, messages);
   if (status.phase === "waiting-for-exit") return messages.updateWaitingForExit;
   if (status.phase === "installing") {
     return status.installation === "npm" ? messages.updateInstallingNpm : messages.updateInstalling;
@@ -438,7 +454,38 @@ function updatesPage(
       const heading = document.createElement("div");
       heading.className = "settings-section-label";
       heading.textContent = messages.pageLabels.updates;
-      header.append(heading);
+      const announcementButton = document.createElement("button");
+      announcementButton.type = "button";
+      announcementButton.className = "settings-command-button settings-command-button--secondary";
+      announcementButton.hidden = true;
+      announcementButton.append(
+        createRendererSettingsIcon("sparkles", 14),
+        messages.updateViewAnnouncement,
+      );
+      header.append(heading, announcementButton);
+
+      let currentAnnouncement: ReleaseAnnouncement | null = null;
+      let announcementDialog: ReleaseAnnouncementDialogHandle | null = null;
+      announcementButton.addEventListener("click", () => {
+        if (!currentAnnouncement || context.signal.aborted) return;
+        const rootNode = context.content.getRootNode();
+        const hostScheme =
+          rootNode instanceof ShadowRoot && rootNode.host instanceof HTMLElement
+            ? rootNode.host.style.colorScheme
+            : "";
+        const colorScheme =
+          hostScheme === "light" || hostScheme === "dark" ? hostScheme : "inherit";
+        announcementDialog?.dispose();
+        announcementDialog = openReleaseAnnouncementDialog({
+          announcement: currentAnnouncement,
+          locale: messages.locale,
+          ownerDocument: document,
+          colorScheme,
+          onClose() {
+            announcementDialog = null;
+          },
+        });
+      });
 
       // Version summary: current, latest, and installation sit side by side so the
       // comparison is readable without scrolling.
@@ -649,10 +696,12 @@ function updatesPage(
         panel.dataset.updateState = viewPhase;
         delete panel.dataset.inline;
         panel.replaceChildren();
-        const head = createPanelHead(document, viewPhase, message);
         setManualFallback(viewPhase === "failed");
-        panel.append(head);
+        panel.append(createPanelHead(document, viewPhase, message));
         appendServiceStopOutput(status);
+        if (status?.phase === "failed") {
+          appendUniqueUpdateError(document, panel, status.error, new Set([message]));
+        }
         if (
           status?.phase === "downloading" &&
           status.totalBytes !== undefined &&
@@ -759,7 +808,9 @@ function updatesPage(
           result.error || actionableStatus
             ? messages.updateFailed
             : result.updateAvailable
-              ? messages.updateAvailable
+              ? result.installationAvailable
+                ? messages.updateAvailable
+                : messages.updateWaitingForRegistry
               : messages.updateUpToDate;
         // Every state gets a status line; a bare button in an empty card reads as unfinished.
         const canUpdate = result.updateAvailable && result.installationAvailable;
@@ -822,8 +873,28 @@ function updatesPage(
         );
       };
 
+      const loadAnnouncement = (): void => {
+        const client = getClient();
+        if (!client?.getReleaseAnnouncement) return;
+        void client
+          .getReleaseAnnouncement({ manual: true })
+          .then((result) => {
+            if (context.signal.aborted || !result?.announcement) return;
+            currentAnnouncement = result.announcement;
+            announcementButton.hidden = false;
+          })
+          .catch(() => {
+            // Unimplemented RPC or missing release keeps the manual entry hidden.
+          });
+      };
+
       void load();
-      return () => statusPoll.dispose();
+      loadAnnouncement();
+      return () => {
+        announcementDialog?.dispose();
+        announcementDialog = null;
+        statusPoll.dispose();
+      };
     },
   });
 }
@@ -844,6 +915,7 @@ export function createDefaultRendererSettingsPages(
   harnessSchedules?: HarnessSchedulesPageOptions,
   getDesktopExtensionsClient: () => RendererDesktopExtensionsClient | null = () => null,
   pluginPages?: RendererSettingsPluginPagesSource,
+  getDelegationClient: () => RendererDelegationClient | null = () => null,
 ): readonly RendererSettingsPageDefinition[] {
   return Object.freeze([
     createConnectionsSettingsPage(messages, getDiagnostics, undefined, getRemoteConnections, () => {
@@ -857,6 +929,7 @@ export function createDefaultRendererSettingsPages(
     }),
     createRemoteConnectionsPage(messages, getRemoteConnections),
     createAccountsSettingsPage(messages, getAccountClient),
+    createDelegationSettingsPage(messages, getDiagnostics, getDelegationClient),
     ...(harnessSchedules ? [createHarnessSchedulesPage(messages, harnessSchedules)] : []),
     createSessionImportSettingsPage(
       messages,
@@ -886,6 +959,7 @@ export function createDefaultRendererSettingsRegistry(
   requestUsageStatistics?: RendererUsageStatisticsRequest,
   usageStatisticsHosts?: RendererUsageStatisticsHostsProvider,
   getDesktopExtensionsClient?: () => RendererDesktopExtensionsClient | null,
+  getDelegationClient?: () => RendererDelegationClient | null,
 ): RendererSettingsPageRegistry {
   return createRendererSettingsPageRegistry(
     createDefaultRendererSettingsPages(
@@ -901,9 +975,12 @@ export function createDefaultRendererSettingsRegistry(
       usageStatisticsHosts,
       undefined,
       getDesktopExtensionsClient,
+      undefined,
+      getDelegationClient,
     ),
   );
 }
 
 export type { RendererCodexAccountClient } from "./accounts-page.js";
+export type { RendererDelegationClient } from "./delegation-page.js";
 export type { RendererDesktopExtensionsClient } from "./desktop-extensions-page.js";

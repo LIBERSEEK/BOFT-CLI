@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BOFT CLI</title>
+    <link rel="stylesheet" href="./shell.css" />
+  </head>
+  <body class="page-onboarding">
+    <div class="shell-page">
+      <header class="topbar">
+        <div class="topbar-brand">
+          <span class="topbar-brand-mark" aria-hidden="true">
+            <img class="boft-brand-icon" src="./boft-icon.png" alt="" />
+          </span>
+          <span>BOFT CLI</span>
+        </div>
+
+        <button type="button" id="lang-toggle" class="lang-toggle" aria-label="Switch language">
+          <span class="lang-option" data-lang="zh-CN" data-active="true">中文</span>
+          <span class="lang-option" data-lang="en" data-active="false">EN</span>
+        </button>
+      </header>
+
+      <main class="stage" id="app">
+        <section class="onboarding-container" aria-labelledby="onboarding-title">
+          <div class="onboarding-header">
+            <div class="app-emblem" aria-hidden="true">
+              <img class="boft-brand-icon" src="./boft-icon.png" alt="" />
+            </div>
+            <h1 id="onboarding-title" class="onboarding-title">选择打开方式</h1>
+            <p id="onboarding-subtitle" class="onboarding-subtitle">
+              每次启动可自由选择入口，桌面端、官方客户端与浏览器共用同一套本机后台与会话。
+            </p>
+          </div>
+
+          <div class="surface-grid" role="group" aria-labelledby="onboarding-title">
+            <button
+              type="button"
+              id="card-native-shell"
+              class="surface-card"
+              data-surface="native-shell"
+            >
+              <div class="card-head">
+                <span class="card-icon card-icon--brand" aria-hidden="true">
+                  <img class="boft-brand-icon" src="./boft-icon.png" alt="" />
+                </span>
+                <span id="native-badge" class="badge badge--neutral">独立窗口</span>
+              </div>
+
+              <h2 id="native-title" class="card-title">BOFT CLI 桌面端</h2>
+              <p id="native-summary" class="card-summary">轻量、低内存的独立原生桌面窗口</p>
+
+              <ul class="feature-list">
+                <li class="feature-item">
+                  <svg
+                    class="feature-check"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M3.5 8.5 6.5 11.5 12.5 5" />
+                  </svg>
+                  <span id="native-point-1">轻量低内存，独立原生窗口体验</span>
+                </li>
+                <li class="feature-item">
+                  <svg
+                    class="feature-check"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M3.5 8.5 6.5 11.5 12.5 5" />
+                  </svg>
+                  <span id="native-point-2">支持多 Agent 协作与丰富扩展</span>
+                </li>
+                <li class="feature-item">
+                  <svg
+                    class="feature-check"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M3.5 8.5 6.5 11.5 12.5 5" />
+                  </svg>
+                  <span id="native-point-3">不依赖官方客户端更新，随时可用</span>
+                </li>
+              </ul>
+
+              <div class="card-footer">
+                <span id="native-cta">使用 BOFT CLI 桌面端</span>
+                <span class="card-action-indicator" aria-hidden="true">
+                  <span id="native-spinner" class="spinner" hidden></span>
+                  <svg
+                    id="native-arrow"
+                    class="card-arrow"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.8"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <path d="M3.5 8h9" />
+                    <path d="M8.5 4 12.5 8 8.5 12" />
+                  </svg>
+                </span>
+              </div>
+            </button>
+
+            <button
+              type="button"
+              id="card-codex-desktop"
+              class="surface-card"
+              data-surface="codex-desktop"
+            >
+              <div class="card-head">
+                <span class="card-icon card-icon--brand" aria-hidden="true">
+                  <img class="card-logo-img" src="./codex-desktop-logo.png" alt="" />
+                </span>
+                <span id="desktop-badge" class="badge badge--neutral">增强版</span>
+              </div>
+
+              <h2 id="desktop-title" class="card-title">官方 Codex Desktop</h2>
+              <p id="desktop-summary" class="card-summary">保留熟悉的官方桌面界面与注入增强</p>
+
+              <ul class="feature-list">
+                <li class="feature-item">
+                  <svg
+                    class="feature-check"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M3.5 8.5 6.5 11.5 12.5 5" />
+                  </svg>
+                  <span id="desktop-point-1">保留熟悉的官方桌面界面与习惯</span>
+                </li>
+                <li class="feature-item">
+                  <svg
+                    class="feature-check"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M3.5 8.5 6.5 11.5 12.5 5" />
+                  </svg>
+                  <span id="desktop-point-2">同样支持所有外部 Agent 会话</span>
+                </li>
+                <li class="feature-item">
+                  <svg
+                    class="feature-check"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M3.5 8.5 6.5 11.5 12.5 5" />
+                  </svg>
+                  <span id="desktop-point-3">保持原生 Codex 路径与交互一致</span>
+                </li>
+              </ul>
+
+              <div id="desktop-unavailable" class="unavailable-note" hidden>
+                <svg
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <circle cx="8" cy="8" r="6.25" />
+                  <path d="M8 5.2v3.3" />
+                  <circle cx="8" cy="10.9" r="0.5" fill="currentColor" stroke="none" />
+                </svg>
+                <span id="desktop-unavailable-text">未在本机检测到 Codex Desktop</span>
+              </div>
+
+              <div class="card-footer">
+                <span id="desktop-cta">使用官方 Codex Desktop</span>
+                <span class="card-action-indicator" aria-hidden="true">
+                  <span id="desktop-spinner" class="spinner" hidden></span>
+                  <svg
+                    id="desktop-arrow"
+                    class="card-arrow"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.8"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <path d="M3.5 8h9" />
+                    <path d="M8.5 4 12.5 8 8.5 12" />
+                  </svg>
+                </span>
+              </div>
+            </button>
+          </div>
+
+          <section class="web-access-bar" aria-labelledby="web-access-label">
+            <div class="web-access-info">
+              <span
+                id="web-status-dot"
+                class="web-status-dot"
+                data-running="false"
+                aria-hidden="true"
+              ></span>
+              <div class="web-access-text">
+                <div class="web-access-heading">
+                  <span id="web-access-label" class="web-access-label">Web 浏览器访问</span>
+                  <span id="web-access-status" class="web-access-status">按需启动</span>
+                </div>
+                <code id="web-access-url" class="web-access-url"
+                  >点击右侧启动或复制本机访问地址</code
+                >
+              </div>
+            </div>
+            <div class="web-access-actions">
+              <button type="button" id="web-copy-btn" class="web-action-btn">
+                <span id="web-copy-spinner" class="spinner" hidden></span>
+                <svg
+                  id="web-copy-icon"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <rect x="5.5" y="5.5" width="7.5" height="8" rx="1.6" />
+                  <path
+                    d="M10.5 5.5V3.9A1.4 1.4 0 0 0 9.1 2.5H4.4A1.4 1.4 0 0 0 3 3.9v6.2a1.4 1.4 0 0 0 1.4 1.4h1.1"
+                  />
+                </svg>
+                <svg
+                  id="web-copied-icon"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                  hidden
+                >
+                  <path d="M3.5 8.5 6.5 11.5 12.5 5" />
+                </svg>
+                <span id="web-copy-label">复制地址</span>
+              </button>
+              <button
+                type="button"
+                id="web-open-btn"
+                class="web-action-btn web-action-btn--primary"
+              >
+                <span id="web-open-spinner" class="spinner" hidden></span>
+                <svg
+                  id="web-open-icon"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M6.5 3.5H4A1.5 1.5 0 0 0 2.5 5v7A1.5 1.5 0 0 0 4 13.5h7a1.5 1.5 0 0 0 1.5-1.5V9.5"
+                  />
+                  <path d="M9.5 2.5h4v4" />
+                  <path d="M13.5 2.5 7.5 8.5" />
+                </svg>
+                <span id="web-open-label">浏览器打开</span>
+              </button>
+            </div>
+          </section>
+
+          <div
+            id="feedback-banner"
+            class="feedback-banner feedback-banner--error"
+            role="alert"
+            aria-live="assertive"
+            hidden
+          >
+            <svg
+              id="feedback-icon-error"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.7"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <circle cx="8" cy="8" r="6.25" />
+              <path d="M8 5v3.4" />
+              <circle cx="8" cy="10.9" r="0.55" fill="currentColor" stroke="none" />
+            </svg>
+            <svg
+              id="feedback-icon-info"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+              hidden
+            >
+              <circle cx="8" cy="8" r="6.25" />
+              <path d="M5.5 8.2 7.2 9.9 10.7 6.3" />
+            </svg>
+            <span id="feedback-text" class="feedback-text"></span>
+            <a
+              id="feedback-issue-link"
+              class="feedback-issue-link"
+              href="https://github.com/LIBERSEEK/BOFT-CLI/issues/new"
+              target="_blank"
+              rel="noopener noreferrer"
+              hidden
+            >
+              <span id="feedback-issue-label">提交 Issue</span>
+              <svg
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path
+                  d="M6.5 3.5H4A1.5 1.5 0 0 0 2.5 5v7A1.5 1.5 0 0 0 4 13.5h7a1.5 1.5 0 0 0 1.5-1.5V9.5"
+                />
+                <path d="M9.5 2.5h4v4" />
+                <path d="M13.5 2.5 7.5 8.5" />
+              </svg>
+            </a>
+          </div>
+
+          <p class="onboarding-footnote">
+            <svg
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M3.5 5.5h8.2l-2-2" />
+              <path d="M12.5 10.5H4.3l2 2" />
+            </svg>
+            <span id="onboarding-footnote-text">
+              之后随时可在系统托盘或设置中切换，两个窗口共用同一批会话。
+            </span>
+          </p>
+        </section>
+      </main>
+    </div>
+
+    <div id="preview-bar" class="preview-bar" hidden></div>
+
+    <script src="./shell.js"></script>
+    <script src="./onboarding.js"></script>
+  </body>
+</html>

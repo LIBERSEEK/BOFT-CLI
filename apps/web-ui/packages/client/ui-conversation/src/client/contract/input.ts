@@ -20,6 +20,7 @@ import type {
   TokenSpan,
 } from "./draft-editor.ts";
 import type { InputSubmitMode, MessageSubmission } from "./composer-submission.ts";
+import type { ResponseAnnotationAnchor } from "./response-annotation-anchor.ts";
 
 /** Attachment payload passed to a claimed command submission. */
 export type SubmitAttachment =
@@ -170,14 +171,21 @@ declare module "@deepseek-ai/cordis" {
      * @mode bail
      */
     "slash/input-insert-text"(request: InsertTextRequest): true | undefined;
+    /** Reveal one unsent response annotation in the current Chat view. */
+    "conversation/reveal-response-annotation"(id: DraftAttachmentId): void;
   }
 }
 
 /** Browser-runtime identity of one unsent attachment draft. */
 export type DraftAttachmentId = Branded<"DraftAttachmentId">;
 
+/** One annotation input attached to the next message. */
+export interface DraftResponseAnnotationInput extends ResponseAnnotation {
+  readonly anchor?: ResponseAnnotationAnchor;
+}
+
 /** One annotation attached to the next message, with its draft-local identity. */
-export interface DraftResponseAnnotation extends ResponseAnnotation {
+export interface DraftResponseAnnotation extends DraftResponseAnnotationInput {
   readonly id: DraftAttachmentId;
 }
 
@@ -204,9 +212,15 @@ export interface SessionInput extends InputTarget {
   /** Drop ids whose browser-owned objects no longer exist. */
   pruneAttachments(ids: readonly DraftAttachmentId[]): void;
   /** Attach one selected passage to the next message; busy admission phases refuse. */
-  addResponseAnnotation(annotation: ResponseAnnotation): DraftAttachmentId | undefined;
+  addResponseAnnotation(annotation: DraftResponseAnnotationInput): DraftAttachmentId | undefined;
+  /** Update the optional comment on one attached annotation; busy admission phases refuse. */
+  updateResponseAnnotation(id: DraftAttachmentId, annotation: string | undefined): boolean;
   /** Remove one attached annotation; busy admission phases refuse. @returns whether the id was removed. */
   removeResponseAnnotation(id: DraftAttachmentId): boolean;
+  /** Remove every attached annotation; busy admission phases refuse. */
+  clearResponseAnnotations(): boolean;
+  /** Mark one attached annotation as hovered so transcript and tray stay linked. */
+  hoverResponseAnnotation(id: DraftAttachmentId | null): void;
   /**
    * THE complexity sink: enter adjudication, submit transaction, and the default sink live inside.
    * @param mode - delivery intent retained through asynchronous adjudication and serialization.
@@ -257,6 +271,17 @@ export interface SessionInputResolver {
   requestDraftInitialization(
     binding: SessionBinding,
     options: DraftInitializationOptions,
+  ): DraftInitializationResult;
+  /**
+   * Hand off any text typed on the Hero surface while a New Session was being
+   * created, reconciling with optional programmatic draft initialization.
+   * @param binding - target Session generation, already retained by the caller.
+   * @param options - optional programmatic initial draft options.
+   * @returns applied, preserved, or blocked by a pending submission or disposal.
+   */
+  adoptPendingDraft(
+    binding: SessionBinding,
+    options?: DraftInitializationOptions,
   ): DraftInitializationResult;
 }
 
@@ -310,11 +335,17 @@ export interface InputActions {
    * @returns the new draft identity, or undefined while locked or the requested Composer is unavailable.
    */
   addResponseAnnotation(
-    annotation: ResponseAnnotation,
+    annotation: DraftResponseAnnotationInput,
     options?: { readonly focus: "end" },
   ): DraftAttachmentId | undefined;
+  /** Update the optional comment on one attached annotation; busy admission phases refuse. */
+  updateResponseAnnotation(id: DraftAttachmentId, annotation: string | undefined): void;
   /** Remove one attached annotation by draft identity; busy admission phases refuse. */
   removeResponseAnnotation(id: DraftAttachmentId): void;
+  /** Remove every attached annotation; busy admission phases refuse. */
+  clearResponseAnnotations(): void;
+  /** Highlight one attached annotation across tray and transcript while hovered. */
+  hoverResponseAnnotation(id: DraftAttachmentId | null): void;
   /** Enter submission (adjudication / claim transaction / default sink inside). */
   submit(): void;
 }
@@ -337,6 +368,8 @@ export interface InputState {
   readonly attachmentIds: readonly DraftAttachmentId[];
   /** Selected passages attached to the next message, in attachment order. */
   readonly responseAnnotations: readonly DraftResponseAnnotation[];
+  /** Attached annotation currently hovered in the tray or transcript margin. */
+  readonly hoveredResponseAnnotationId?: DraftAttachmentId;
   /** Monotonic editor revision (span CAS compares against this). */
   readonly draftRev: number;
   /** Mounted input extension's primary-send action; absent restores the default button. */

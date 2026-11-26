@@ -33,11 +33,15 @@ import {
   type HostItemId,
   type HostTurnId,
   type JsonValue,
-  type NativeTurnRef,
 } from "@codexhost/shared-contracts";
 import { createTwoFilesPatch } from "diff";
 
 import type { AntigravityAcpConfigOption, AntigravityAcpEvent } from "./acp-types.js";
+import type { NativeCompactionEvent, NativeReplayEvent } from "./native-replay.js";
+import {
+  isDiscoveredAntigravitySkill,
+  type DiscoveredAntigravitySkills,
+} from "./skill-discovery.js";
 import { ANTIGRAVITY_COMMAND_CATALOG } from "./slash-commands.js";
 import {
   compactToolName,
@@ -324,6 +328,7 @@ interface ToolState {
   event: ToolEvent;
   item: HostItem | null;
   snapshot?: HostItemSnapshot;
+  detached?: boolean;
   diffItem?: Extract<HostItem, { type: "fileChange" }>;
   diffSnapshot?: HostItemSnapshot;
 }
@@ -560,7 +565,7 @@ export class AntigravityToolTracker {
 
   finishPending(outcome: HostItemOutcome): void {
     for (const state of this.#tools.values()) {
-      if (state.snapshot) continue;
+      if (state.snapshot || state.detached) continue;
       if (state.item?.type === "subagentDelegation")
         state.item = {
           ...state.item,
@@ -577,6 +582,42 @@ export class AntigravityToolTracker {
       this.#complete(state, outcome);
     }
   }
+
+  detachPending(pendingToolCallIds: ReadonlySet<string> = new Set()): Set<string> {
+    const detached = new Set<string>();
+    for (const state of this.#tools.values()) {
+      if (
+        state.snapshot ||
+        state.detached ||
+        (state.item?.type !== "commandExecution" &&
+          !(
+            state.item?.type === "toolExecution" &&
+            (state.item.toolName === "ask_question" ||
+              pendingToolCallIds.has(state.event.toolCallId))
+          ))
+      )
+        continue;
+      state.detached = true;
+      detached.add(state.event.toolCallId);
+      this.#emit({ type: "item.detached", turnId: this.options.turnId, itemId: state.item.itemId });
+      if (state.diffItem && !state.diffSnapshot)
+        this.#emit({
+          type: "item.detached",
+          turnId: this.options.turnId,
+          itemId: state.diffItem.itemId,
+        });
+    }
+    return detached;
+  }
+
+  finishDetached(outcome: HostItemOutcome): void {
+    for (const state of this.#tools.values()) {
+      if (!state.detached || state.snapshot) continue;
+      this.#complete(state, outcome);
+      state.detached = false;
+    }
+  }
+
   completedSnapshots(): HostItemSnapshot[] {
     return [...this.#tools.values()].flatMap((state) => [
       ...(state.snapshot ? [state.snapshot] : []),
@@ -585,46 +626,61 @@ export class AntigravityToolTracker {
   }
 }
 
+export function compactionItemId(stepIndex: number): HostItemId {
+  return hostItemIdSchema.parse(`checkpoint-${stepIndex}`);
+}
+
+export function compactionOutcome(event: NativeCompactionEvent): HostItemOutcome {
+  if (event.status === "succeeded") return succeeded;
+  return {
+    status: "failed",
+    error: {
+      code: "nativeFailure",
+      message: event.error ?? "Antigravity context compaction failed",
+      retryable: false,
+    },
+  };
+}
+
 export function projectReplayedEventsToTurns(params: {
   nativeSessionId: string;
   cwd: string;
-  events: readonly AntigravityAcpEvent[];
-  knownTurnRefs?: readonly NativeTurnRef[];
+  events: readonly NativeReplayEvent[];
   outputLimit?: number;
 }): HostTurnSnapshot[] {
   const turns: HostTurnSnapshot[] = [];
-  const usedTurnKeys = new Set(params.knownTurnRefs?.map(({ nativeTurnKey }) => nativeTurnKey));
-  let active: { turn: HostTurnSnapshot; tracker: AntigravityToolTracker } | undefined;
+  const sessionRef = {
+    harnessId: "antigravity",
+    nativeSessionId: params.nativeSessionId,
+    formatVersion: 1,
+  };
+  const turnRef = (nativeTurnKey: string) =>
+    nativeTurnRefSchema.parse({ ...sessionRef, nativeTurnKey });
+  const checkpoint = (checkpointId: string) =>
+    nativeCheckpointRefSchema.parse({ ...sessionRef, checkpointId });
+  let active:
+    { turnId: HostTurnId; turn: HostTurnSnapshot; tracker: AntigravityToolTracker } | undefined;
   let userRun = false;
   let textItem: HostItemSnapshot | undefined;
   let sequence = 0;
-  const begin = () => {
+  let nativeTurnIndex: number | undefined;
+  const begin = (boundary?: number, wakeStep?: number) => {
     active?.tracker.finishPending({
       status: "cancelled",
       reason: "No terminal tool status in native history",
     });
-    const index = turns.length;
-    const turnId = hostTurnIdSchema.parse(`turn-${index}`);
-    let nativeTurnKey = params.knownTurnRefs?.[index]?.nativeTurnKey;
-    if (nativeTurnKey === undefined) {
-      let n = index;
-      nativeTurnKey = `turn-${n}`;
-      while (usedTurnKeys.has(nativeTurnKey)) nativeTurnKey = `turn-${++n}`;
-      usedTurnKeys.add(nativeTurnKey);
-    }
+    const checkpointId =
+      wakeStep !== undefined
+        ? `wake-${wakeStep}`
+        : boundary === undefined
+          ? undefined
+          : `turn-${boundary}`;
+    // Unanchored history has neither a live Turn identity nor a fork boundary.
+    const nativeTurnKey = checkpointId ?? `replay-${turns.length}`;
+    const turnId = hostTurnIdSchema.parse(nativeTurnKey);
     const turn: HostTurnSnapshot = {
-      nativeTurnRef: nativeTurnRefSchema.parse({
-        harnessId: "antigravity",
-        nativeSessionId: params.nativeSessionId,
-        nativeTurnKey,
-        formatVersion: 1,
-      }),
-      checkpoint: nativeCheckpointRefSchema.parse({
-        harnessId: "antigravity",
-        nativeSessionId: params.nativeSessionId,
-        checkpointId: `turn-${index}`,
-        formatVersion: 1,
-      }),
+      nativeTurnRef: turnRef(nativeTurnKey),
+      ...(checkpointId !== undefined ? { checkpoint: checkpoint(checkpointId) } : {}),
       input: [],
       items: [],
       outcome: { status: "unknown", reason: "Native history does not include prompt stop reasons" },
@@ -647,19 +703,30 @@ export function projectReplayedEventsToTurns(params: {
       },
     });
     textItem = undefined;
-    active = { turn, tracker };
+    nativeTurnIndex = boundary;
+    active = { turnId, turn, tracker };
     return active;
   };
   for (const event of params.events) {
-    if (event.type === "user.text") {
-      const { turn } = !active || !userRun ? begin() : active;
+    if (event.type === "history.autonomous") {
+      begin(undefined, event.stepIndex);
+      userRun = false;
+    } else if (event.type === "user.text") {
+      const { turn } = !active || !userRun ? begin(event.nativeTurnIndex) : active;
+      if (event.nativeTurnIndex !== undefined && event.nativeTurnIndex !== nativeTurnIndex) {
+        // Consecutive unanswered inputs form one Turn at the last native boundary.
+        nativeTurnIndex = event.nativeTurnIndex;
+        const key = `turn-${nativeTurnIndex}`;
+        turn.nativeTurnRef = turnRef(key);
+        turn.checkpoint = checkpoint(key);
+      }
       const previous = turn.input.find((part) => part.type === "text");
       if (previous) previous.text += event.text;
       else turn.input.push({ type: "text", text: event.text });
       userRun = true;
       textItem = undefined;
     } else if (event.type === "agent.text" || event.type === "agent.thought") {
-      const { turn } = active ?? begin();
+      const { turn, turnId } = active ?? begin();
       userRun = false;
       const type = event.type === "agent.text" ? "agentMessage" : "reasoning";
       if (textItem?.item.type === type) textItem.item.text += event.text;
@@ -667,7 +734,7 @@ export function projectReplayedEventsToTurns(params: {
         textItem = {
           item: {
             type,
-            itemId: hostItemIdSchema.parse(`turn-${turns.length - 1}-item-${sequence++}`),
+            itemId: hostItemIdSchema.parse(`${turnId}-item-${sequence++}`),
             text: event.text,
           },
           outcome: succeeded,
@@ -679,6 +746,14 @@ export function projectReplayedEventsToTurns(params: {
       userRun = false;
       textItem = undefined;
       tracker.handleToolEvent(event);
+    } else if (event.type === "history.compaction") {
+      const { turn } = active ?? begin();
+      userRun = false;
+      textItem = undefined;
+      turn.items.push({
+        item: { type: "contextCompaction", itemId: compactionItemId(event.stepIndex) },
+        outcome: compactionOutcome(event),
+      });
     }
   }
   active?.tracker.finishPending({
@@ -690,6 +765,11 @@ export function projectReplayedEventsToTurns(params: {
 
 export function buildLiveCommandCatalog(
   commands: readonly AvailableCommand[],
+  options?: { discoveredSkills?: DiscoveredAntigravitySkills },
 ): HarnessCommandCatalog {
-  return mergeLiveHarnessCommands(ANTIGRAVITY_COMMAND_CATALOG, "antigravity.", commands);
+  const discoveredSkills = options?.discoveredSkills;
+  const filtered = discoveredSkills
+    ? commands.filter((command) => !isDiscoveredAntigravitySkill(command, discoveredSkills))
+    : commands;
+  return mergeLiveHarnessCommands(ANTIGRAVITY_COMMAND_CATALOG, "antigravity.", filtered);
 }

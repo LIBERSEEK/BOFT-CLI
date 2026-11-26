@@ -15,6 +15,7 @@ import {
   applyComposerModelWrite,
   draftPermissionMode,
   draftThinkingOptionForModel,
+  retainedThinkingOptionIdForModel,
   isLateConversationTarget,
   isComposerModelWriteAllowed,
   isOwnershipSubmissionBlocked,
@@ -42,6 +43,7 @@ import {
   isComposerSubmitButton,
   isComposerVoiceButton,
   creditsPlacementAnchor,
+  CODEX_COMPOSER_SELECTOR,
   isNativeContextUsageControlCandidate,
   nativeContextUsageControlForComposer,
   reconcileComposerNativeControls,
@@ -503,10 +505,16 @@ describe("Renderer Composer DOM behavior", () => {
     expect(canScheduleExternalThreadUsageRefresh(usage, 6)).toBe(false);
   });
 
-  it("re-hides a replaced native Model control for an external Agent", () => {
+  it("replaces only an unambiguous native Model control and restores stale controls", () => {
     class FakeElement {
       readonly attributes = new Map<string, string>();
+      children: {
+        localName: string;
+        firstChild: { nodeName: string; nodeValue: string };
+        textContent: string;
+      }[] = [];
       className = "";
+      disabled = false;
       hidden = false;
       readonly style: Record<string, string> = {};
 
@@ -521,10 +529,14 @@ describe("Renderer Composer DOM behavior", () => {
         return this.attributes.has(name);
       }
       matches(selector: string): boolean {
-        return selector === 'button[aria-haspopup="menu"]';
+        return (
+          selector === "button" ||
+          (selector === 'button[aria-haspopup="menu"]' &&
+            this.getAttribute("aria-haspopup") === "menu")
+        );
       }
-      closest(): null {
-        return null;
+      closest(selector: string): Element | null {
+        return selector === CODEX_COMPOSER_SELECTOR ? composer : null;
       }
       removeAttribute(name: string): void {
         this.attributes.delete(name);
@@ -543,10 +555,67 @@ describe("Renderer Composer DOM behavior", () => {
     replacement.setAttribute("aria-haspopup", "menu");
     replacement.setAttribute("data-codex-intelligence-trigger", "true");
     replacement.setAttribute("data-composer-navigation-target", "reasoning");
+    const navigation = "data-composer-navigation-target";
+    const retry = new FakeElement();
+    retry.setAttribute(navigation, "reasoning");
+    const loading = new FakeElement();
+    loading.setAttribute(navigation, "reasoning");
+    loading.setAttribute("aria-busy", "true");
+    loading.disabled = true;
+    const carrier = encodeHarnessPluginRoute({ harnessId: harnessIdSchema.parse("pi") });
+    const loadingWithLabel = (label: string) => {
+      const button = new FakeElement();
+      button.setAttribute(navigation, "reasoning");
+      button.setAttribute("aria-busy", "true");
+      button.disabled = true;
+      button.children = [
+        {
+          localName: "span",
+          firstChild: { nodeName: "#text", nodeValue: label },
+          textContent: `${label} High`,
+        },
+      ];
+      return button;
+    };
+    const carrierLoading = loadingWithLabel(carrier);
+    carrierLoading.setAttribute("aria-hidden", "false");
+    const malformedLoading = loadingWithLabel("codexhost/plugin-v1@7069");
+    const embeddedCarrierLoading = loadingWithLabel(`Model: ${carrier}`);
+    const nested = new FakeElement();
+    nested.setAttribute(navigation, "reasoning");
+    nested.closest = () => ({}) as Element;
+    const injected = new FakeElement();
+    injected.setAttribute(navigation, "reasoning");
+    injected.setAttribute("data-codexhost-model-control", "");
+    const attachRetryFiber = (button: FakeElement) => {
+      const onClick = () => {
+        throw new Error("Replacing the retry button must not click it");
+      };
+      const props = {
+        [navigation]: "reasoning",
+        onClick,
+        children: [
+          null,
+          { props: { children: { props: { id: "composer.modelPicker.retryModels" } } } },
+        ],
+      };
+      Object.assign(button, {
+        __reactProps$fixture: props,
+        __reactFiber$fixture: {
+          stateNode: button,
+          memoizedProps: props,
+          return: {
+            memoizedProps: { content: { props: { id: "composer.modelPicker.modelsUnavailable" } } },
+          },
+        },
+      });
+    };
+    for (const button of [retry, nested, injected, loading]) attachRetryFiber(button);
+    let live = [replacement];
     const composer = {
       ...noNativeRequest,
       querySelectorAll: (selector: string) =>
-        selector === 'button[aria-haspopup="menu"]' ? [replacement] : [],
+        selector.includes('data-composer-navigation-target="reasoning"') ? live : [],
     } as unknown as Element;
     const trigger = new FakeElement();
     const control = {
@@ -576,6 +645,54 @@ describe("Renderer Composer DOM behavior", () => {
     expect(replacement.hidden).toBe(true);
     expect(replacement.getAttribute("aria-hidden")).toBe("true");
     expect(control.nativeModelControl?.element).toBe(replacement);
+
+    live = [retry, nested, injected, loading];
+    reconcileComposerNativeControls(control, true, true);
+    expect(replacement.hidden).toBe(false);
+    expect(retry.hidden).toBe(true);
+    expect(retry.getAttribute("aria-hidden")).toBe("true");
+    expect([nested.hidden, injected.hidden, loading.hidden]).toEqual([false, false, false]);
+
+    live = [retry, replacement];
+    reconcileComposerNativeControls(control, true, true);
+    expect(retry.hidden).toBe(false);
+    expect(retry.getAttribute("aria-hidden")).toBeNull();
+    expect(replacement.hidden).toBe(false);
+    expect(control.nativeModelControl).toBeNull();
+
+    live = [retry];
+    reconcileComposerNativeControls(control, true, true);
+    expect(retry.hidden).toBe(true);
+    live = [];
+    reconcileComposerNativeControls(control, true, true);
+    expect(retry.hidden).toBe(false);
+    expect(control.nativeModelControl).toBeNull();
+
+    live = [carrierLoading, loading, malformedLoading, embeddedCarrierLoading];
+    reconcileComposerNativeControls(control, true, true);
+    expect(carrierLoading.hidden).toBe(true);
+    expect(carrierLoading.getAttribute("aria-hidden")).toBe("true");
+    for (const button of [loading, malformedLoading, embeddedCarrierLoading]) {
+      expect(button.hidden).toBe(false);
+      expect(button.getAttribute("aria-hidden")).toBeNull();
+    }
+
+    reconcileComposerNativeControls(control, false, false);
+    expect(carrierLoading.hidden).toBe(false);
+    expect(carrierLoading.getAttribute("aria-hidden")).toBe("false");
+
+    for (const other of [replacement, retry]) {
+      live = [carrierLoading];
+      reconcileComposerNativeControls(control, true, true);
+      expect(carrierLoading.hidden).toBe(true);
+      live = [carrierLoading, other];
+      reconcileComposerNativeControls(control, true, true);
+      expect(carrierLoading.hidden).toBe(false);
+      expect(carrierLoading.getAttribute("aria-hidden")).toBe("false");
+      expect(other.hidden).toBe(false);
+      expect(other.getAttribute("aria-hidden")).toBeNull();
+      expect(control.nativeModelControl).toBeNull();
+    }
     vi.unstubAllGlobals();
   });
 
@@ -1500,6 +1617,56 @@ describe("Renderer Composer DOM behavior", () => {
       draftThinkingOptionForModel(catalog, plainModel, harnessThinkingOptionIdSchema.parse("max")),
     ).toBe("off");
     expect(draftThinkingOptionForModel(catalog, reasoningModel, undefined)).toBe("high");
+  });
+
+  it("retains the previous Thinking option only for Models without thinking selection", () => {
+    const reasoningModel = harnessModelRefSchema.parse({ id: "pi-model-v1.reasoning" });
+    const plainModel = harnessModelRefSchema.parse({ id: "pi-model-v1.plain" });
+    const orchestratorModel = harnessModelRefSchema.parse({
+      id: "pi-model-v1.orchestrator",
+    });
+    const catalog = harnessModelCatalogSchema.parse({
+      models: [
+        {
+          ref: reasoningModel,
+          label: "Reasoning",
+          supportedThinkingOptionIds: ["off", "high", "max"],
+        },
+        {
+          ref: plainModel,
+          label: "Plain",
+          supportedThinkingOptionIds: ["off"],
+        },
+        { ref: orchestratorModel, label: "Orchestrator" },
+      ],
+      defaultModel: reasoningModel,
+      thinkingOptions: [
+        { id: "off", label: "Off" },
+        { id: "high", label: "High" },
+        { id: "max", label: "Max" },
+      ],
+      defaultThinkingOptionId: "max",
+    });
+    const high = harnessThinkingOptionIdSchema.parse("high");
+
+    expect(retainedThinkingOptionIdForModel(catalog, orchestratorModel, undefined, high)).toBe(
+      high,
+    );
+    expect(retainedThinkingOptionIdForModel(catalog, plainModel, undefined, high)).toBeUndefined();
+    expect(
+      retainedThinkingOptionIdForModel(catalog, reasoningModel, undefined, high),
+    ).toBeUndefined();
+    expect(
+      retainedThinkingOptionIdForModel(catalog, orchestratorModel, undefined, undefined),
+    ).toBeUndefined();
+    expect(
+      retainedThinkingOptionIdForModel(
+        catalog,
+        plainModel,
+        harnessThinkingOptionIdSchema.parse("off"),
+        high,
+      ),
+    ).toBe("off");
   });
 
   it("falls back draft Permission Mode but fails closed for a stale locked carrier", () => {

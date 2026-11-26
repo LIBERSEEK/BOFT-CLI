@@ -16,6 +16,7 @@ import type { RendererConnectionGeneration } from "./renderer-connection-generat
  * exposes only Host requests and notifications, never native manager internals. */
 export interface RendererHostRpcManager {
   getConversation?(threadId: string): Promise<unknown>;
+  discardConversationFromCache?(threadId: string): Promise<unknown>;
   replyWithCommandExecutionApprovalDecision?(
     threadId: string,
     requestId: string | number,
@@ -39,6 +40,8 @@ export interface RendererHostRoutePolicy {
   readonly state: "ready";
   readonly hostId: string;
   readonly scopedCreation: boolean;
+  /** Background creation on this route may start with a different client Thread id. */
+  readonly requiresCreationMode?: true;
   requestTarget(): unknown;
   select(
     model: string | null,

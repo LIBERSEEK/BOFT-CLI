@@ -9,6 +9,16 @@ import type { ModelSelection } from "@deepseek-ai/dsh-api-remotes/client";
 import type { SnapshotStore } from "@deepseek-ai/dsh-client-store";
 import type { ModelDirectoryState } from "./directory.ts";
 
+/** Availability of cross-Harness context handoff for the current session. */
+export type HarnessHandoffStatus = "ready" | "pending" | "unsupported";
+
+/** Reactive session handoff trigger injected when Chat context handoff is available. */
+export interface HarnessHandoffControl {
+  readonly subscribe: (listener: () => void) => () => void;
+  readonly getStatus: () => HarnessHandoffStatus;
+  readonly open: (targetHarnessId?: string) => void;
+}
+
 /** Injected business face of the composer model seat. */
 export interface ModelSelectInjected {
   /** Whether this session supports Agent-bound model inspection and selection. */
@@ -17,6 +27,8 @@ export interface ModelSelectInjected {
   directory: SnapshotStore<ModelDirectoryState>;
   /** Ensure the shared advisory catalog is loaded (errors land on the store). */
   load: () => void;
+  /** Explicit model refresh is available on the local Host. */
+  refreshModels?: (harnessId?: string) => Promise<void>;
   /**
    * Select a complete provider/model/reasoning selection.
    * @param selection - model selection and optional adapter-owned effort.
@@ -24,4 +36,12 @@ export interface ModelSelectInjected {
    */
   select: (selection: ModelSelection) => Promise<RemoteResult<void> | undefined>;
   setFavorite?: (provider: string, modelId: string, enabled: boolean) => Promise<void>;
+  /** Reactive remote host lookup used to resolve peer-scoped Harness icon URLs. */
+  iconHost?: {
+    readonly isRemoteSession: boolean;
+    readonly subscribe: (listener: () => void) => () => void;
+    readonly getHostId: () => string | undefined;
+  };
+  /** Cross-Harness context handoff launcher for bound local sessions. */
+  handoff?: HarnessHandoffControl;
 }

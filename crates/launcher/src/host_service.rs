@@ -122,9 +122,11 @@ fn options(arguments: &[String]) -> Result<Options, Box<dyn Error>> {
 }
 
 pub(super) fn clean(command: &mut Command) {
+    let source = crate::installation_layout::current_executable_is_source_checkout_build();
     for (key, _) in env::vars_os() {
         let upper = key.to_string_lossy().to_ascii_uppercase();
-        if crate::NPM_UPDATE_RUNTIME_ENV.contains(&upper.as_str())
+        if !source
+            && crate::NPM_UPDATE_RUNTIME_ENV.contains(&upper.as_str())
             && env::var_os(&key).is_some_and(|value| Path::new(&value).is_absolute())
         {
             continue;
@@ -202,6 +204,11 @@ fn ensure(arguments: &[String], options: Options) -> Result<(), Box<dyn Error>> 
         .arg("--ready-file")
         .arg(&ready);
     clean(&mut command);
+    // The supervisor starts the Updater, which must rediscover the portable Desktop.
+    let desktop_root_env = codexhost_platform::CUSTOM_INSTALL_ROOT_ENV;
+    if let Some(root) = env::var_os(desktop_root_env).filter(|root| Path::new(root).is_absolute()) {
+        command.env(desktop_root_env, root);
+    }
     configure_detached_service_command(&mut command)?;
     let mut supervisor = command.spawn()?;
     let started = Instant::now();
@@ -291,7 +298,7 @@ fn serve(mut options: Options) -> Result<(), Box<dyn Error>> {
                 let _ = fs::remove_file(&node_ready);
             }
             // Retain exact descendant identities before a root crash reparents them.
-            child.has_live_processes()?;
+            child.retain_descendants()?;
             if published
                 && let Err(error) = crate::active_update::start_pending_service_update(
                     &mut started_update,

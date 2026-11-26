@@ -14,6 +14,11 @@ export const zh = {
   "harness.select": "选择 Harness",
   "harness.aria": "选择 Harness，当前 {name}",
   "harness.bound": "当前会话已绑定此 Harness；使用其他 Harness 请新建会话。",
+  "harness.boundRemote": "远程会话已绑定此 Harness，暂不支持跨 Harness 交接。",
+  "harness.handoffSection": "交接上下文到新会话",
+  "harness.handoffSame": "用 {name} 新开交接会话",
+  "harness.handoffHint": "原会话保留只读，交接后在新会话继续。",
+  "harness.handoffWaitTurn": "当前轮次完成后可交接上下文。",
   "harness.unavailable": "不可用",
   "harness.empty": "没有就绪的 Harness。",
   "command.label": "模型",
@@ -42,6 +47,7 @@ export const zh = {
   "error.sessionInUse":
     "当前会话已被占用，可能是其他正在运行的 DSH 导致的（如其他 dsh web、桌面端），请退出其他正在运行的 DSH 后重试。",
   "action.reload": "重新加载",
+  "action.refreshModels": "刷新模型列表",
   "warning.groupLoad": "{name} 加载失败：{message}",
   "search.placeholder": "搜索模型…",
   "search.clear": "清除搜索",
@@ -67,6 +73,12 @@ export const en = {
   "harness.aria": "Select Harness, current {name}",
   "harness.bound":
     "This conversation is bound to its Harness. Start a new conversation to use another.",
+  "harness.boundRemote":
+    "Remote conversations stay bound to this Harness; handoff is not supported yet.",
+  "harness.handoffSection": "Hand off to new conversation",
+  "harness.handoffSame": "New {name} handoff",
+  "harness.handoffHint": "Original stays read-only; continues in a new conversation.",
+  "harness.handoffWaitTurn": "Available after the current turn finishes.",
   "harness.unavailable": "Unavailable",
   "harness.empty": "No ready Harnesses.",
   "command.label": "Model",
@@ -95,6 +107,7 @@ export const en = {
   "error.sessionInUse":
     "This session is already in use, possibly by another running DSH instance (such as dsh web or the desktop app). Quit other running DSH instances and try again.",
   "action.reload": "Reload",
+  "action.refreshModels": "Refresh models",
   "warning.groupLoad": "{name} failed to load: {message}",
   "search.placeholder": "Search models…",
   "search.clear": "Clear search",

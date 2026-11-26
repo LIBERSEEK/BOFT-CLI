@@ -16,8 +16,11 @@ import {
   harnessThinkingOptionIdSchema,
   hostItemIdSchema,
   hostThreadIdSchema,
+  jsonObjectSchema,
+  hostTurnIdSchema,
 } from "@codexhost/shared-contracts";
 import type { DelegationControlApi, DelegationThreadSnapshot } from "../src/delegation-types.js";
+import { boundDelegationToken } from "../src/bearer-token.js";
 import { DelegationControlRegistry } from "../src/delegation-control-registry.js";
 import { DelegationWatchService } from "../src/delegation-watch.js";
 import { type CodexAccountControl } from "../src/account/codex-account-control.js";
@@ -483,6 +486,116 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("keeps a delegated first Turn's streamed Item IDs across native history reads", async () => {
+    let delegationApi: DelegationControlApi | undefined;
+    const fixture = createFixture({
+      onDelegationApi: (api) => {
+        delegationApi = api;
+        return undefined;
+      },
+    });
+    try {
+      await fixture.ready;
+      if (!delegationApi) throw new Error("Delegation API was not registered");
+      const starting = delegationApi.start({
+        harnessId: "pi",
+        task: "review auth",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+      });
+      await answerOfficialParentCwd(fixture);
+      const started = await starting;
+      const { threadId } = started;
+      const turnId = hostTurnIdSchema.parse(started.turnId);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Delegated Session was not opened");
+      const liveItems = [
+        { type: "reasoning", itemId: hostItemIdSchema.parse("live-r-1"), text: "Checking auth\n" },
+        {
+          type: "agentMessage",
+          itemId: hostItemIdSchema.parse("live-a-1"),
+          text: "Auth is correct.",
+        },
+      ] as const;
+      const outcome = { status: "succeeded" } as const;
+      const readSnapshot = session.readSnapshot.bind(session);
+      vi.spyOn(session, "readSnapshot").mockImplementation(async () => {
+        const snapshot = await readSnapshot();
+        if (!snapshot.ok) return snapshot;
+        return {
+          ok: true,
+          value: {
+            ...snapshot.value,
+            turns: snapshot.value.turns.map((turn) => ({
+              ...turn,
+              items: [
+                {
+                  item: { ...liveItems[0], itemId: hostItemIdSchema.parse("turn-0-item-0") },
+                  outcome,
+                },
+                {
+                  item: {
+                    ...liveItems[1],
+                    itemId: hostItemIdSchema.parse("turn-0-item-1"),
+                    phase: "final_answer",
+                  },
+                  outcome,
+                },
+              ],
+            })),
+          },
+        };
+      });
+      for (const item of liveItems) {
+        session.emitEvent({ type: "item.started", turnId, item });
+        session.emitEvent({ type: "item.completed", turnId, snapshot: { item, outcome } });
+      }
+      session.succeedTurn();
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+      const liveIds = fixture.collector.messages
+        .filter((message) => turnEvent(message, "item/started", turnId))
+        .map((message) => (messageParams(message).item as JsonObject).id)
+        .filter((id) => id !== `${turnId}-user`);
+      expect(liveIds).toEqual(["live-r-1-summary", "live-r-1", "live-a-1"]);
+
+      const rpc = async (id: number, method: string, params: JsonObject = {}) => {
+        writeRequest(fixture.desktopInput, { id, method, params: { threadId, ...params } });
+        return fixture.collector.waitFor((message) => requestId(message, id));
+      };
+      const items = [`${turnId}-user`, ...liveIds].map((id) => ({ id }));
+      await expect(delegationApi.read({ threadId, view: "result" })).resolves.toMatchObject({
+        status: "completed",
+        result: { availability: "available", text: "Auth is correct." },
+      });
+      // Inspect the stored history before resume triggers another native read.
+      await expect(rpc(1058, "thread/turns/list", { itemsView: "full" })).resolves.toMatchObject({
+        result: { data: [{ id: turnId, items }] },
+      });
+      const resumed = await rpc(1059, "thread/resume", {
+        excludeTurns: true,
+        initialTurnsPage: { itemsView: "full" },
+      });
+      expect(resumed).toMatchObject({
+        result: { initialTurnsPage: { data: [{ id: turnId, items }] } },
+      });
+      await expect(rpc(1060, "thread/turns/list", { itemsView: "full" })).resolves.toMatchObject({
+        result: { data: [{ id: turnId, items }] },
+      });
+      await expect(rpc(1061, "thread/items/list", { turnId })).resolves.toMatchObject({
+        result: { data: items.map((item) => ({ turnId, item })) },
+      });
+      const cursor = (resumed.result as JsonObject).itemsBackwardsCursor;
+      if (typeof cursor !== "string") throw new Error("Paginated resume omitted the Item cursor");
+      await expect(
+        rpc(1062, "thread/items/list", { turnId, cursor, sortDirection: "desc" }),
+      ).resolves.toMatchObject({
+        result: { data: items.toReversed().map((item) => ({ turnId, item })) },
+      });
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
   it("inherits cwd from a native Codex parent when delegation omits cwd", async () => {
     let delegationApi: DelegationControlApi | undefined;
     const fixture = createFixture({
@@ -904,46 +1017,6 @@ describe("AppServerHost HarnessAdapter projection", () => {
     }
   });
 
-  it("sends and cancels follow-up Turns on an external delegated Thread", async () => {
-    let delegationApi: DelegationControlApi | undefined;
-    const fixture = createFixture({
-      onDelegationApi: (api) => {
-        delegationApi = api;
-        return undefined;
-      },
-    });
-    await fixture.ready;
-    await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
-    if (!delegationApi) throw new Error("Delegation API was not registered");
-    const starting = delegationApi.start({
-      harnessId: "pi",
-      task: "first",
-      cwd: "/synthetic",
-      parentThreadId: "parent-thread",
-    });
-    await answerOfficialParentCwd(fixture);
-    const started = await starting;
-    const session = fixture.adapter.sessions[0];
-    if (!session) throw new Error("Delegated Session was not opened");
-    session.succeedTurn();
-    await vi.waitFor(async () =>
-      expect(
-        await delegationApi?.read({ threadId: started.threadId, view: "result" }),
-      ).toMatchObject({ status: "completed" }),
-    );
-    const followUp = await delegationApi.send({ threadId: started.threadId, message: "continue" });
-    expect(followUp).toMatchObject({ harnessId: "pi", status: "running" });
-    await expect(
-      delegationApi.send({ threadId: started.threadId, message: "again" }),
-    ).rejects.toMatchObject({ code: "THREAD_BUSY" });
-    await expect(delegationApi.cancel({ threadId: started.threadId })).resolves.toMatchObject({
-      turnId: followUp.turnId,
-      cancelled: true,
-    });
-    session.completeCancellation();
-    await stopFixture(fixture);
-  });
-
   it("sends and cancels follow-up Turns on a native Codex Thread", async () => {
     let delegationApi: DelegationControlApi | undefined;
     const fixture = createFixture({
@@ -1144,12 +1217,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
   });
 
   it("inspects native Codex Models and starts with explicit Model and Thinking", async () => {
-    const xaiModel = harnessModelRefSchema.parse({
-      id: "codex-model-v1.eGFpL2dyb2stNC42",
-    });
-    const kimiModel = harnessModelRefSchema.parse({
-      id: "codex-model-v1.a2ltaS9rM1sxbV0",
-    });
+    const xaiModel = { id: "xai/grok-4.6" };
+    const kimiModel = harnessModelRefSchema.parse({ id: "kimi/k3[1m]" });
     let delegationApi: DelegationControlApi | undefined;
     const fixture = createFixture({
       onDelegationApi: (api) => {
@@ -1267,11 +1336,9 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
-  it("canonicalizes legacy transport-safe Codex Model refs before delegation", async () => {
-    const legacyModel = harnessModelRefSchema.parse({ id: "gpt-5.6-luna" });
-    const canonicalModel = harnessModelRefSchema.parse({
-      id: "codex-model-v1.Z3B0LTUuNi1sdW5h",
-    });
+  it("normalizes encoded Codex Model refs before delegation", async () => {
+    const legacyModel = harnessModelRefSchema.parse({ id: "codex-model-v1.Z3B0LTUuNi1sdW5h" });
+    const canonicalModel = { id: "gpt-5.6-luna" };
     let delegationApi: DelegationControlApi | undefined;
     const fixture = createFixture({
       onDelegationApi: (api) => {
@@ -1412,7 +1479,21 @@ describe("AppServerHost HarnessAdapter projection", () => {
       requestId: "native-request-1",
     });
     await answerOfficialParentCwd(fixture, "parent-thread", "Renamed parent");
-    await expect(duplicate).resolves.toMatchObject({ threadId: "native-child" });
+    const duplicateRead = await readJsonLine(fixture.official.stdin);
+    expect(duplicateRead).toMatchObject({
+      method: "thread/read",
+      params: { threadId: "native-child", includeTurns: true },
+    });
+    fixture.official.stdout.write(
+      `${JSON.stringify({
+        id: duplicateRead.id,
+        result: { thread: { id: "native-child", turns: [{ id: "native-turn" }] } },
+      })}\n`,
+    );
+    await expect(duplicate).resolves.toMatchObject({
+      threadId: "native-child",
+      turnId: "native-turn",
+    });
     expect(fixture.official.stdin.readableLength).toBe(0);
 
     const implicitPending = delegationApi.start({
@@ -1512,11 +1593,6 @@ describe("AppServerHost HarnessAdapter projection", () => {
     const threadStart = await readJsonLine(fixture.official.stdin);
     fixture.official.stdout.write(
       `${JSON.stringify({ id: threadStart.id, result: { thread: { id: "native-child" } } })}\n`,
-    );
-    await answerOfficialChildName(fixture);
-    const turnStart = await readJsonLine(fixture.official.stdin);
-    fixture.official.stdout.write(
-      `${JSON.stringify({ id: turnStart.id, result: { turn: { id: "native-turn" } } })}\n`,
     );
     const deletion = await readJsonLine(fixture.official.stdin);
     expect(deletion).toMatchObject({
@@ -1682,7 +1758,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
       environment: {
         CODEXHOST_CLI_PATH: "/opt/codexhost",
         CODEXHOST_RUNTIME_ENDPOINT: "http://127.0.0.1:43123",
-        CODEXHOST_RUNTIME_TOKEN: "token",
+        CODEXHOST_RUNTIME_TOKEN: boundDelegationToken("token", threadId),
         CODEXHOST_THREAD_ID: threadId,
       },
     });
@@ -2647,7 +2723,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     writeRequest(fixture.desktopInput, {
       id: 31,
       method: "codexhost/thread/model/select",
-      params: { threadId, model },
+      params: jsonObjectSchema.parse({ threadId, model }),
     });
     await expect(
       fixture.collector.waitFor((message) => requestId(message, 31)),

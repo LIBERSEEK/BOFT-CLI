@@ -24,8 +24,9 @@ import type {} from "@deepseek-ai/dsh-client-ui-session/client";
 import type { TranslateNS } from "@deepseek-ai/dsh-client-ui-slots";
 import { IconDataOutlineRegular } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { ModelDirectoryState } from "./directory.ts";
+import { resolveHandoffPoint } from "./handoff.ts";
 import { ModelDirectoryResolver } from "./service.ts";
-import type { ModelSelectInjected } from "./slots.ts";
+import type { HarnessHandoffControl, ModelSelectInjected } from "./slots.ts";
 import { ModelControls } from "./ModelControls.tsx";
 import { en, zh, type ModelKey } from "./locales.ts";
 import { orderModelProviders } from "./provider-order.ts";
@@ -41,6 +42,19 @@ declare module "@deepseek-ai/dsh-client-ui-slots" {
   interface LocaleNamespaceMap {
     /** The model selection surfaces' copy (/model popup + composer seat). */
     model: ModelKey;
+  }
+}
+
+declare module "@deepseek-ai/dsh-session-projection/types" {
+  interface SessionProjectionMap {
+    remoteHost: {
+      hostId: string;
+      displayName: string;
+      state: string;
+      filePreview?: boolean;
+      workspaceFiles?: boolean;
+      officePreview?: boolean;
+    } | null;
   }
 }
 
@@ -99,6 +113,22 @@ function selectionOf(state: ModelDirectoryState, id: string): ModelSelection | u
     }
   }
   return undefined;
+}
+
+interface ChatHandoffLauncherHandle {
+  open(
+    sessionId: string,
+    options?: { readonly targetHarnessId?: string; readonly atSeq?: number },
+  ): void;
+}
+
+function resolveHandoffLauncher(scope: ClientContext): ChatHandoffLauncherHandle | undefined {
+  const lookup = scope as { get(name: string): unknown };
+  if (lookup.get("chatHandoff") === undefined) return undefined;
+  const launcher = lookup.get("chatHandoffLauncher");
+  return typeof (launcher as Partial<ChatHandoffLauncherHandle> | undefined)?.open === "function"
+    ? (launcher as ChatHandoffLauncherHandle)
+    : undefined;
 }
 
 /** Dictionary namespace owned by this plugin. */
@@ -185,8 +215,52 @@ export function apply(ctx: ClientContext): void {
           inject: (sessionId): ModelSelectInjected => {
             const directory = models.directoryFor(sessionId);
             const available = sessions.subagentAddress(sessionId) === undefined;
+            const isRemote = String(sessionId).startsWith("web-remote:");
+            const binding = sessions.binding(sessionId);
+            const iconHost = {
+              isRemoteSession: isRemote,
+              subscribe: (listener: () => void) => sessions.list.subscribe(listener),
+              getHostId: () =>
+                sessions.list.getSnapshot().byId[sessionId]?.projectionValues?.remoteHost?.hostId,
+            };
+            const handoff: HarnessHandoffControl = {
+              subscribe: (listener) => {
+                if (binding === undefined || isRemote || !available) return () => {};
+                const stopSession = binding.session.subscribe(listener);
+                const stopEvents = binding.eventSource.subscribe(listener);
+                return () => {
+                  stopSession();
+                  stopEvents();
+                };
+              },
+              getStatus: () => {
+                if (isRemote || !available || resolveHandoffLauncher(scope) === undefined) {
+                  return "unsupported";
+                }
+                return resolveHandoffPoint(
+                  binding?.session.getSnapshot(),
+                  binding?.eventSource.getSnapshot(),
+                ).status;
+              },
+              open: (targetHarnessId) => {
+                if (isRemote || !available) return;
+                const launcher = resolveHandoffLauncher(scope);
+                if (launcher === undefined) return;
+                const point = resolveHandoffPoint(
+                  binding?.session.getSnapshot(),
+                  binding?.eventSource.getSnapshot(),
+                );
+                if (point.status !== "ready") return;
+                launcher.open(sessionId, {
+                  ...(targetHarnessId === undefined ? {} : { targetHarnessId }),
+                  ...(point.atSeq === undefined ? {} : { atSeq: point.atSeq }),
+                });
+              },
+            };
             return {
               available,
+              iconHost,
+              handoff,
               directory: directory.store,
               load: () => {
                 if (available)
@@ -194,6 +268,9 @@ export function apply(ctx: ClientContext): void {
                     /* surfaced on the store */
                   });
               },
+              ...(available && !isRemote
+                ? { refreshModels: (harnessId) => models.refreshModels(harnessId) }
+                : {}),
               select: (selection: ModelSelection) =>
                 available ? directory.select(selection) : Promise.resolve(undefined),
               setFavorite: (provider, modelId, enabled) =>

@@ -11,6 +11,7 @@ import {
   type ArtifactDownloader,
   type ArtifactSource,
 } from "./artifact.js";
+import { prefetchNpmRelease, type NpmReleaseTarget } from "./npm-registry.js";
 import {
   parseUpdateStatus,
   preparedStatus,
@@ -61,6 +62,11 @@ export interface MacOsDmgUpdateOptions extends CommonUpdateOptions {
   appPath: string;
 }
 
+export interface LinuxArchiveUpdateOptions extends CommonUpdateOptions {
+  artifact: ArtifactSource;
+  installRoot: string;
+}
+
 export interface PreparedBackgroundUpdate {
   version: string;
   installation: BackgroundUpdateInstallation;
@@ -79,6 +85,8 @@ export interface BackgroundUpdateManagerDependencies {
   randomId?(): string;
   download?: ArtifactDownloader;
   spawnUpdater?(executable: string, requestPath: string): ChildProcess;
+  /** Downloads an npm release into the npm cache before any service stops. */
+  prefetchNpm?(target: NpmReleaseTarget): Promise<void>;
   now?(): number;
 }
 
@@ -88,6 +96,7 @@ export interface BackgroundUpdateManager {
     options: WindowsInstallerUpdateOptions,
   ): Promise<PreparedBackgroundUpdate>;
   prepareMacOsDmg(options: MacOsDmgUpdateOptions): Promise<PreparedBackgroundUpdate>;
+  prepareLinuxArchive(options: LinuxArchiveUpdateOptions): Promise<PreparedBackgroundUpdate>;
   /** Resolves only after the Updater validates the owner and is waiting for its exit. */
   start(
     prepared: PreparedBackgroundUpdate,
@@ -125,6 +134,12 @@ interface InternalRequest {
         dmg_path: string;
         artifact_sha256: string;
         app_path: string;
+      }
+    | {
+        kind: "linux-archive";
+        archive_path: string;
+        artifact_sha256: string;
+        install_root: string;
       };
 }
 
@@ -226,6 +241,7 @@ export function createBackgroundUpdateManager(
   const randomId = dependencies.randomId ?? randomUUID;
   const download = dependencies.download ?? downloadArtifact;
   const spawnUpdater = dependencies.spawnUpdater ?? defaultSpawnUpdater;
+  const prefetchNpm = dependencies.prefetchNpm ?? ((target) => prefetchNpmRelease(target));
   const now = dependencies.now ?? Date.now;
   const preparedRequests = new Set<string>();
 
@@ -434,15 +450,25 @@ export function createBackgroundUpdateManager(
     async prepareNpm(options: NpmUpdateOptions): Promise<PreparedBackgroundUpdate> {
       const common = await prepareCommon(options, "npm");
       try {
+        const nodePath = await requireRegularFile(options.nodePath, "npm Node.js executable");
+        const npmCliPath = await requireRegularFile(options.npmCliPath, "npm CLI");
+        const packageRoot = requireAbsolutePath(options.packageRoot, "npm platform package root");
+        // The Updater installs from this cache after the services stop, so a registry that is
+        // unreachable or lacks the release fails here while everything keeps running.
+        await writeStatusSnapshot(
+          common.statusPath,
+          statusSnapshot(common.version, "npm", "downloading"),
+        );
+        await prefetchNpm({ nodePath, npmCliPath, packageRoot, version: common.version });
         return await finalize(common, {
           kind: "npm",
-          node_path: await requireRegularFile(options.nodePath, "npm Node.js executable"),
-          npm_cli_path: await requireRegularFile(options.npmCliPath, "npm CLI"),
+          node_path: nodePath,
+          npm_cli_path: npmCliPath,
           npm_launcher_path: await requireRegularFile(
             options.npmLauncherPath,
             "npm codexhost launcher",
           ),
-          npm_package_root: requireAbsolutePath(options.packageRoot, "npm platform package root"),
+          npm_package_root: packageRoot,
         });
       } catch (error) {
         await writeFailedStatus(common.statusPath, common.version, "npm", error);
@@ -488,6 +514,29 @@ export function createBackgroundUpdateManager(
           dmg_path: artifact.artifactPath,
           artifact_sha256: artifact.source.sha256,
           app_path: appPath,
+        },
+        artifact.artifactPath,
+      );
+    },
+
+    async prepareLinuxArchive(
+      options: LinuxArchiveUpdateOptions,
+    ): Promise<PreparedBackgroundUpdate> {
+      if (platform !== "linux") throw new Error("Linux archive updates require Linux");
+      const common = await prepareCommon(options, "linux-archive");
+      const artifact = await prepareArtifact(
+        common,
+        "linux-archive",
+        options.artifact,
+        "update.tar.gz",
+      );
+      return finalize(
+        common,
+        {
+          kind: "linux-archive",
+          archive_path: artifact.artifactPath,
+          artifact_sha256: artifact.source.sha256,
+          install_root: requireAbsolutePath(options.installRoot, "Linux install root"),
         },
         artifact.artifactPath,
       );

@@ -33,7 +33,6 @@ import {
 } from "../src/index.js";
 
 import { parseGrokQuestionRequest } from "../src/grok-questions.js";
-import { encodeGrokModelRef } from "../src/grok-models.js";
 
 function gatewayModelRef(modelId: string) {
   const ref = encodeGrokModelRef(modelId);
@@ -1055,11 +1054,9 @@ describe("Grok Adapter ACP projection", () => {
     );
     const inspection = await adapter.inspect({ cwd: "/synthetic" });
     if (inspection.status !== "ready") throw new Error("Expected a ready Grok inspection");
-    expect(inspection.catalog.models.map(({ ref }) => ref.id)).toEqual(
-      gatewayModelIds.map((id) => gatewayModelRef(id).id),
-    );
+    expect(inspection.catalog.models.map(({ ref }) => ref.id)).toEqual(gatewayModelIds);
 
-    const nativeRef = gatewayModelRef(nativeGatewayModel);
+    const nativeRef = harnessModelRefSchema.parse({ id: nativeGatewayModel });
     const opened = await adapter.open({ kind: "create", cwd: "/synthetic", model: nativeRef });
     if (!opened.ok) throw new Error(opened.error.message);
     expect(transport.openCalls).toContainEqual({
@@ -1072,7 +1069,7 @@ describe("Grok Adapter ACP projection", () => {
     await expect(
       opened.value.execute({
         type: "model.select",
-        model: gatewayModelRef(gatewayAliasModel),
+        model: harnessModelRefSchema.parse({ id: gatewayAliasModel }),
       }),
     ).resolves.toMatchObject({ ok: true });
     expect(transport.setModel).toHaveBeenLastCalledWith(gatewayAliasModel, "high", undefined);
@@ -1094,7 +1091,7 @@ describe("Grok Adapter ACP projection", () => {
         fetchCredits: async () => null,
       },
     );
-    const model = gatewayModelRef(nativeGatewayModel);
+    const model = harnessModelRefSchema.parse({ id: nativeGatewayModel });
 
     try {
       const resumed = await adapter.open({
@@ -3465,7 +3462,7 @@ describe("Grok Adapter ACP projection", () => {
       const created = await adapter.open({
         kind: "create",
         cwd: "/synthetic",
-        model: gatewayModelRef(nativeGatewayModel),
+        model: harnessModelRefSchema.parse({ id: nativeGatewayModel }),
       });
       if (!created.ok) throw new Error(created.error.message);
       const sourceRef = created.value.initialState.nativeRef;
@@ -3509,7 +3506,7 @@ describe("Grok Adapter ACP projection", () => {
       );
       if (!opened.ok) throw new Error(opened.error.message);
       expect(transport.setModel).toHaveBeenCalledWith(nativeGatewayModel, "high", 500000);
-      expect(opened.value.initialState.effectiveModel).toEqual(gatewayModelRef(nativeGatewayModel));
+      expect(opened.value.initialState.effectiveModel).toEqual({ id: nativeGatewayModel });
       await created.value.close();
       await opened.value.close();
     },

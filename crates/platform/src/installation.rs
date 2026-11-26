@@ -342,9 +342,60 @@ fn find_matching_desktop_cli_cache_with_digest(
 }
 
 #[cfg(target_os = "windows")]
+fn windows_codex_cli_runnable(path: &Path) -> bool {
+    use std::os::windows::process::CommandExt;
+    use std::process::{Command, Stdio};
+
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    Command::new(path)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn resolve_windows_executable_codex_cli(
+    packaged_codex_cli: &Path,
+    cached_codex_cli: Option<PathBuf>,
+    is_runnable: impl Fn(&Path) -> bool,
+) -> Result<PathBuf, PlatformError> {
+    let packaged = packaged_codex_cli.canonicalize().ok();
+    if let (Some(cached), Some(packaged)) = (cached_codex_cli.as_ref(), packaged.as_ref())
+        && let (Ok(cached_hash), Ok(packaged_hash)) = (sha256_file(cached), sha256_file(packaged))
+        && cached_hash == packaged_hash
+    {
+        return Ok(cached.clone());
+    }
+    if let Some(packaged) = packaged
+        && is_runnable(&packaged)
+    {
+        return Ok(packaged);
+    }
+    cached_codex_cli.ok_or_else(|| {
+        PlatformError::NotFound(
+            "no runnable Codex CLI was found in the Desktop-managed cache and the packaged CLI could not be executed directly; launch the official Desktop once to create the cache".into(),
+        )
+    })
+}
+
+#[cfg(target_os = "windows")]
 fn windows_installation(
     details: WindowsPackageDetails,
     local_app_data: &Path,
+) -> Result<DesktopInstallation, PlatformError> {
+    windows_installation_with_probe(details, local_app_data, windows_codex_cli_runnable)
+}
+
+#[cfg(target_os = "windows")]
+fn windows_installation_with_probe(
+    details: WindowsPackageDetails,
+    local_app_data: &Path,
+    is_runnable: impl Fn(&Path) -> bool,
 ) -> Result<DesktopInstallation, PlatformError> {
     let install_root = details.install_root.canonicalize().map_err(|error| {
         PlatformError::NotFound(format!(
@@ -361,14 +412,16 @@ fn windows_installation(
             install_root.display()
         )));
     }
-    // WindowsApps resources are not directly executable by a normal desktop
-    // process. Use any Desktop-managed CLI copy, without requiring it to match
-    // the bundled CLI byte-for-byte or by version.
-    let executable_codex_cli = find_desktop_cli_cache(local_app_data)?.ok_or_else(|| {
-        PlatformError::NotFound(
-            "no runnable Codex CLI was found in the Desktop-managed cache; launch the official Desktop once to create it".into(),
-        )
-    })?;
+    // Older Windows builds cannot directly execute `codex.exe` from WindowsApps
+    // and rely on the Desktop-managed cache under `%LOCALAPPDATA%\OpenAI\Codex\bin`.
+    // Newer Desktop builds in app-package core runtime mode run the packaged
+    // `codex.exe` directly and stop staging cache copies. Reuse a cache copy
+    // when it matches the installed package hash; otherwise prefer the packaged
+    // CLI when it is directly runnable, falling back to any cached copy when
+    // WindowsApps ACLs block direct execution.
+    let cached_codex_cli = find_desktop_cli_cache(local_app_data)?;
+    let executable_codex_cli =
+        resolve_windows_executable_codex_cli(&packaged_codex_cli, cached_codex_cli, is_runnable)?;
 
     Ok(DesktopInstallation {
         identity: DesktopIdentity::WindowsPackage {
@@ -441,6 +494,11 @@ pub fn discover_desktop_managed_codex_cli() -> Result<PathBuf, PlatformError> {
         ))
     })?;
     let packaged_codex_cli = install_root.join("app/resources/codex.exe");
+    if windows_codex_cli_runnable(&packaged_codex_cli) {
+        let packaged_codex_cli = canonical_existing_file(&packaged_codex_cli)?;
+        stage_code_mode_host(&packaged_codex_cli, &packaged_codex_cli)?;
+        return Ok(packaged_codex_cli);
+    }
     let packaged_codex_cli_hash = sha256_file(&packaged_codex_cli)?;
     let packaged_codex_cli_size = packaged_codex_cli.metadata()?.len();
     let local_app_data = windows_local_app_data()?;
@@ -709,6 +767,12 @@ pub fn discover_codex_desktop() -> Result<DesktopInstallation, PlatformError> {
     if let Some(root) = custom_install_root(env::var_os) {
         return discover_codex_desktop_from_root(&root);
     }
+    discover_registered_codex_desktop()
+}
+
+/// Discover the current user's registered Store installation, ignoring overrides.
+#[cfg(target_os = "windows")]
+pub fn discover_registered_codex_desktop() -> Result<DesktopInstallation, PlatformError> {
     let details = discover_installed_windows_package()?;
     windows_installation(details, &windows_local_app_data()?)
 }
@@ -882,7 +946,7 @@ mod windows_tests {
     use std::fs;
     use std::path::PathBuf;
 
-    use super::{WindowsPackageDetails, probe_package_details, windows_installation};
+    use super::{WindowsPackageDetails, probe_package_details, windows_installation_with_probe};
     use crate::{
         CUSTOM_INSTALL_ROOT_ENV, PROBE_APP_USER_MODEL_ID_ENV, PROBE_DESKTOP_VERSION_ENV,
         PROBE_INSTALL_ROOT_ENV, PROBE_PACKAGE_FAMILY_ENV, PROBE_PACKAGE_FULL_NAME_ENV,
@@ -959,20 +1023,21 @@ mod windows_tests {
         fs::create_dir_all(cached_cli.parent().expect("cache parent")).expect("create CLI cache");
         fs::write(&cached_cli, b"different cached codex cli").expect("write cached CLI");
 
-        let installation = windows_installation(
-            WindowsPackageDetails {
-                package_name: "OpenAI.Codex".into(),
-                package_family_name: "OpenAI.Codex_family".into(),
-                appx_activation: WindowsAppxActivationIdentity {
-                    package_full_name: "OpenAI.Codex_1.2.3.4_x64_family".into(),
-                    app_user_model_id: "OpenAI.Codex_family!App".into(),
-                },
-                version: "1.2.3.4".into(),
-                install_root: install_root.clone(),
+        let package_details = || WindowsPackageDetails {
+            package_name: "OpenAI.Codex".into(),
+            package_family_name: "OpenAI.Codex_family".into(),
+            appx_activation: WindowsAppxActivationIdentity {
+                package_full_name: "OpenAI.Codex_1.2.3.4_x64_family".into(),
+                app_user_model_id: "OpenAI.Codex_family!App".into(),
             },
-            &local_app_data,
-        )
-        .expect("valid Windows installation");
+            version: "1.2.3.4".into(),
+            install_root: install_root.clone(),
+        };
+
+        // When the packaged CLI is directly runnable, it wins over a stale cache copy.
+        let installation =
+            windows_installation_with_probe(package_details(), &local_app_data, |_| true)
+                .expect("valid Windows installation");
 
         assert_eq!(
             installation.identity,
@@ -994,7 +1059,27 @@ mod windows_tests {
         );
         assert_eq!(
             installation.executable_codex_cli,
+            packaged_cli.canonicalize().expect("canonical packaged CLI")
+        );
+
+        // When WindowsApps ACLs prevent direct execution, fall back to the cache copy.
+        let fallback =
+            windows_installation_with_probe(package_details(), &local_app_data, |_| false)
+                .expect("Windows installation falling back to cache");
+        assert_eq!(
+            fallback.executable_codex_cli,
             cached_cli.canonicalize().expect("canonical cached CLI")
+        );
+
+        // Removing the stale cache copy (or the whole cache) must not break
+        // discovery when the packaged CLI is runnable.
+        fs::remove_dir_all(&local_app_data).expect("remove Desktop CLI cache");
+        let installation =
+            windows_installation_with_probe(package_details(), &local_app_data, |_| true)
+                .expect("valid Windows installation without a Desktop CLI cache");
+        assert_eq!(
+            installation.executable_codex_cli,
+            packaged_cli.canonicalize().expect("canonical packaged CLI")
         );
 
         fs::remove_dir_all(root).expect("remove Windows installation fixture");
@@ -1866,5 +1951,80 @@ mod portable_version_tests {
         );
 
         fs::remove_dir_all(root).expect("remove priority fixture");
+    }
+}
+
+#[cfg(test)]
+mod windows_cli_selection_tests {
+    use std::cell::Cell;
+    use std::fs;
+
+    use super::resolve_windows_executable_codex_cli;
+    use crate::{PlatformError, temporary_directory};
+
+    #[test]
+    fn reuses_matching_cache_without_probing_and_handles_runnable_or_blocked_packaged_cli() {
+        let root = temporary_directory("codexhost-windows-cli-selection");
+        let packaged = root.join("packaged/codex.exe");
+        let cached = root.join("cache/codex.exe");
+        fs::create_dir_all(packaged.parent().expect("packaged parent")).expect("create packaged");
+        fs::create_dir_all(cached.parent().expect("cache parent")).expect("create cache");
+        fs::write(&packaged, b"codex-v2").expect("write packaged CLI");
+        fs::write(&cached, b"codex-v2").expect("write matching cache CLI");
+
+        // 1. Matching hash reuses cache without spawning a probe.
+        let probe_calls = Cell::new(0usize);
+        let selected = resolve_windows_executable_codex_cli(
+            &packaged,
+            Some(cached.canonicalize().expect("canonical cached")),
+            |_| {
+                probe_calls.set(probe_calls.get() + 1);
+                true
+            },
+        )
+        .expect("select matching cache");
+        assert_eq!(selected, cached.canonicalize().expect("canonical cached"));
+        assert_eq!(probe_calls.get(), 0);
+
+        // 2. Stale cache + runnable packaged CLI selects packaged CLI.
+        fs::write(&cached, b"codex-v1-stale").expect("write stale cache CLI");
+        let selected = resolve_windows_executable_codex_cli(
+            &packaged,
+            Some(cached.canonicalize().expect("canonical cached")),
+            |_| {
+                probe_calls.set(probe_calls.get() + 1);
+                true
+            },
+        )
+        .expect("select runnable packaged CLI over stale cache");
+        assert_eq!(
+            selected,
+            packaged.canonicalize().expect("canonical packaged")
+        );
+        assert_eq!(probe_calls.get(), 1);
+
+        // 3. Stale cache + blocked packaged CLI (legacy WindowsApps ACL) falls back to cache.
+        let selected = resolve_windows_executable_codex_cli(
+            &packaged,
+            Some(cached.canonicalize().expect("canonical cached")),
+            |_| false,
+        )
+        .expect("fall back to cached CLI when packaged CLI is not runnable");
+        assert_eq!(selected, cached.canonicalize().expect("canonical cached"));
+
+        // 4. Missing cache + runnable packaged CLI succeeds (app-package mode).
+        let selected = resolve_windows_executable_codex_cli(&packaged, None, |_| true)
+            .expect("select runnable packaged CLI without cache");
+        assert_eq!(
+            selected,
+            packaged.canonicalize().expect("canonical packaged")
+        );
+
+        // 5. Missing cache + blocked packaged CLI fails clearly.
+        let error = resolve_windows_executable_codex_cli(&packaged, None, |_| false)
+            .expect_err("reject when neither cache nor runnable packaged CLI is available");
+        assert!(matches!(error, PlatformError::NotFound(_)));
+
+        fs::remove_dir_all(root).expect("remove selection fixture");
     }
 }

@@ -9,7 +9,7 @@ import {
   type DelegationWatchApi,
 } from "./delegation-types.js";
 import type { ClientEventLog } from "./external-client-events.js";
-import { clientOrigin, originClientName } from "./external-client-origin.js";
+import { clientOrigin, isPeerOrigin, originClientName } from "./external-client-origin.js";
 import type {
   ExternalClientCall,
   ExternalClientRouter,
@@ -25,6 +25,11 @@ const HEARTBEAT_MS = 25_000;
 /** A client may name only itself where an identifier stands for the caller. */
 function ownOrigin(client: string, value: unknown, field: string): string {
   if (value === undefined) return clientOrigin(client);
+  if (typeof value === "string" && isPeerOrigin(value))
+    throw new DelegationControlError(
+      "INVALID_ARGUMENT",
+      `${field} may name only the calling client`,
+    );
   const other = typeof value === "string" ? originClientName(value) : undefined;
   if (other !== undefined && other !== client)
     throw new DelegationControlError(
@@ -33,6 +38,24 @@ function ownOrigin(client: string, value: unknown, field: string): string {
     );
   return value as string;
 }
+
+/**
+ * Routes a `read` client may use: they observe Threads, the Host and the client's
+ * own events. Every other route, including any added later, needs `dispatch`.
+ */
+const READ_ROUTES = new Set([
+  "/v1/host/list",
+  "/v1/host/info",
+  "/v1/project/list",
+  "/v1/harness/list",
+  "/v1/harness/inspect",
+  "/v1/thread/read",
+  "/v1/thread/file",
+  "/v1/thread/wait",
+  "/v1/thread/watches",
+  "/v1/thread/list",
+  "/v1/events/poll",
+]);
 
 /** External watch=true is shorthand for the timeout-based control protocol used by the CLI. */
 function withWatch(body: Record<string, unknown>): Record<string, unknown> {
@@ -100,7 +123,10 @@ function forClient(
   route: string,
   rawBody: Record<string, unknown>,
 ): Record<string, unknown> {
-  let body = withHttpDefaults(route, rawBody);
+  // Never trust a callerThreadId supplied by an external HTTP/MCP client; identity comes from client auth.
+  const { callerThreadId, ...withoutCaller } = rawBody;
+  void callerThreadId;
+  let body = withHttpDefaults(route, withoutCaller);
   if (route === "/v1/delegate/start" || route === "/v1/thread/send") body = withWatch(body);
   if (route === "/v1/delegate/start")
     return { ...body, parentThreadId: ownOrigin(client, body.parentThreadId, "parentThreadId") };
@@ -152,12 +178,20 @@ export function externalClientRouter(handlers: {
   inventory?: HostInventory;
 }): ExternalClientRouter {
   return async (call, route, body) => {
+    if (call.scope !== "dispatch" && !READ_ROUTES.has(route))
+      throw new DelegationControlError(
+        "FORBIDDEN",
+        `Client '${call.client}' has read scope and cannot use ${route}`,
+      );
     if (route === "/v1/events/poll") {
       if (!handlers.events)
         throw new DelegationControlError("INVALID_ARGUMENT", "This Runtime keeps no client events");
       return pollEvents(handlers.events, call.client, body);
     }
-    return routeDelegationRequest(handlers, route, forClient(call.client, route, body));
+    return routeDelegationRequest(handlers, route, forClient(call.client, route, body), {
+      kind: "external-client",
+      client: call.client,
+    });
   };
 }
 

@@ -115,6 +115,7 @@ describe("external client MCP endpoint", () => {
     const client = await connect();
     const { tools } = await client.listTools();
     expect(tools.map((tool) => tool.name)).toEqual([
+      "host_list",
       "host_info",
       "project_list",
       "harness_list",
@@ -238,6 +239,38 @@ describe("external client MCP endpoint", () => {
     });
     const invalid = await client.callTool({ name: "project_list", arguments: { limit: 101 } });
     expect(invalid.isError).toBe(true);
+    await client.close();
+  });
+
+  it("returns FORBIDDEN to a read client's dispatch tools and still serves its reads", async () => {
+    const clients = new ExternalClientRegistry(path.join(directory, "clients.json"));
+    const reader = await clients.add("reader", "read");
+    const client = await connect(`Bearer ${reader.token}`);
+    const startCalls = api.start.mock.calls.length;
+    const started = await client.callTool({
+      name: "delegate_start",
+      arguments: { harnessId: "pi", task: "triage", cwd: "/w" },
+    });
+    expect(started.isError).toBe(true);
+    expect(JSON.parse((started.content as { text: string }[])[0]?.text ?? "")).toMatchObject({
+      error: { code: "FORBIDDEN" },
+    });
+    expect(api.start.mock.calls.length).toBe(startCalls);
+    await expect(client.callTool({ name: "harness_list", arguments: {} })).resolves.toMatchObject({
+      isError: false,
+      structuredContent: { harnesses: ["codex", "pi"] },
+    });
+    // The next request sees a scope change; the token stays the same.
+    await clients.setScope("reader", "dispatch");
+    await expect(
+      client.callTool({
+        name: "delegate_start",
+        arguments: { harnessId: "pi", task: "triage", cwd: "/w" },
+      }),
+    ).resolves.toMatchObject({
+      isError: false,
+      structuredContent: { parentThreadId: "client:reader" },
+    });
     await client.close();
   });
 

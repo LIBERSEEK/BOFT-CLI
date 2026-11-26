@@ -1,4 +1,7 @@
+import type { HarnessModelRef } from "@codexhost/shared-contracts";
+
 import type { DelegationCliCommand } from "./delegation-cli-help.js";
+import { formatDelegationModel } from "./delegation-model-argument.js";
 import {
   type DelegationStartResult,
   type DelegationThreadListResult,
@@ -10,17 +13,20 @@ import {
   type ThreadWatchListResult,
   type ThreadWatchResult,
 } from "./delegation-types.js";
-import { originClientName } from "./external-client-origin.js";
+import { isSyntheticOrigin } from "./external-client-origin.js";
+import { remoteThreadLink } from "./remote-peer-delegation.js";
 
-/** A Thread as a link; a client origin is no Thread, so it is shown as is. */
+/** A Thread as a link; a synthetic origin (external client or remote peer) is shown as is. */
 function targetLink(identifier: string): string {
-  return originClientName(identifier) !== undefined ? identifier : threadLink(identifier);
+  return isSyntheticOrigin(identifier) ? identifier : threadLink(identifier);
 }
 
 export type DelegationCliFormat = "json" | "compact" | "text";
 
-function threadLink(threadId: string): string {
-  return `codex://threads/${threadId}`;
+function threadLink(threadId: string, hostId?: string): string {
+  return hostId && hostId !== "local"
+    ? remoteThreadLink(threadId, hostId)
+    : `codex://threads/${threadId}`;
 }
 
 function watchOutput(watch: DelegationStartResult["watch"]): { watch?: unknown } {
@@ -36,6 +42,29 @@ function watchOutput(watch: DelegationStartResult["watch"]): { watch?: unknown }
   };
 }
 
+export function jsonDelegationOutput(command: DelegationCliCommand, body: unknown): unknown {
+  if (command !== "harness inspect") return body;
+  const result = body as HarnessInspectResult;
+  if (result.inspection.status !== "ready") return body;
+  const { catalog } = result.inspection;
+  const displayRef = (ref: HarnessModelRef) => ({ id: formatDelegationModel(ref) });
+  return {
+    ...result,
+    inspection: {
+      ...result.inspection,
+      catalog: {
+        ...catalog,
+        models: catalog.models.map((model) => ({
+          ...model,
+          ref: displayRef(model.ref),
+          ...(model.fastModel ? { fastModel: displayRef(model.fastModel) } : {}),
+        })),
+        ...(catalog.defaultModel ? { defaultModel: displayRef(catalog.defaultModel) } : {}),
+      },
+    },
+  };
+}
+
 function inspectOutput({ harnessId, inspection }: HarnessInspectResult): unknown {
   if (inspection.status !== "ready") return { harnessId, ...inspection };
   const { catalog } = inspection;
@@ -44,21 +73,21 @@ function inspectOutput({ harnessId, inspection }: HarnessInspectResult): unknown
     status: inspection.status,
     models: catalog.models.flatMap(({ ref, label, fastModel, supportedThinkingOptionIds }) => [
       {
-        id: ref.id,
+        id: formatDelegationModel(ref),
         label,
         ...(supportedThinkingOptionIds ? { thinking: supportedThinkingOptionIds } : {}),
       },
       ...(fastModel
         ? [
             {
-              id: fastModel.id,
+              id: formatDelegationModel(fastModel),
               label: `${label} (Fast)`,
               ...(supportedThinkingOptionIds ? { thinking: supportedThinkingOptionIds } : {}),
             },
           ]
         : []),
     ]),
-    ...(catalog.defaultModel ? { defaultModel: catalog.defaultModel.id } : {}),
+    ...(catalog.defaultModel ? { defaultModel: formatDelegationModel(catalog.defaultModel) } : {}),
     thinkingOptions: catalog.thinkingOptions,
     ...(catalog.defaultThinkingOptionId
       ? { defaultThinkingOptionId: catalog.defaultThinkingOptionId }
@@ -108,14 +137,13 @@ function snapshotOutput(
   };
 }
 
-// JSON bodies cross the CLI HTTP boundary as unknown; these projections use the
-// owning Runtime contracts and leave the compatible full JSON response untouched.
 export function compactDelegationOutput(
   command: DelegationCliCommand,
   body: unknown,
   view: "result" | "messages" = "result",
 ): unknown {
   switch (command) {
+    case "host list":
     case "host info":
     case "project list":
     case "thread file":
@@ -127,6 +155,9 @@ export function compactDelegationOutput(
     case "delegate start": {
       const result = body as DelegationStartResult;
       const effective = result.configuration?.effective;
+      const model = effective?.effectiveModel
+        ? formatDelegationModel(effective.effectiveModel)
+        : effective?.resolvedModelLabel;
       return {
         thread: result.deepLink,
         harnessId: result.harnessId,
@@ -138,7 +169,7 @@ export function compactDelegationOutput(
               parent: targetLink(result.parentThreadId),
             }
           : {}),
-        ...(effective?.resolvedModelLabel ? { model: effective.resolvedModelLabel } : {}),
+        ...(model ? { model } : {}),
         ...(effective?.effectiveThinkingOptionId
           ? { thinking: effective.effectiveThinkingOptionId }
           : {}),
@@ -148,7 +179,7 @@ export function compactDelegationOutput(
     case "thread send": {
       const result = body as ThreadSendResult;
       return {
-        thread: threadLink(result.threadId),
+        thread: threadLink(result.threadId, result.hostId),
         harnessId: result.harnessId,
         status: result.status,
         ...watchOutput(result.watch),
@@ -157,7 +188,7 @@ export function compactDelegationOutput(
     case "thread cancel": {
       const result = body as ThreadCancelResult;
       return {
-        thread: threadLink(result.threadId),
+        thread: threadLink(result.threadId, result.hostId),
         harnessId: result.harnessId,
         cancelRequested: result.cancelled,
       };
@@ -168,7 +199,7 @@ export function compactDelegationOutput(
     case "thread answer": {
       const result = body as ThreadAnswerResult;
       return {
-        thread: threadLink(result.threadId),
+        thread: threadLink(result.threadId, result.hostId),
         interaction: result.interactionId,
         turn: result.turnId,
         harnessId: result.harnessId,

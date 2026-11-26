@@ -12,6 +12,7 @@ import {
 } from "@codexhost/protocol-core";
 import {
   permissionModeFixedAtCreate,
+  sameHarnessModelRef,
   type HarnessPermissionModeId,
   type NativeCheckpointRef,
   type NativeSessionRef,
@@ -22,7 +23,7 @@ import {
   externalThreadValue,
   type ExternalThreadRepository,
 } from "./external-thread-repository.js";
-import { DELEGATION_THREAD_ID_ENV } from "./delegation-types.js";
+import { threadDelegationEnvironment } from "./bearer-token.js";
 import type { ExternalThread, ExternalThreadRuntime } from "./external-thread-runtime.js";
 import { ownTurns } from "./external-thread-side-chat.js";
 
@@ -176,10 +177,10 @@ export async function executeExternalThreadFork(input: {
     opened = await adapter.open({
       kind: "fork",
       cwd: targetCwd,
-      environment: {
-        ...(input.environment ?? process.env),
-        [DELEGATION_THREAD_ID_ENV]: provisional.hostThreadId,
-      },
+      environment: threadDelegationEnvironment(
+        input.environment ?? process.env,
+        provisional.hostThreadId,
+      ),
       sourceRef: nativeSessionRef as NativeSessionRef,
       checkpoint: boundary.nativeCheckpointRef as NativeCheckpointRef,
     });
@@ -216,7 +217,7 @@ export async function executeExternalThreadFork(input: {
       source.harnessId,
       provisional.transportModelId,
     );
-    if (effectiveModel && selection && selection.model?.id !== effectiveModel.id) {
+    if (effectiveModel && selection && !sameHarnessModelRef(selection.model, effectiveModel)) {
       const transportModelId = encodeExternalTransportSelection(source.harnessId, {
         ...selection,
         model: effectiveModel,
@@ -243,6 +244,7 @@ export async function executeExternalThreadFork(input: {
       sessionId: source.sessionId,
       thread,
       turns: aligned.turns,
+      historicalPlans: aligned.historicalPlans,
       ...(snapshot.value.state ? { restoredState: snapshot.value.state } : {}),
       ...(inheritedPermissionModeId
         ? { requestedPermissionModeId: inheritedPermissionModeId }
@@ -326,10 +328,10 @@ async function forkWithoutHistory(input: {
     opened = await adapter.open({
       kind: "create",
       cwd,
-      environment: {
-        ...(input.environment ?? process.env),
-        [DELEGATION_THREAD_ID_ENV]: record.hostThreadId,
-      },
+      environment: threadDelegationEnvironment(
+        input.environment ?? process.env,
+        record.hostThreadId,
+      ),
       ...(model ? { model } : {}),
       ...(thinkingOptionId ? { thinkingOptionId } : {}),
       ...(permissionModeId ? { permissionModeId } : {}),

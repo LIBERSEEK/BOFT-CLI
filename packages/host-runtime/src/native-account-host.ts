@@ -42,6 +42,15 @@ function desktopToolContextChanged(current: NativeStartup, next: NativeStartup):
   return DESKTOP_TOOL_CONTEXT_ENV.some((key) => current.environment[key] !== next.environment[key]);
 }
 
+function withDesktopTools(startup: NativeStartup, desktop: NodeJS.ProcessEnv): NativeStartup {
+  const environment = withoutDesktopToolContext(startup.environment);
+  for (const key of DESKTOP_TOOL_CONTEXT_ENV) {
+    const value = desktop[key];
+    if (value !== undefined) environment[key] = value;
+  }
+  return { ...startup, environment };
+}
+
 async function canonicalCodexHome(home: string): Promise<string> {
   const absolute = path.resolve(home);
   try {
@@ -68,18 +77,19 @@ export async function prepareLocalCodex(input: {
     input.environment.CODEX_HOME ?? path.join(homedir(), ".codex"),
   );
   await mkdir(home, { recursive: true });
-  const sharedDesktop = input.deferStart;
-  const persistStartup = sharedDesktop && !input.remoteControl;
+  const sharedDesktop = input.deferStart && !input.remoteControl;
   const startupFile =
-    persistStartup && input.environment.CODEXHOST_DATA_DIR
+    sharedDesktop && input.environment.CODEXHOST_DATA_DIR
       ? path.join(input.environment.CODEXHOST_DATA_DIR, "official-startup-v1.json")
       : undefined;
   let startup: NativeStartup = {
     stockCodexPath: input.stockCodexPath,
-    arguments: persistStartup
+    arguments: sharedDesktop
       ? ["-c", "features.code_mode_host=true", "app-server"]
       : [...input.arguments],
-    environment: sharedDesktop ? withoutDesktopToolContext(input.environment) : input.environment,
+    environment: input.deferStart
+      ? withoutDesktopToolContext(input.environment)
+      : input.environment,
   };
   if (startupFile) {
     try {
@@ -105,18 +115,7 @@ export async function prepareLocalCodex(input: {
   startup.stockCodexPath =
     (await resolveOfficialCodexExecutable(startup.stockCodexPath, input.environment)) ?? "";
   const desktopStartups = new Map<AbortSignal, NativeStartup>();
-  const nextStartup = () => {
-    const desktop = [...desktopStartups.values()].at(-1);
-    if (!desktop) return startup;
-    if (!input.remoteControl) return desktop;
-    // Remote Control pins its executable and arguments independently of Desktop tool access.
-    const environment = { ...startup.environment };
-    for (const key of DESKTOP_TOOL_CONTEXT_ENV) {
-      const value = desktop.environment[key];
-      if (value !== undefined) environment[key] = value;
-    }
-    return { ...startup, environment };
-  };
+  const nextStartup = () => [...desktopStartups.values()].at(-1) ?? startup;
   let startupQueue = Promise.resolve();
   let running: NativeStartup | undefined;
   let startupConfigured = false;
@@ -128,11 +127,16 @@ export async function prepareLocalCodex(input: {
     recovery: {},
     shouldReplaceIdleBackend: () =>
       running !== undefined &&
-      ((sharedDesktop && desktopToolContextChanged(running, nextStartup())) ||
+      ((input.deferStart && desktopToolContextChanged(running, nextStartup())) ||
         codexRuntimeFilesChanged(backendFiles)),
     createBackend: () => {
       try {
-        const configuration = nextStartup();
+        const next = nextStartup();
+        // An older attachment can outlive a failed first launch and its subsequent recovery.
+        const configuration =
+          input.remoteControl && next !== startup
+            ? withDesktopTools(startup, next.environment)
+            : next;
         if (!configuration.stockCodexPath) throw new Error("Official Codex is unavailable");
         backendFiles = captureCodexRuntimeFiles(configuration.stockCodexPath);
         running = configuration;
@@ -146,7 +150,7 @@ export async function prepareLocalCodex(input: {
           environment: { ...officialEnvironment(configuration.environment), CODEX_HOME: home },
         });
         startupConfigured = true;
-        // Keep the invocation fixed through startup and until backend exit is confirmed.
+        // Before the first successful start, a failed backend may release this provisional choice.
         void backend.closed.then(() => {
           startupConfigured = false;
         });
@@ -186,37 +190,27 @@ export async function prepareLocalCodex(input: {
     current = currentCodexAccountFromOfficialRead(response.result);
     return snapshot();
   });
-  function trackDesktopStartup(configuration: NativeStartup, attachment: AbortSignal) {
-    if (desktopStartups.has(attachment)) desktopStartups.delete(attachment);
-    else {
-      attachment.addEventListener("abort", () => desktopStartups.delete(attachment), {
-        once: true,
-      });
-    }
-    desktopStartups.set(attachment, configuration);
-  }
-  const remoteStartupLocked = () =>
-    startupConfigured || scope.owner.running || scope.owner.hasActiveWork;
+  const remoteInvocationFixed = () =>
+    input.remoteControl && (startupConfigured || scope.owner.hasStartedSuccessfully);
+
   async function applyStartup(configuration: NativeStartup, attachment: AbortSignal) {
-    if (!sharedDesktop || scope.closed || attachment.aborted) return;
-    if (input.remoteControl && remoteStartupLocked()) {
-      trackDesktopStartup(configuration, attachment);
-      return;
-    }
-    const stockCodexPath = await resolveOfficialCodexExecutable(
-      configuration.stockCodexPath,
-      configuration.environment,
-    );
-    if (scope.closed || attachment.aborted) return;
-    if (!stockCodexPath) throw new Error("Official Codex executable is a shim or proxy");
-    const next = { ...configuration, stockCodexPath, arguments: [...configuration.arguments] };
-    if (input.remoteControl) {
-      if (!remoteStartupLocked()) {
-        startupConfigured = true;
-        startup = { ...next, environment: withoutDesktopToolContext(next.environment) };
+    if (!input.deferStart || scope.closed || attachment.aborted) return;
+    let next = startup;
+    if (!remoteInvocationFixed()) {
+      const stockCodexPath = await resolveOfficialCodexExecutable(
+        configuration.stockCodexPath,
+        configuration.environment,
+      );
+      if (scope.closed || attachment.aborted) return;
+      if (!remoteInvocationFixed()) {
+        if (!stockCodexPath) throw new Error("Official Codex executable is a shim or proxy");
+        next = { ...configuration, stockCodexPath, arguments: [...configuration.arguments] };
       }
-      trackDesktopStartup(next, attachment);
-      return;
+    }
+    if (input.remoteControl) {
+      // The listener pins the native invocation. Tool endpoints belong to each attached Desktop.
+      next = withDesktopTools(next, configuration.environment);
+      startupConfigured = true;
     }
     if (startupFile) {
       try {
@@ -243,7 +237,13 @@ export async function prepareLocalCodex(input: {
       desktopToolContextChanged(current, next) ||
       (scope.owner.running && codexRuntimeFilesChanged(backendFiles));
     startup = { ...next, environment: withoutDesktopToolContext(next.environment) };
-    trackDesktopStartup(next, attachment);
+    if (desktopStartups.has(attachment)) desktopStartups.delete(attachment);
+    else {
+      attachment.addEventListener("abort", () => desktopStartups.delete(attachment), {
+        once: true,
+      });
+    }
+    desktopStartups.set(attachment, next);
     // The running generation owns the files it started with.
     if (scope.owner.running && (!changed || scope.owner.hasActiveWork))
       assertCodexRuntimeFilesPresent(backendFiles);

@@ -37,13 +37,13 @@ describe("workflow and form contracts", () => {
     expect(workflow).toContain("name: Check Linux ARM64");
   });
 
-  it("builds macOS packages on supported runners with matching architectures", async () => {
+  it("builds both macOS targets on Apple Silicon runners", async () => {
     const workflow = await read(".github/workflows/release-packages.yml");
     expect(workflow).toMatch(
       /- target: macos-arm64\s+runner: macos-26\s+rustTarget: aarch64-apple-darwin/u,
     );
     expect(workflow).toMatch(
-      /- target: macos-x64\s+runner: macos-15-intel\s+rustTarget: x86_64-apple-darwin/u,
+      /- target: macos-x64\s+runner: macos-26\s+rustTarget: x86_64-apple-darwin/u,
     );
   });
 
@@ -86,21 +86,17 @@ describe("workflow and form contracts", () => {
     expect(publishRelease).toContain("await verifyRelease(");
   });
 
-  it("publishes BOFT-named installers from the codexhost-named build outputs", async () => {
+  it("uploads BOFT-named installers and Linux archives from the build outputs", async () => {
     const workflow = await read(".github/workflows/release-packages.yml");
     expect(workflow).toContain(
-      "build/release/${{ needs.prepare.outputs.version }}/${{ matrix.target }}/codexhost-*.dmg",
+      "build/release/${{ needs.prepare.outputs.version }}/${{ matrix.target }}/boft-cli-*.dmg",
     );
     expect(workflow).toContain(
-      "build/release/${{ needs.prepare.outputs.version }}/${{ matrix.target }}/codexhost-*.exe",
+      "build/release/${{ needs.prepare.outputs.version }}/${{ matrix.target }}/boft-cli-*.exe",
     );
     expect(workflow).toContain(
-      '"macos-arm64:codexhost-${VERSION}-macos-arm64.dmg:boft-cli-${VERSION}-macos-arm64.dmg"',
+      "build/release/${{ needs.prepare.outputs.version }}/${{ matrix.target }}/boft-cli-*.tar.gz",
     );
-    expect(workflow).toContain(
-      '"windows-arm64:codexhost-${VERSION}-windows-arm64.exe:boft-cli-${VERSION}-windows-arm64.exe"',
-    );
-    expect(workflow).toContain('cp "${matches[0]}" "release-assets/${release_name}"');
   });
 
   it("limits CI skipping to explicit manual input and carries it through publication checks", async () => {
@@ -135,7 +131,7 @@ describe("workflow and form contracts", () => {
     const workflow = await read(".github/workflows/release-packages.yml");
     expect(workflow).not.toContain("ref: ${{ needs.prepare.outputs.tag }}");
     expect(workflow.match(/ref: \$\{\{ needs\.prepare\.outputs\.commit_sha \}\}/gu)).toHaveLength(
-      3,
+      4,
     );
     expect(
       workflow.match(/ref: \$\{\{ needs\.prepare\.outputs\.automation_sha \}\}/gu),

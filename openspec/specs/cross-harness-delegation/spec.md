@@ -665,3 +665,76 @@ MCP SHALL 提供 `thread_answer`，使用 `thread`、`interactionId` 和既有�
 - **WHEN** 经认证的 MCP 调用方使用 read 返回的凭证及对应 result 答题
 - **THEN** 请求 SHALL 到达同一个委派答题入口，不新增题目登记或答案解释
 - **AND** 调用方 SHALL 通过 read、wait 或重新 watch 获取后续结果
+
+### Requirement: 委派默认模型与思考强度按 Harness 持久化并在新建委派时按三级优先级生效
+
+codexhost SHALL 在共享 Harness 偏好中为每个 Harness 独立保存被委派时的默认 Model 与默认 Thinking 选项，与普通新会话偏好分离，并支持官方 Codex 与外部 Harness。发起新委派时，Host SHALL 按「本次显式指定 › 委派默认设置 › Agent 原生默认」解析模型与思考强度，不改变既有 CLI 协议、去重语义或已存在的委派子 Thread。
+
+#### Scenario: 发起委派未显式指定模型与思考强度
+
+- **WHEN** 调用方发起一次新委派且省略模型与思考强度参数，且目标 Harness 已保存委派默认模型与思考强度
+- **THEN** Host SHALL 在创建目标子 Thread 时应用该委派默认模型与思考强度
+- **AND** 官方 Codex 与外部 Harness 均 SHALL 按各自既有原生路径接收该选择
+
+#### Scenario: 发起委派显式指定模型或思考强度
+
+- **WHEN** 调用方在单次委派中显式指定了模型或思考强度
+- **THEN** 显式指定的参数 SHALL 覆盖委派默认设置
+- **AND** 若仅显式指定了与已保存默认不同的模型而未指定思考强度，Host MUST NOT 将旧默认模型的思考强度套用到本次显式模型上
+
+#### Scenario: 未配置委派默认或已清空覆盖
+
+- **WHEN** 目标 Harness 未保存委派默认设置或用户已在设置中重置该 Harness 的默认配置
+- **THEN** Host SHALL 在省略参数时不传入额外模型或思考强度，继续沿用该 Harness 原生默认行为
+
+#### Scenario: 已保存的委派默认确认失效
+
+- **WHEN** 发起未显式指定参数的委派，且已保存的默认模型或思考强度不再被目标 Harness 当前目录支持
+- **THEN** Host SHALL 静默忽略失效的默认项并回退到该 Harness 原生默认，不中断委派
+- **AND** 若调用方本次显式传入了非法模型或思考强度，Host SHALL 继续拒绝并返回错误
+
+#### Scenario: 修改委派默认不影响既有请求幂等性
+
+- **WHEN** 调用方以同一 Request ID 重试此前已创建的委派，且期间用户修改了委派默认模型
+- **THEN** Host SHALL 基于调用方原始请求保持幂等并命中原委派记录，MUST NOT 误报参数冲突
+
+### Requirement: 通过已配对 Peer 通道发现远端主机与工作区
+系统 SHALL 提供 `codexhost host list`（及控制路由 `/v1/host/list`、MCP `host_list`）列出已启用的配对 Peer 主机摘要，包含 `hostId`、展示名称、在线状态、委派能力与已知工作区路径。摘要 MUST NOT 暴露 Peer 访问令牌或原始 Origin URL。
+
+#### Scenario: 发现远端 Peer 主机
+- **WHEN** 调用方在 A 机执行 `codexhost host list` 或 MCP `host_list`
+- **THEN** 系统返回已配对 Peer 的主机摘要与工作区路径，且不包含任何访问令牌或原始 URL
+
+### Requirement: 通过已配对 Peer 通道执行跨机委派与会话控制
+对于 `remote-peer:<peerId>` 主机，CLI、控制服务与 MCP SHALL 支持 `--host <hostId>` 及 `thread://<id>?hostId=<encoded-host-id>` 执行 `read`、`wait`、`send`（含 `steer`/`interrupt`）、`cancel`、`answer`、`delegate start`、`thread list`、`harness list` 与 `harness inspect`。远端 `delegate start` 的 `worktree`/`base` SHALL 在目标机 B 本地创建并参与 `requestId` 幂等去重；`wait` SHALL 在 A 端按单调总期限约束分段轮询远端 `read`。所有返回链接与下一步命令提示 SHALL 保留 `thread://<id>?hostId=<encoded-host-id>`，远端失败 MUST NOT 回退到本机，且 `callerThreadId` MUST NOT 转发到远端。
+
+#### Scenario: 远端委派与 worktree 幂等重放
+- **WHEN** 调用方对 `remote-peer:<peerId>` 执行带 `--worktree` 与 `--request-id` 的 `delegate start`，并重复提交相同请求
+- **THEN** B 机在本地创建 worktree 并启动目标 Thread，重放返回同一 Thread 与 worktree 信息且不创建重复分支
+- **AND** 返回的 `deepLink`、compact `thread` 链接与 `next` 提示均包含 `thread://<id>?hostId=<encoded-host-id>`
+
+#### Scenario: 跨机 `thread wait` 受总期限约束
+- **WHEN** 调用方对 `remote-peer:<peerId>` 上的运行中 Thread 执行有界 `thread wait`
+- **THEN** A 端按剩余预算约束单次远端读取并分段轮询，直到终态、出现待回答问题或总期限到期返回 `timedOut: true`
+
+### Requirement: 跨机委派的一跳防环路限制
+本机委派层级继续不受深度限制；跨机 Peer 委派 SHALL 严格限制为 1 跳（`hopCount === 1`）。该限制运行在同 OS 用户（同 UID）信任边界内，作为协作式委派调用路径的防递归护栏（非针对同 UID 全权限 Shell 的 OS 沙箱）：外部 Harness 使用每 Thread HMAC 绑定令牌；原生 Codex 因官方 `app-server` 共进程且无每 Thread 环境注入，使用仅限活跃原生 Codex Thread 的共享令牌并配合持久化祖先链；祖先链查询异常或超深 MUST fail-closed 拒绝，且远端来源 Thread 创建本机子 Thread 时不得以普通 `parentThreadId` 洗白来源。
+
+#### Scenario: 远端发起会话及重启后子线程被阻止再次跨机
+- **WHEN** B 机上由远端 Peer 委派创建的 Thread（包含首轮、重启续聊、以及尝试指定普通父 Thread 的本机子 Thread）尝试发起指向任意远端主机的委派或读取
+- **THEN** B 机以 `FORBIDDEN` 拒绝该请求，防止 `A -> B -> A` 或 `A -> B -> C` 环路
+
+#### Scenario: 伪造、跨类型冒充或无法确认祖先链时 fail-closed 拒绝
+- **WHEN** 共享令牌冒充外部 Harness 活跃 Thread、绑定令牌试图伪造其他 `callerThreadId`，或持久化祖先链查询出错/超过最大深度
+- **THEN** 控制层以 `FORBIDDEN` 拒绝该远端操作
+
+### Requirement: 跨机观测边界与 Codex Desktop 只读兼容
+第 1 阶段跨机 `thread watch`、`thread export`、`thread file` 及远端 `start`/`send` 的 `--watch true` MUST 在访问本机 Thread 前以明确错误拒绝（不降级为裸本机 ID）。`remote-ssh*` 与 `remote-control:*` 等 Codex Desktop 远端主机 MUST 保持 `thread read` 兼容且继续拒绝所有写操作与 `wait`，绝不回退本机。远端错误响应 MUST 脱敏为客户端安全文案，不泄漏宿主绝对路径、Git stderr 或 Peer URL/Token。
+
+#### Scenario: 跨机不支持操作在 CLI、HTTP 与 MCP 均被一致拒绝
+- **WHEN** 调用方对远端 `thread://<id>?hostId=...` 执行 `watch`、`export` 或 `file` 读取
+- **THEN** 系统在查找本机同 ID Thread 前明确拒绝，不误操作本机 Thread
+
+#### Scenario: Codex Desktop 远端主机保持只读边界
+- **WHEN** 调用方对 `remote-ssh*` 或 `remote-control:*` 主机执行 `thread read` 以外的写操作或 `wait`
+- **THEN** 系统明确拒绝且不回退到本机，而 `thread read` 保持既有行为不变

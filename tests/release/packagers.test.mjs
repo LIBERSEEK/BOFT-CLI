@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 import { describe, expect, it } from "vitest";
+import { createMacosShellInfoPlist } from "../../scripts/release/macos-shell-bundle.mjs";
 
 const root = path.resolve(import.meta.dirname, "../..");
 
@@ -10,6 +11,7 @@ describe("platform packagers", () => {
     const source = await readFile(path.join(root, "scripts/release/macos/package.sh"), "utf8");
     expect(source).toContain('CONTENTS="$APP_PATH/Contents"');
     expect(source).toContain('RESOURCES="$CONTENTS/Resources"');
+    expect(source).toContain('"$CONTENTS/Helpers/CodexHost.app"');
     expect(source).toContain("codesign --verify --deep --strict");
     expect(source).toContain('runtime/node" -e');
     expect(source).not.toContain("--options runtime");
@@ -18,6 +20,8 @@ describe("platform packagers", () => {
     expect(source).toContain("iconutil -c icns");
     expect(source).toContain("CFBundleIconFile");
     expect(source).toContain("codexhost.icns");
+    expect(source).toContain("NSMicrophoneUsageDescription");
+    expect(createMacosShellInfoPlist("0.26.1")).toContain("NSMicrophoneUsageDescription");
     expect(source).toContain("create-dmg");
     expect(source).toContain("--window-size 800 400");
     expect(source).toContain("--window-pos 200 120");
@@ -72,6 +76,7 @@ describe("platform packagers", () => {
 
     expect(workflow).toContain("boft-cli-*.dmg");
     expect(workflow).toContain("boft-cli-*.exe");
+    expect(workflow).toContain("boft-cli-*.tar.gz");
     expect(workflow).not.toContain("codexhost-*.msi");
     expect(workflow).toContain("npm run release:npm --");
     expect(workflow).toContain("Build npm package from installer outputs");
@@ -111,22 +116,13 @@ describe("platform packagers", () => {
     expect(workflow).toContain("publish-release:");
     const publishRelease = workflow.slice(workflow.indexOf("  publish-release:"));
     expect(publishRelease).toContain("gh release create");
-    expect(publishRelease).toContain(
-      '"windows-x64:codexhost-${VERSION}-windows-x64.exe:boft-cli-${VERSION}-windows-x64.exe"',
-    );
-    expect(publishRelease).toContain(
-      '"windows-arm64:codexhost-${VERSION}-windows-arm64.exe:boft-cli-${VERSION}-windows-arm64.exe"',
-    );
-    expect(publishRelease).toContain(
-      '"macos-x64:codexhost-${VERSION}-macos-x64.dmg:boft-cli-${VERSION}-macos-x64.dmg"',
-    );
-    expect(publishRelease).toContain(
-      '"macos-arm64:codexhost-${VERSION}-macos-arm64.dmg:boft-cli-${VERSION}-macos-arm64.dmg"',
-    );
-    expect(publishRelease).toContain(
-      'find release-assets -type f -path "*/${target}/${source_name}"',
-    );
-    expect(publishRelease).toContain('cp "${matches[0]}" "release-assets/${release_name}"');
+    expect(publishRelease).toContain('"boft-cli-${VERSION}-windows-x64.exe"');
+    expect(publishRelease).toContain('"boft-cli-${VERSION}-windows-arm64.exe"');
+    expect(publishRelease).toContain('"boft-cli-${VERSION}-macos-x64.dmg"');
+    expect(publishRelease).toContain('"boft-cli-${VERSION}-macos-arm64.dmg"');
+    expect(publishRelease).toContain('"boft-cli-${VERSION}-linux-x64.tar.gz"');
+    expect(publishRelease).toContain('"boft-cli-${VERSION}-linux-arm64.tar.gz"');
+    expect(publishRelease).not.toContain('"codexhost-${VERSION}');
     expect(workflow).not.toContain("softprops/action-gh-release");
     expect(workflow).not.toContain("codexhost-*.sha256");
     expect(workflow).not.toContain("checksums.txt");
@@ -173,8 +169,8 @@ describe("platform packagers", () => {
     );
     const uninstall = installer.split(/\[UninstallRun\]\r?\n/u)[1].split(/\r?\n\[/u)[0];
     expect(uninstall.trim().split(/\r?\n/u)).toEqual([
-      'Filename: "{app}\\bin\\codexhost.exe"; Parameters: "stop"; Flags: runhidden; RunOnceId: "StopCodexhostServices"',
-      'Filename: "{app}\\bin\\codexhost.exe"; Parameters: "autostart off"; Flags: runhidden; RunOnceId: "DisableCodexhostAutostart"',
+      'Filename: "{app}\\bin\\boft.exe"; Parameters: "stop"; Flags: runhidden; RunOnceId: "StopCodexhostServices"',
+      'Filename: "{app}\\bin\\boft.exe"; Parameters: "autostart off"; Flags: runhidden; RunOnceId: "DisableCodexhostAutostart"',
     ]);
     expect(installer.split("[Code]")[1]).not.toMatch(/autostart|unins|Serve/u);
     expect(installer).not.toMatch(/\[Registry\]|RegDelete|taskkill|powershell/iu);

@@ -2,7 +2,7 @@ import type {
   ComposerAgentPhase,
   ExternalRendererAgent,
   RendererAgent,
-  RendererAgentAvailability,
+  PickerAgentAvailability,
 } from "./agent-selection-state.js";
 import { catalogModelForRef } from "@codexhost/shared-contracts";
 import type {
@@ -58,6 +58,8 @@ import {
   type RendererHarnessCommandControl,
 } from "./renderer-harness-command-control.js";
 import { observeRendererCompactComposer } from "./renderer-trigger-chip-style.js";
+import { isNativeModelCarrierLoadingButton } from "./renderer-native-model-loading.js";
+import { isNativeModelRetryButton } from "./renderer-native-model-retry.js";
 
 export { CONTROL_ATTRIBUTE };
 export type ExternalModelControlView = RendererModelControlView;
@@ -147,7 +149,8 @@ function isOwnedRendererControl(element: Element): boolean {
     element.hasAttribute("data-codexhost-usage-control") ||
     element.hasAttribute("data-codexhost-credits-control") ||
     element.hasAttribute("data-codexhost-composer-indicators") ||
-    element.hasAttribute("data-codexhost-harness-command-control")
+    element.hasAttribute("data-codexhost-harness-command-control") ||
+    element.hasAttribute("data-codexhost-handoff-control")
   );
 }
 
@@ -257,6 +260,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+const NATIVE_CONTROL_FIBER_WALK_DEPTH = 120;
+
 export function isNativeModelControlCandidate(element: Element): boolean {
   if (
     element.hasAttribute(CONTROL_ATTRIBUTE) ||
@@ -280,7 +285,7 @@ export function isNativeModelControlCandidate(element: Element): boolean {
         memoizedProps?: unknown;
       } | null)
     : null;
-  for (let depth = 0; fiber && depth < 60; depth += 1) {
+  for (let depth = 0; fiber && depth < NATIVE_CONTROL_FIBER_WALK_DEPTH; depth += 1) {
     const props = fiber.memoizedProps;
     if (
       isRecord(props) &&
@@ -322,7 +327,7 @@ export function isNativePermissionModeControlCandidate(element: Element): boolea
     : null;
   let ownsTrigger = false;
   let ownsComposerPermissionState = false;
-  for (let depth = 0; fiber && depth < 60; depth += 1) {
+  for (let depth = 0; fiber && depth < NATIVE_CONTROL_FIBER_WALK_DEPTH; depth += 1) {
     const props = fiber.memoizedProps;
     if (isRecord(props)) {
       if (
@@ -364,8 +369,17 @@ function nativePermissionModeControlForComposer(composer: Element): HTMLElement 
 
 function nativeModelControlForComposer(composer: Element): HTMLElement | null {
   const candidates = [
-    ...composer.querySelectorAll<HTMLElement>('button[aria-haspopup="menu"]'),
-  ].filter((element) => isNativeModelControlCandidate(element));
+    ...composer.querySelectorAll<HTMLButtonElement>(
+      'button[aria-haspopup="menu"], button[data-composer-navigation-target="reasoning"]',
+    ),
+  ].filter(
+    (button) =>
+      !isOwnedRendererControl(button) &&
+      button.closest(CODEX_COMPOSER_SELECTOR) === composer &&
+      (isNativeModelControlCandidate(button) ||
+        isNativeModelRetryButton(button, composer) ||
+        isNativeModelCarrierLoadingButton(button)),
+  );
   return candidates.length === 1 ? (candidates[0] ?? null) : null;
 }
 
@@ -392,7 +406,7 @@ export function nativeContextUsageControlForComposer(composer: Element): HTMLEle
   return candidates.length === 1 ? (candidates[0] ?? null) : null;
 }
 
-function contractElementVisible(element: Element): boolean {
+export function contractElementVisible(element: Element): boolean {
   const typed = element as HTMLElement;
   const bounds = typed.getBoundingClientRect?.();
   if (!bounds || bounds.width <= 0 || bounds.height <= 0) return false;
@@ -489,12 +503,10 @@ function refreshNativeContextUsageControl(control: ComposerAgentControl): void {
 
 function refreshNativeModelControl(control: ComposerAgentControl): void {
   const candidate = nativeModelControlForComposer(control.composer);
-  if (!candidate) return;
-  if (candidate !== control.nativeModelControl?.element) {
-    restoreNativeControl(control.nativeModelControl);
-    control.nativeModelControl = captureNativeControl(candidate);
-    syncRendererModelTriggerClass(control.modelPicker);
-  }
+  if (candidate === (control.nativeModelControl?.element ?? null)) return;
+  restoreNativeControl(control.nativeModelControl);
+  control.nativeModelControl = captureNativeControl(candidate);
+  if (candidate) syncRendererModelTriggerClass(control.modelPicker);
 }
 
 function usagePlacementAnchor(control: ComposerAgentControl): HTMLElement | null {
@@ -738,6 +750,7 @@ export function mountComposerAgentControl(
   onSelectThinking: (thinkingOptionId: string) => void,
   onSelectPermissionMode: (permissionModeId: string) => void,
   onOpenCommandMenu: () => void,
+  onRefreshModels?: () => void,
 ): ComposerAgentControl {
   // External Harnesses inject more footer chips than native Codex. Let the
   // thread column shrink under sidebar / narrow-window pressure so those chips
@@ -759,7 +772,12 @@ export function mountComposerAgentControl(
     onSelect,
     onOpenProviderPicker,
   );
-  const modelPicker = mountRendererModelPicker(composerId, onSelectModel, onSelectThinking);
+  const modelPicker = mountRendererModelPicker(
+    composerId,
+    onSelectModel,
+    onSelectThinking,
+    onRefreshModels,
+  );
   const permissionModePicker = mountRendererPermissionModePicker(
     composerId,
     onSelectPermissionMode,
@@ -856,7 +874,7 @@ export function renderComposerAgentControl(
   state: { agent: RendererAgent; phase: ComposerAgentPhase },
   adapterState: RendererAdapterStatus["state"],
   switching: boolean,
-  availability: Partial<Record<ExternalRendererAgent, RendererAgentAvailability>> = {},
+  availability: Partial<Record<ExternalRendererAgent, PickerAgentAvailability>> = {},
   modelView: ExternalModelControlView = { status: "idle" },
   permissionModeView: RendererPermissionModeControlView = { status: "idle" },
   usage: ThreadUsageSnapshot | null = null,

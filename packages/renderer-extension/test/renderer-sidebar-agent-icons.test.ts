@@ -56,6 +56,12 @@ class FakeRow implements SidebarAgentIconRow {
     return this.id;
   }
 
+  path: string | null = null;
+
+  placeholderPath(): string | null {
+    return this.path;
+  }
+
   draftId(): string | null {
     return this.draft;
   }
@@ -102,6 +108,7 @@ function clientWith(
 ): RendererModelClient {
   return {
     forkThread: vi.fn(),
+    handoffThread: vi.fn(),
     inspectHarness: vi.fn(),
     inspectThread: vi.fn(),
     inspectHarnessCommands: vi.fn(),
@@ -169,7 +176,7 @@ describe("Renderer sidebar Agent ownership", () => {
     vi.unstubAllGlobals();
   });
 
-  it("persists pinning without intercepting the native thread title button", async () => {
+  it("persists external Thread pinning without intercepting title, tree, or archive clicks", async () => {
     const attributes = {
       "data-app-action-sidebar-thread-row": "",
       "data-app-action-sidebar-thread-id": "local:external-thread",
@@ -181,9 +188,11 @@ describe("Renderer sidebar Agent ownership", () => {
     for (const [name, value] of Object.entries(attributes)) row.setAttribute(name, value);
     row.innerHTML = `
       <div data-thread-title-trigger>
+        <button aria-label="Collapse" data-codexhost-sidebar-tree-toggle="external-thread"><span>⌄</span></button>
         <button data-interactive-row-button><span data-thread-title>Thread</span></button>
       </div>
-      <button aria-label="Pin">Pin</button>`;
+      <button aria-label="Pin">Pin</button>
+      <button aria-label="Archive">Archive</button>`;
     Object.defineProperty(row, "__reactFiber$test", {
       value: {
         memoizedProps: { conversationId: "external-thread", dataAttributes: attributes },
@@ -192,12 +201,21 @@ describe("Renderer sidebar Agent ownership", () => {
     });
     document.body.append(row);
     const title = row.querySelector<HTMLButtonElement>("[data-interactive-row-button]");
+    const chevron = row.querySelector<HTMLElement>("[data-codexhost-sidebar-tree-toggle] span");
     const pin = row.querySelector<HTMLButtonElement>('[aria-label="Pin"]');
-    if (!title || !pin) throw new Error("Expected a title button and a pin button");
+    const archive = row.querySelector<HTMLButtonElement>('[aria-label="Archive"]');
+    if (!title || !chevron || !pin || !archive) throw new Error("Expected all row buttons");
+    for (const button of [title, pin, archive]) {
+      Object.defineProperty(button, "__reactFiber$test", { value: {} });
+    }
     const titleClick = vi.fn();
+    const treeClick = vi.fn();
     const pinClick = vi.fn();
+    const archiveClick = vi.fn();
     title.addEventListener("click", titleClick);
+    chevron.addEventListener("click", treeClick);
     pin.addEventListener("click", pinClick);
+    archive.addEventListener("click", archiveClick);
     const updateThreadPinned = vi.fn(async () => undefined);
     const stop = installRendererSidebarExternalPinning({
       getClient: () => ({ ...clientWith(async () => ({ threads: [] })), updateThreadPinned }),
@@ -205,13 +223,15 @@ describe("Renderer sidebar Agent ownership", () => {
 
     try {
       title.click();
+      chevron.click();
+      archive.click();
       expect(titleClick).toHaveBeenCalledOnce();
+      expect(treeClick).toHaveBeenCalledOnce();
+      expect(archiveClick).toHaveBeenCalledOnce();
       expect(updateThreadPinned).not.toHaveBeenCalled();
-
       pin.click();
       expect(pinClick).not.toHaveBeenCalled();
       await settle();
-
       expect(updateThreadPinned).toHaveBeenCalledExactlyOnceWith({
         threadId: "external-thread",
         isPinned: true,
@@ -223,82 +243,120 @@ describe("Renderer sidebar Agent ownership", () => {
     }
   });
 
-  it("replays External pinning on the replacement row after native sidebar redraw", async () => {
-    const attributes = {
-      "data-app-action-sidebar-thread-row": "",
-      "data-app-action-sidebar-thread-id": "local:external-thread",
-      "data-app-action-sidebar-thread-host-id": "local",
-      "data-app-action-sidebar-thread-pinned": "false",
-      [SIDEBAR_EXTERNAL_THREAD_ATTRIBUTE]: "true",
-    };
-    class FakeElement {
-      constructor(readonly kind: "row" | "button" | "target") {}
-
-      closest(selector: string): FakeElement | null {
-        if (selector === "button") return this.kind === "row" ? null : originalButton;
-        return selector.includes("data-app-action-sidebar-thread-row") ? originalRow : null;
-      }
-    }
-    const originalRow = new FakeElement("row");
-    const originalButton = new FakeElement("button");
-    const originalTarget = new FakeElement("target");
-    const replacementRow = new FakeElement("row");
-    const replacementButton = new FakeElement("button");
-    const originalClick = vi.fn();
-    const replacementClick = vi.fn();
-    (originalButton as unknown as HTMLButtonElement).click = originalClick;
-    (replacementButton as unknown as HTMLButtonElement).click = replacementClick;
-    Object.defineProperty(originalButton, "isConnected", { value: false });
-    for (const row of [originalRow, replacementRow]) {
-      (row as unknown as HTMLElement).getAttribute = (name: string) =>
-        attributes[name as keyof typeof attributes] ?? null;
-      Object.defineProperty(row, "__reactFiber$test", {
-        value: {
-          memoizedProps: { conversationId: "external-thread", dataAttributes: attributes },
-          return: null,
-        },
-      });
-    }
-    (originalRow as unknown as HTMLElement).querySelector = vi.fn(
-      () => originalButton as unknown as HTMLButtonElement,
-    );
-    (replacementRow as unknown as HTMLElement).querySelector = vi.fn(
-      () => replacementButton as unknown as HTMLButtonElement,
-    );
-    vi.stubGlobal("Element", FakeElement);
-    let clickListener: EventListener = () => {
-      throw new Error("Synthetic click listener was not installed");
-    };
-    const root = {
-      addEventListener: vi.fn((_type: string, listener: EventListener) => {
-        clickListener = listener;
+  it("checks SSH path rows only after native ownership and rechecks them on closure", async () => {
+    const host = "remote-ssh-discovered:test";
+    const agents = ["codex", "claude-code", "deepseek-harness"] as const;
+    const rows = agents.map(() => new FakeRow(crypto.randomUUID(), null, host));
+    for (const row of rows) row.path = "/workspace";
+    const dom = new FakeDom(rows);
+    const client = clientWith(async ({ threadIds }) => ({
+      threads: threadIds.map((threadId) => {
+        const agent = agents[rows.findIndex((row) => row.id === threadId)];
+        return !agent || agent === "codex"
+          ? { threadId, owner: "codex" as const }
+          : { threadId, owner: "external" as const, harnessId: harnessIdSchema.parse(agent) };
       }),
-      removeEventListener: vi.fn(),
-      querySelectorAll: vi.fn(() => [replacementRow]),
-    } as unknown as Document;
-    const updateThreadPinned = vi.fn(async () => undefined);
-    const stop = installRendererSidebarExternalPinning({
-      getClient: () => ({ ...clientWith(async () => ({ threads: [] })), updateThreadPinned }),
-      root,
+    }));
+    const checkRemotePlaceholder = vi.fn();
+    const icons = installRendererSidebarAgentIcons({
+      dom,
+      getClient: () => client,
+      checkRemotePlaceholder,
     });
-
-    clickListener({
-      target: originalTarget,
-      preventDefault: vi.fn(),
-      stopImmediatePropagation: vi.fn(),
-    } as unknown as Event);
-    await settle();
-
-    expect(updateThreadPinned).toHaveBeenCalledWith({
-      threadId: "external-thread",
-      isPinned: true,
-    });
-    expect(originalClick).not.toHaveBeenCalled();
-    expect(replacementClick).toHaveBeenCalledOnce();
-    stop();
-    vi.unstubAllGlobals();
+    try {
+      await vi.waitFor(() => expect(checkRemotePlaceholder).toHaveBeenCalledTimes(1));
+      const native = rows[0];
+      if (!native?.id) throw new Error("Missing test thread");
+      expect(checkRemotePlaceholder).toHaveBeenCalledWith(host, native.id, "/workspace");
+      icons.remoteThreadClosed(host, native.id);
+      await vi.waitFor(() => expect(checkRemotePlaceholder).toHaveBeenCalledTimes(2));
+      expect(rows.map((row) => row.agent)).toEqual(agents);
+    } finally {
+      icons.dispose();
+    }
   });
 
+  it("rechecks a closed SSH path row even while the Composer still knows its Agent", async () => {
+    const host = "remote-ssh-discovered:test";
+    const id = crypto.randomUUID();
+    const row = new FakeRow(id, null, host);
+    const duplicate = new FakeRow(id, null, host);
+    row.path = "/workspace";
+    let external = true;
+    const client = clientWith(async ({ threadIds }) => ({
+      threads: threadIds.map((threadId) =>
+        external
+          ? { threadId, owner: "external", harnessId: harnessIdSchema.parse("claude-code") }
+          : { threadId, owner: "codex" },
+      ),
+    }));
+    const checkRemotePlaceholder = vi.fn();
+    const icons = installRendererSidebarAgentIcons({
+      dom: new FakeDom([duplicate, row]),
+      getLocalAgent: () => "claude-code",
+      getClient: () => client,
+      checkRemotePlaceholder,
+    });
+    try {
+      expect(row.agent).toBe("claude-code");
+      await settle();
+      expect(checkRemotePlaceholder).not.toHaveBeenCalled();
+      external = false;
+      icons.remoteThreadClosed(host, id);
+      expect(row.agent).toBe("claude-code");
+      await vi.waitFor(() =>
+        expect(checkRemotePlaceholder).toHaveBeenCalledWith(host, id, "/workspace"),
+      );
+    } finally {
+      icons.dispose();
+    }
+  });
+
+  it("checks a late path on settled ownership and bounds retries after a failed check", async () => {
+    vi.useFakeTimers();
+    const host = "remote-ssh-discovered:test";
+    const row = new FakeRow(crypto.randomUUID(), null, host);
+    const dom = new FakeDom([row]);
+    const client = clientWith(async ({ threadIds }) => ({
+      threads: threadIds.map((threadId) => ({ threadId, owner: "codex" })),
+    }));
+    const checkRemotePlaceholder = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValue(undefined);
+    const icons = installRendererSidebarAgentIcons({
+      dom,
+      getClient: () => client,
+      checkRemotePlaceholder,
+    });
+    try {
+      await vi.runAllTimersAsync();
+      const ownershipRequests = vi.mocked(client.listThreadOwnership).mock.calls.length;
+      row.path = "/workspace";
+      dom.change();
+      await vi.runAllTimersAsync();
+      expect(checkRemotePlaceholder).toHaveBeenCalledTimes(2);
+      dom.change();
+      await vi.runAllTimersAsync();
+      expect(checkRemotePlaceholder).toHaveBeenCalledTimes(2);
+      checkRemotePlaceholder.mockRejectedValue(new Error("still offline"));
+      row.path = "/another";
+      dom.change();
+      await vi.runAllTimersAsync();
+      expect(checkRemotePlaceholder).toHaveBeenCalledTimes(4);
+      checkRemotePlaceholder.mockResolvedValue(undefined);
+      dom.change();
+      await vi.runAllTimersAsync();
+      expect(checkRemotePlaceholder).toHaveBeenCalledTimes(5);
+      dom.change();
+      await vi.runAllTimersAsync();
+      expect(checkRemotePlaceholder).toHaveBeenCalledTimes(5);
+      expect(client.listThreadOwnership).toHaveBeenCalledTimes(ownershipRequests);
+    } finally {
+      icons.dispose();
+      vi.useRealTimers();
+    }
+  });
   it.each([
     ["button", "data-interactive-row-button"],
     ["a", "data-interactive-row-link"],

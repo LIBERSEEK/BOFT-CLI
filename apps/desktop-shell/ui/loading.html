@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BOFT CLI</title>
+    <link rel="stylesheet" href="./shell.css" />
+  </head>
+  <body class="page-loading">
+    <div class="shell-page">
+      <header class="topbar">
+        <div class="topbar-brand">
+          <span class="topbar-brand-mark" aria-hidden="true">
+            <img class="boft-brand-icon" src="./boft-icon.png" alt="" />
+          </span>
+          <span>BOFT CLI</span>
+        </div>
+
+        <button type="button" id="lang-toggle" class="lang-toggle" aria-label="Switch language">
+          <span class="lang-option" data-lang="zh-CN" data-active="true">中文</span>
+          <span class="lang-option" data-lang="en" data-active="false">EN</span>
+        </button>
+      </header>
+
+      <main class="stage" id="app">
+        <section
+          id="loading-container"
+          class="loading-container"
+          data-status="starting"
+          aria-live="polite"
+        >
+          <div class="status-emblem-wrap" aria-hidden="true">
+            <span class="status-pulse-ring"></span>
+            <div class="app-emblem">
+              <img class="boft-brand-icon" src="./boft-icon.png" alt="" />
+            </div>
+          </div>
+
+          <div id="status-badge" class="badge badge--brand status-pill">
+            <span id="status-dot" class="status-dot" aria-hidden="true"></span>
+            <svg
+              id="status-sync-icon"
+              class="status-icon-spin"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.7"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+              hidden
+            >
+              <path d="M13 8a5 5 0 0 1-8.5 3.5" />
+              <path d="M3 8a5 5 0 0 1 8.5-3.5" />
+              <path d="M11.6 2.5v2.2H9.4" />
+              <path d="M4.4 13.5v-2.2h2.2" />
+            </svg>
+            <svg
+              id="status-error-icon"
+              width="12"
+              height="12"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+              hidden
+            >
+              <circle cx="8" cy="8" r="6" />
+              <path d="M8 5.1v3.2" />
+              <circle cx="8" cy="10.9" r="0.55" fill="currentColor" stroke="none" />
+            </svg>
+            <span id="status-badge-text">正在启动</span>
+          </div>
+
+          <h1 id="loading-title" class="loading-title">正在启动 BOFT CLI</h1>
+          <p id="loading-description" class="loading-description">
+            正在启动本地服务并准备窗口，请稍候…
+          </p>
+          <p id="loading-hint" class="loading-hint" hidden></p>
+
+          <div id="progress-region" class="progress-region">
+            <div class="progress-track" role="progressbar" aria-label="Loading">
+              <div class="progress-beam"></div>
+            </div>
+            <div class="skeleton-stack" aria-hidden="true">
+              <div class="skeleton-bar skeleton-bar--wide"></div>
+              <div class="skeleton-bar skeleton-bar--narrow"></div>
+            </div>
+          </div>
+
+          <div id="error-panel" class="error-panel" hidden>
+            <div class="error-summary" role="alert">
+              <div id="error-summary-label" class="error-summary-label">错误详情</div>
+              <p id="error-summary-message" class="error-summary-message"></p>
+            </div>
+
+            <div class="action-row">
+              <button type="button" id="btn-retry" class="btn btn--primary">
+                <span id="btn-retry-spinner" class="spinner" hidden></span>
+                <svg
+                  id="btn-retry-icon"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.8"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M13 8a5 5 0 1 1-1.4-3.5" />
+                  <path d="M12.5 2.4v2.7H9.8" />
+                </svg>
+                <span id="btn-retry-text">重试</span>
+              </button>
+
+              <button type="button" id="btn-console" class="btn btn--secondary">
+                <span id="btn-console-spinner" class="spinner" hidden></span>
+                <svg
+                  id="btn-console-icon"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.7"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <rect x="2.2" y="3" width="11.6" height="10" rx="2" />
+                  <path d="M5 6.8 6.8 8.3 5 9.8" />
+                  <path d="M8.4 9.8h2.6" />
+                </svg>
+                <span id="btn-console-text">打开诊断控制台</span>
+              </button>
+
+              <a
+                id="btn-report-issue"
+                class="btn btn--secondary"
+                href="https://github.com/LIBERSEEK/BOFT-CLI/issues/new"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <svg
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M6.5 3.5H4A1.5 1.5 0 0 0 2.5 5v7A1.5 1.5 0 0 0 4 13.5h7a1.5 1.5 0 0 0 1.5-1.5V9.5"
+                  />
+                  <path d="M9.5 2.5h4v4" />
+                  <path d="M13.5 2.5 7.5 8.5" />
+                </svg>
+                <span id="btn-report-issue-text">提交 Issue</span>
+              </a>
+            </div>
+
+            <div
+              id="action-feedback"
+              class="feedback-banner feedback-banner--error"
+              role="alert"
+              hidden
+            >
+              <svg
+                id="action-feedback-icon-error"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.7"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <circle cx="8" cy="8" r="6.25" />
+                <path d="M8 5v3.4" />
+                <circle cx="8" cy="10.9" r="0.55" fill="currentColor" stroke="none" />
+              </svg>
+              <svg
+                id="action-feedback-icon-info"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+                hidden
+              >
+                <circle cx="8" cy="8" r="6.25" />
+                <path d="M5.5 8.2 7.2 9.9 10.7 6.3" />
+              </svg>
+              <span id="action-feedback-text" class="feedback-text"></span>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div id="preview-bar" class="preview-bar" hidden></div>
+
+    <script src="./shell.js"></script>
+    <script src="./loading.js"></script>
+  </body>
+</html>

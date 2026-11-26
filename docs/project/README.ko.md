@@ -66,9 +66,9 @@
 
 ## 빠른 시작
 
-**설치 프로그램 다운로드** (macOS, Windows)
+**설치 프로그램 다운로드** (macOS, Windows, Linux)
 
-[최신 릴리스](https://github.com/LIBERSEEK/BOFT-CLI/releases/latest)에서 운영체제와 CPU 아키텍처에 맞는 설치 프로그램을 다운로드하세요. macOS는 DMG, Windows는 EXE를 선택합니다. [x64/ARM64 Linux](../platforms/linux/linux.md)도 지원합니다.
+[최신 릴리스](https://github.com/LIBERSEEK/BOFT-CLI/releases/latest)에서 운영체제와 CPU 아키텍처에 맞는 설치 프로그램을 다운로드하세요. macOS는 DMG, Windows는 EXE, Linux는 `.tar.gz`를 선택합니다. 자세한 내용은 [Linux 안내](../platforms/linux/linux.md#archive)를 참고하세요.
 
 또는 npm으로 설치하세요:
 

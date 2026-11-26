@@ -27,7 +27,11 @@ import {
 } from "../src/claude-code-adapter.js";
 import { ClaudeCodeExecutableError } from "../src/command.js";
 import { ClaudeUltracodeUnavailableError } from "../src/ultracode.js";
-import { CLAUDE_DEFAULT_MODEL_REF, encodeClaudeModelRef } from "../src/model-catalog.js";
+import {
+  CLAUDE_DEFAULT_MODEL_REF,
+  claudeModelRef as encodeClaudeModelRef,
+} from "../src/model-catalog.js";
+import { ClaudeNativeTurnAccumulator } from "../src/native-message.js";
 import {
   claudeBypassPermissionsAvailable,
   type ClaudePermissionMode,
@@ -480,6 +484,14 @@ async function nextInteraction(iterator: AsyncIterator<HarnessOutput>) {
 }
 
 describe("Claude Code Composer cache countdown", () => {
+  const usageWithTtl = (promptCacheTtlSeconds?: 300 | 3600) => ({
+    inputTokens: 10,
+    outputTokens: 5,
+    cacheCreationInputTokens: promptCacheTtlSeconds ? 20 : 0,
+    cacheReadInputTokens: 70,
+    ...(promptCacheTtlSeconds ? { promptCacheTtlSeconds } : {}),
+  });
+
   it.each([true, false])(
     "publishes only for native subscription quota (supported: %s)",
     async (accountCreditsSupported) => {
@@ -495,7 +507,11 @@ describe("Claude Code Composer cache countdown", () => {
         const transport = transports[0];
         if (!transport) throw new Error("Expected a Claude transport");
         const before = Math.floor(Date.now() / 1000);
-        transport.event({ type: "message.completed", messageId: "reply" });
+        transport.event({
+          type: "message.completed",
+          messageId: "reply",
+          lastRequestUsage: usageWithTtl(3600),
+        });
         transport.finish({ status: "succeeded" });
         await vi.waitFor(() =>
           expect(
@@ -536,6 +552,279 @@ describe("Claude Code Composer cache countdown", () => {
     },
   );
 
+  it.each([
+    ["5m write", 300 as const, 1_800_000_300],
+    ["1h write", 3600 as const, 1_800_003_600],
+    ["unknown TTL omits fake countdown", undefined, undefined],
+  ])("computes live countdown from observed TTL (%s)", async (_label, ttl, expectedExpiry) => {
+    const { adapter, transports } = fixture({}, { accountCreditsSupported: true });
+    await adapter.inspectAccount();
+    const session = await openSession(adapter);
+    const outputs: HarnessOutput[] = [];
+    const collecting = (async () => {
+      for await (const output of session.outputs) outputs.push(output);
+    })();
+    try {
+      await session.execute(textTurn("cache-ttl-live"));
+      const transport = transports[0];
+      if (!transport) throw new Error("Expected a Claude transport");
+      const clock = vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
+      try {
+        transport.event({
+          type: "message.completed",
+          messageId: "reply-1",
+          lastRequestUsage: usageWithTtl(ttl),
+        });
+      } finally {
+        clock.mockRestore();
+      }
+      transport.finish({ status: "succeeded" });
+      await vi.waitFor(() =>
+        expect(
+          outputs.some(
+            (output) => output.kind === "event" && output.event.type === "turn.completed",
+          ),
+        ).toBe(true),
+      );
+      const indicator = outputs
+        .flatMap((output) =>
+          output.kind === "event" && output.event.type === "session.usage.changed"
+            ? (output.event.usage?.composerIndicators ?? [])
+            : [],
+        )
+        .at(-1);
+      expect(indicator?.expiresAtUnix).toBe(expectedExpiry);
+    } finally {
+      await adapter.close();
+      await collecting;
+    }
+  });
+
+  it("inherits the observed live TTL across cache-read-only continuation turns", async () => {
+    const { adapter, transports } = fixture({}, { accountCreditsSupported: true });
+    await adapter.inspectAccount();
+    const session = await openSession(adapter);
+    const outputs: HarnessOutput[] = [];
+    const collecting = (async () => {
+      for await (const output of session.outputs) outputs.push(output);
+    })();
+    const latestExpiry = () =>
+      outputs
+        .flatMap((output) =>
+          output.kind === "event" && output.event.type === "session.usage.changed"
+            ? (output.event.usage?.composerIndicators ?? [])
+            : [],
+        )
+        .at(-1)?.expiresAtUnix;
+    try {
+      await session.execute(textTurn("cache-inherit"));
+      const transport = transports[0];
+      if (!transport) throw new Error("Expected a Claude transport");
+      const clock = vi.spyOn(Date, "now").mockReturnValueOnce(1_800_000_000_000);
+      try {
+        transport.event({
+          type: "message.completed",
+          messageId: "reply-write",
+          lastRequestUsage: { ...usageWithTtl(3600), requestId: "req-write" },
+        });
+      } finally {
+        clock.mockRestore();
+      }
+      await vi.waitFor(() => expect(latestExpiry()).toBe(1_800_003_600));
+
+      const renewalClock = vi.spyOn(Date, "now").mockReturnValueOnce(1_800_000_120_000);
+      try {
+        transport.event({
+          type: "message.completed",
+          messageId: "reply-read",
+          lastRequestUsage: { ...usageWithTtl(undefined), requestId: "req-read" },
+        });
+      } finally {
+        renewalClock.mockRestore();
+      }
+      await vi.waitFor(() => expect(latestExpiry()).toBe(1_800_003_720));
+
+      transport.finish({ status: "succeeded" });
+      await vi.waitFor(() =>
+        expect(
+          outputs.some(
+            (output) => output.kind === "event" && output.event.type === "turn.completed",
+          ),
+        ).toBe(true),
+      );
+    } finally {
+      await adapter.close();
+      await collecting;
+    }
+  });
+
+  it("keeps the last per-request TTL when cumulative result.usage mixes 5m and 1h writes", async () => {
+    const { adapter, transports } = fixture({}, { accountCreditsSupported: true });
+    await adapter.inspectAccount();
+    const session = await openSession(adapter);
+    const outputs: HarnessOutput[] = [];
+    const collecting = (async () => {
+      for await (const output of session.outputs) outputs.push(output);
+    })();
+    const latestExpiry = () =>
+      outputs
+        .flatMap((output) =>
+          output.kind === "event" && output.event.type === "session.usage.changed"
+            ? (output.event.usage?.composerIndicators ?? [])
+            : [],
+        )
+        .at(-1)?.expiresAtUnix;
+    try {
+      await session.execute(textTurn("cache-multi-request"));
+      const transport = transports[0];
+      if (!transport) throw new Error("Expected a Claude transport");
+      const accumulator = new ClaudeNativeTurnAccumulator();
+      const emit = (nativeMessage: unknown, nowMs?: number) => {
+        const clock = nowMs !== undefined ? vi.spyOn(Date, "now").mockReturnValue(nowMs) : null;
+        try {
+          const { events, terminal } = accumulator.consume(nativeMessage);
+          for (const event of events) transport.event(event);
+          if (terminal) transport.finish(terminal);
+        } finally {
+          clock?.mockRestore();
+        }
+      };
+
+      // Req 1 writes 5m cache.
+      emit(
+        {
+          type: "assistant",
+          uuid: "req-1",
+          message: {
+            id: "msg-req-1",
+            model: "claude-sonnet-4-6",
+            content: [{ type: "text", text: "Step 1" }],
+            usage: {
+              input_tokens: 10,
+              output_tokens: 5,
+              cache_creation_input_tokens: 20,
+              cache_read_input_tokens: 0,
+              cache_creation: { ephemeral_5m_input_tokens: 20, ephemeral_1h_input_tokens: 0 },
+            },
+          },
+        },
+        1_800_000_000_000,
+      );
+      await vi.waitFor(() => expect(latestExpiry()).toBe(1_800_000_300));
+
+      // Req 2 in the same turn writes 1h cache.
+      emit(
+        {
+          type: "assistant",
+          uuid: "req-2",
+          message: {
+            id: "msg-req-2",
+            model: "claude-sonnet-4-6",
+            content: [{ type: "text", text: "Step 2" }],
+            usage: {
+              input_tokens: 10,
+              output_tokens: 5,
+              cache_creation_input_tokens: 40,
+              cache_read_input_tokens: 20,
+              cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 40 },
+            },
+          },
+        },
+        1_800_000_010_000,
+      );
+      await vi.waitFor(() => expect(latestExpiry()).toBe(1_800_003_610));
+
+      // Cumulative result.usage sums both requests (5m + 1h); must not downgrade Req 2's 1h TTL.
+      emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        terminal_reason: "completed",
+        usage: {
+          input_tokens: 20,
+          output_tokens: 10,
+          cache_creation_input_tokens: 60,
+          cache_read_input_tokens: 20,
+          cache_creation: { ephemeral_5m_input_tokens: 20, ephemeral_1h_input_tokens: 40 },
+        },
+      });
+      await vi.waitFor(() =>
+        expect(
+          outputs.some(
+            (output) => output.kind === "event" && output.event.type === "turn.completed",
+          ),
+        ).toBe(true),
+      );
+      expect(latestExpiry()).toBe(1_800_003_610);
+    } finally {
+      await adapter.close();
+      await collecting;
+    }
+  });
+
+  it("falls back to result.usage TTL only when no per-request TTL was observed in the turn", async () => {
+    const { adapter, transports } = fixture({}, { accountCreditsSupported: true });
+    await adapter.inspectAccount();
+    const session = await openSession(adapter);
+    const outputs: HarnessOutput[] = [];
+    const collecting = (async () => {
+      for await (const output of session.outputs) outputs.push(output);
+    })();
+    const latestExpiry = () =>
+      outputs
+        .flatMap((output) =>
+          output.kind === "event" && output.event.type === "session.usage.changed"
+            ? (output.event.usage?.composerIndicators ?? [])
+            : [],
+        )
+        .at(-1)?.expiresAtUnix;
+    const completedTurns = () =>
+      outputs.filter((output) => output.kind === "event" && output.event.type === "turn.completed")
+        .length;
+    try {
+      // Turn 1: observes 1h per-request TTL.
+      await session.execute(textTurn("cache-fallback-turn-1"));
+      const transport = transports[0];
+      if (!transport) throw new Error("Expected a Claude transport");
+      const clock1 = vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
+      try {
+        transport.event({
+          type: "message.completed",
+          messageId: "reply-turn-1",
+          lastRequestUsage: { ...usageWithTtl(3600), requestId: "req-turn-1" },
+        });
+      } finally {
+        clock1.mockRestore();
+      }
+      transport.finish({ status: "succeeded" });
+      await vi.waitFor(() => expect(completedTurns()).toBe(1));
+      expect(latestExpiry()).toBe(1_800_003_600);
+
+      // Turn 2: no per-request TTL observed; result.usage supplies 5m fallback after per-turn reset.
+      await session.execute(textTurn("cache-fallback-turn-2"));
+      const clock2 = vi.spyOn(Date, "now").mockReturnValue(1_800_000_060_000);
+      try {
+        transport.event({
+          type: "message.completed",
+          messageId: "reply-turn-2",
+          lastRequestUsage: { ...usageWithTtl(undefined), requestId: "req-turn-2" },
+        });
+      } finally {
+        clock2.mockRestore();
+      }
+      transport.event({
+        type: "usage.result",
+        lastRequestUsage: usageWithTtl(300),
+      });
+      transport.finish({ status: "succeeded" });
+      await vi.waitFor(() => expect(completedTurns()).toBe(2));
+      expect(latestExpiry()).toBe(1_800_000_360);
+    } finally {
+      await adapter.close();
+      await collecting;
+    }
+  });
+
   it("uses the recorded response time when subscription quota arrives later, excluding local output", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);
@@ -568,7 +857,11 @@ describe("Claude Code Composer cache countdown", () => {
       await adapter.inspectAccount();
       const clock = vi.spyOn(Date, "now").mockReturnValueOnce(1_800_000_000_000);
       try {
-        transport.event({ type: "message.completed", messageId: "reply" });
+        transport.event({
+          type: "message.completed",
+          messageId: "reply",
+          lastRequestUsage: usageWithTtl(3600),
+        });
       } finally {
         clock.mockRestore();
       }
@@ -610,7 +903,11 @@ describe("Claude Code Composer cache countdown", () => {
         await session.execute(textTurn("cache-account-race"));
         const transport = transports[0];
         if (!transport) throw new Error("Expected a Claude transport");
-        transport.event({ type: "message.completed", messageId: "reply" });
+        transport.event({
+          type: "message.completed",
+          messageId: "reply",
+          lastRequestUsage: usageWithTtl(3600),
+        });
         const planLimit = { fiveHour: { utilizationPercent: 10 } };
         if (!pushDuringInspection) transport.planLimit(planLimit);
         const inspection = adapter.inspectAccount();
@@ -642,34 +939,76 @@ describe("Claude Code Composer cache countdown", () => {
     },
   );
 
-  it("restores the last main assistant response from native history without restarting the clock", async () => {
-    const { adapter, history } = fixture({}, { accountCreditsSupported: true });
-    await adapter.inspectAccount();
-    history.push(
-      { type: "assistant", timestamp: "2026-08-01T10:00:00Z" },
-      { type: "user", timestamp: "2026-08-01T10:10:00Z" },
-      { type: "assistant", isSidechain: true, timestamp: "2026-08-01T10:20:00Z" },
-      { type: "assistant", parent_tool_use_id: "tool", timestamp: "2026-08-01T10:30:00Z" },
-      { type: "assistant", timestamp: "invalid" },
-    );
-    try {
-      const opened = await adapter.open({
-        kind: "resume",
-        cwd: "/synthetic",
-        nativeRef: nativeSessionRefSchema.parse({
-          harnessId: "claude-code",
-          nativeSessionId: "cache-history",
-          formatVersion: 1,
-        }),
-      });
-      if (!opened.ok) throw new Error(opened.error.message);
-      expect(opened.value.initialUsage?.composerIndicators?.[0]?.expiresAtUnix).toBe(
-        Date.parse("2026-08-01T11:00:00Z") / 1000,
+  it.each([
+    [
+      "1h write",
+      { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 8643 },
+      Date.parse("2026-08-01T11:00:00Z") / 1000,
+    ],
+    [
+      "5m write",
+      { ephemeral_5m_input_tokens: 1200, ephemeral_1h_input_tokens: 0 },
+      Date.parse("2026-08-01T10:05:00Z") / 1000,
+    ],
+    [
+      "mixed 5m + 1h write uses 5m",
+      { ephemeral_5m_input_tokens: 120, ephemeral_1h_input_tokens: 8643 },
+      Date.parse("2026-08-01T10:05:00Z") / 1000,
+    ],
+    ["missing TTL omits fake countdown", undefined, undefined],
+  ])(
+    "restores the last main assistant response from native history without restarting the clock (%s)",
+    async (_label, cacheCreation, expectedExpiry) => {
+      const { adapter, history } = fixture({}, { accountCreditsSupported: true });
+      await adapter.inspectAccount();
+      history.push(
+        {
+          type: "assistant",
+          timestamp: "2026-08-01T10:00:00Z",
+          message: cacheCreation ? { usage: { cache_creation: cacheCreation } } : {},
+        },
+        { type: "user", timestamp: "2026-08-01T10:10:00Z" },
+        {
+          type: "assistant",
+          isSidechain: true,
+          timestamp: "2026-08-01T10:20:00Z",
+          message: {
+            usage: {
+              cache_creation: { ephemeral_5m_input_tokens: 50, ephemeral_1h_input_tokens: 0 },
+            },
+          },
+        },
+        {
+          type: "assistant",
+          parent_tool_use_id: "tool",
+          timestamp: "2026-08-01T10:30:00Z",
+          message: {
+            usage: {
+              cache_creation: { ephemeral_5m_input_tokens: 50, ephemeral_1h_input_tokens: 0 },
+            },
+          },
+        },
+        { type: "assistant", timestamp: "invalid" },
       );
-    } finally {
-      await adapter.close();
-    }
-  });
+      try {
+        const opened = await adapter.open({
+          kind: "resume",
+          cwd: "/synthetic",
+          nativeRef: nativeSessionRefSchema.parse({
+            harnessId: "claude-code",
+            nativeSessionId: "cache-history",
+            formatVersion: 1,
+          }),
+        });
+        if (!opened.ok) throw new Error(opened.error.message);
+        expect(opened.value.initialUsage?.composerIndicators?.[0]?.expiresAtUnix).toBe(
+          expectedExpiry,
+        );
+      } finally {
+        await adapter.close();
+      }
+    },
+  );
 });
 
 describe("Claude Code usage metering", () => {
@@ -1242,6 +1581,7 @@ describe("Claude Code HarnessAdapter", () => {
       input: { image: true },
       history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
       subagents: { observe: true, readTranscript: true },
+      persistentPlan: true,
       // No CLI has reported its init capabilities yet.
       steer: false,
     });
@@ -3599,6 +3939,71 @@ describe("Claude Code HarnessAdapter", () => {
           type: "toolExecution",
           toolName: "Todo",
           arguments: { todos: [{ id: "1", content: "Run tests", status: "in_progress" }] },
+        },
+      },
+    });
+
+    transport.finish({ status: "succeeded" });
+    await nextEvent(iterator);
+    await session.close();
+  });
+
+  it("continues a resumed Session's Claude task list from its history", async () => {
+    const { adapter, history, transports } = fixture();
+    const sourceRef = nativeSessionRefSchema.parse({
+      harnessId: "claude-code",
+      nativeSessionId: "tasks-session",
+      formatVersion: 1,
+    });
+    const record = (type: "user" | "assistant", uuid: string, content: unknown) => ({
+      type,
+      uuid,
+      session_id: "tasks-session",
+      message: { role: type, content },
+    });
+    history.push(
+      record("user", "user-1", "plan"),
+      record("assistant", "create", [
+        { type: "tool_use", id: "create-1", name: "TaskCreate", input: { subject: "Write code" } },
+      ]),
+      {
+        ...record("user", "create-result", [
+          { type: "tool_result", tool_use_id: "create-1", content: "Task #1 created" },
+        ]),
+        toolUseResult: { task: { id: "1", subject: "Write code" } },
+      },
+    );
+    const opened = await adapter.open({ kind: "resume", cwd: "/synthetic", nativeRef: sourceRef });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    expect((await session.readSnapshot()).ok).toBe(true);
+
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("continue"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.event({
+      type: "tool.started",
+      callId: "update-1",
+      toolName: "TaskUpdate",
+      arguments: { taskId: "1", status: "in_progress" },
+    });
+    await nextEvent(iterator);
+    transport.event({
+      type: "tool.completed",
+      callId: "update-1",
+      toolName: "TaskUpdate",
+      isError: false,
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        item: {
+          toolName: "Todo",
+          arguments: { todos: [{ id: "1", content: "Write code", status: "in_progress" }] },
         },
       },
     });
@@ -6249,9 +6654,10 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
-  it("applies a create-time alias lazily and publishes the configured Model before the Turn", async () => {
+  it("applies a create-time Model lazily and publishes the exact native ID before the Turn", async () => {
     const { adapter, dependencies, transports } = fixture();
-    const selected = encodeClaudeModelRef("sonnet");
+    const id = " provider/模型 [1m] & (test) ";
+    const selected = encodeClaudeModelRef(id);
     const thinkingOptionId = harnessThinkingOptionIdSchema.parse("max");
     const opened = await adapter.open({
       kind: "create",
@@ -6267,7 +6673,7 @@ describe("Claude Code HarnessAdapter", () => {
     await expect(session.execute(textTurn("selected-first"))).resolves.toMatchObject({ ok: true });
     expect(dependencies.createTransport).toHaveBeenCalledWith(
       expect.objectContaining({
-        model: "sonnet",
+        model: id,
         openMode: "create",
         thinkingOptionId: "max",
       }),
@@ -6323,6 +6729,82 @@ describe("Claude Code HarnessAdapter", () => {
     await expect(resetting).resolves.toEqual({ ok: true, value: { completed: true } });
     expect(transport.setModel).toHaveBeenLastCalledWith(undefined, "auto");
     expect(transport.getContextUsage).toHaveBeenCalledTimes(contextReadsBeforeSelection);
+    await session.close();
+  });
+
+  it("resumes a stored Fable alias using the latest catalog Model and its Thinking options", async () => {
+    const { adapter, dependencies, transports } = fixture();
+    const cwd = "/synthetic";
+    const currentId = "claude-fable-5-2";
+    dependencies.createInspector = () => ({
+      close: async () => undefined,
+      inspect: async () => ({
+        canSelectModel: true,
+        canSelectPermissionMode: true,
+        models: [
+          {
+            value: "claude-fable-5",
+            displayName: "Fable 5",
+            supportedEffortLevels: ["low", "medium", "high"],
+            supportsThinkingOff: false,
+          },
+          {
+            value: "claude-fable-5-1",
+            displayName: "Fable 5.1",
+            supportedEffortLevels: ["low", "medium", "high", "xhigh"],
+            supportsThinkingOff: false,
+          },
+          {
+            value: currentId,
+            displayName: "Fable 5.2",
+            supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+            supportsThinkingOff: false,
+          },
+        ],
+      }),
+    });
+    const inspection = await adapter.inspect({ cwd });
+    if (inspection.status !== "ready" || !inspection.catalog) throw new Error("Missing catalog");
+    const model = adapter.normalizeStoredModelRef(
+      encodeClaudeModelRef("claude-model-v1.ZmFibGU"), // Base64url of the saved native ID `fable`.
+      inspection.catalog,
+    );
+    if (model?.id !== currentId) throw new Error("Stored Fable alias did not resolve");
+
+    const opened = await adapter.open({
+      kind: "resume",
+      cwd,
+      model,
+      nativeRef: nativeSessionRefSchema.parse({
+        harnessId: "claude-code",
+        nativeSessionId: "restored-fable-session",
+        formatVersion: 1,
+      }),
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    const events = session.outputs[Symbol.asyncIterator]();
+    await expect(
+      session.execute({
+        type: "thinking.select",
+        thinkingOptionId: harnessThinkingOptionIdSchema.parse("max"),
+      }),
+    ).resolves.toMatchObject({ ok: true });
+    const optionIds = ["auto", "low", "medium", "high", "xhigh", "max", "ultracode"];
+    await expect(nextEvent(events)).resolves.toMatchObject({
+      type: "session.state.changed",
+      state: {
+        effectiveModel: model,
+        effectiveThinkingOptionId: "max",
+        availableThinkingOptions: optionIds.map((id) => ({ id })),
+      },
+    });
+    await expect(session.execute(textTurn("restored-fable"))).resolves.toMatchObject({ ok: true });
+    expect(dependencies.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({ openMode: "resume", model: currentId, thinkingOptionId: "max" }),
+    );
+    expect(transports[0]?.turns.map(({ text }) => text)).toEqual(["restored-fable"]);
+    transports[0]?.finish({ status: "succeeded" });
     await session.close();
   });
 
@@ -7695,6 +8177,126 @@ describe("Claude Code HarnessAdapter", () => {
     expect(adapter.credits()).toEqual({ usedPercent: 10, periodType: "five_hour" });
   });
 
+  it("seeds credits at most once via refreshCredits, relies on passive pushes afterward, and keeps inspectAccount fresh", async () => {
+    const { adapter, dependencies, transports } = fixture({}, { accountCreditsSupported: true });
+    const responses = [
+      { credits: { usedPercent: 10, periodType: "five_hour" as const } },
+      { credits: { usedPercent: 20, periodType: "five_hour" as const } },
+    ];
+    let inspectCalls = 0;
+    const createInspector = dependencies.createInspector;
+    dependencies.createInspector = (input) => ({
+      ...createInspector(input),
+      inspectAccount: async () => responses[inspectCalls++] ?? null,
+    });
+    try {
+      await expect(adapter.refreshCredits()).resolves.toEqual({
+        usedPercent: 10,
+        periodType: "five_hour",
+      });
+      expect(inspectCalls).toBe(1);
+
+      // Subsequent runtime refreshCredits calls reuse cached credits without spawning a probe.
+      await expect(adapter.refreshCredits()).resolves.toEqual({
+        usedPercent: 10,
+        periodType: "five_hour",
+      });
+      expect(inspectCalls).toBe(1);
+
+      // Explicit Settings inspection still probes live account credits.
+      await expect(adapter.inspectAccount()).resolves.toEqual({
+        credits: { usedPercent: 20, periodType: "five_hour" },
+      });
+      expect(inspectCalls).toBe(2);
+      expect(adapter.credits()).toEqual({ usedPercent: 20, periodType: "five_hour" });
+
+      const session = await openSession(adapter);
+      const iterator = session.outputs[Symbol.asyncIterator]();
+      await session.execute(textTurn("passive-plan-limit-push"));
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      const transport = transports[0];
+      if (!transport) throw new Error("Fake Claude transport was not created");
+
+      // Single-window passive push updates credits without re-arming active probes.
+      transport.planLimit({ fiveHour: { utilizationPercent: 46 } });
+      await nextEvent(iterator);
+
+      await expect(adapter.refreshCredits()).resolves.toEqual({
+        usedPercent: 46,
+        periodType: "five_hour",
+      });
+      expect(inspectCalls).toBe(2);
+
+      transport.finish({ status: "succeeded" });
+      await session.close();
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("does not re-probe via refreshCredits after an empty cold-start inspection or a prior passive push", async () => {
+    const { adapter, dependencies } = fixture({}, { accountCreditsSupported: true });
+    let inspectCalls = 0;
+    const createInspector = dependencies.createInspector;
+    dependencies.createInspector = (input) => ({
+      ...createInspector(input),
+      inspectAccount: async () => {
+        inspectCalls += 1;
+        return inspectCalls === 1
+          ? null
+          : { credits: { usedPercent: 15, periodType: "five_hour" as const } };
+      },
+    });
+    try {
+      await expect(adapter.refreshCredits()).resolves.toBeNull();
+      await expect(adapter.refreshCredits()).resolves.toBeNull();
+      expect(inspectCalls).toBe(1);
+
+      // Explicit inspection still refreshes and seeds cache.
+      await expect(adapter.inspectAccount()).resolves.toEqual({
+        credits: { usedPercent: 15, periodType: "five_hour" },
+      });
+      expect(inspectCalls).toBe(2);
+    } finally {
+      await adapter.close();
+    }
+
+    // If a live session already received a passive push, refreshCredits skips cold-start probing.
+    const passive = fixture({}, { accountCreditsSupported: true });
+    let passiveInspectCalls = 0;
+    const baseInspector = passive.dependencies.createInspector;
+    passive.dependencies.createInspector = (input) => ({
+      ...baseInspector(input),
+      inspectAccount: async () => {
+        passiveInspectCalls += 1;
+        return null;
+      },
+    });
+    try {
+      const session = await openSession(passive.adapter);
+      const iterator = session.outputs[Symbol.asyncIterator]();
+      await session.execute(textTurn("passive-before-refresh"));
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      passive.transports[0]?.planLimit({ fiveHour: { utilizationPercent: 33 } });
+      await nextEvent(iterator);
+
+      await expect(passive.adapter.refreshCredits()).resolves.toEqual({
+        usedPercent: 33,
+        periodType: "five_hour",
+      });
+      expect(passiveInspectCalls).toBe(0);
+
+      passive.transports[0]?.finish({ status: "succeeded" });
+      await session.close();
+    } finally {
+      await passive.adapter.close();
+    }
+  });
+
   it("keeps a previously observed weekly window when inspection only returns the five-hour window", async () => {
     const { adapter, transports } = fixture({}, { accountCreditsSupported: true });
     const session = await openSession(adapter);
@@ -7974,6 +8576,16 @@ describe("Claude Code HarnessAdapter", () => {
         type: "interaction.requested",
         request: { type: "planApproval", requestId: "exit-plan", plan },
       });
+      const planStarted = await nextEvent(iterator);
+      expect(planStarted).toMatchObject({
+        type: "item.started",
+        item: { type: "agentMessage", text: plan },
+      });
+      if (planStarted.type !== "item.started") throw new Error("Expected plan Item");
+      expect(await nextEvent(iterator)).toMatchObject({
+        type: "item.completed",
+        snapshot: { item: planStarted.item, outcome: { status: "succeeded" } },
+      });
       const interaction = await nextInteraction(iterator);
       expect(interaction).toMatchObject({
         type: "question",
@@ -7993,7 +8605,8 @@ describe("Claude Code HarnessAdapter", () => {
         ],
       });
       if (interaction.type !== "question") throw new Error("Expected a plan review Question");
-      expect(interaction.questions[0]?.prompt).toContain(plan);
+      expect(interaction.questions[0]?.prompt).not.toContain(plan);
+      expect(interaction.questions[0]?.prompt.length).toBeLessThan(300);
       expect(interaction.questions[0]?.prompt).toContain(
         "restore the permission mode used before planning",
       );
@@ -8651,7 +9264,25 @@ describe("Claude Code HarnessAdapter", () => {
     }
   });
 
-  it("retains a failed hard-cancel Transport and rejects reuse and confirmed close", async () => {
+  it("waits on the same native close after a Session close times out", async () => {
+    const { adapter, transports } = fixture({ closeTimeoutMs: 10 });
+    const session = await openSession(adapter);
+    await session.execute(textTurn("timed-out-close"));
+    const transport = transports[0];
+    if (!transport) throw new Error("Expected an active Transport");
+    const stopped = Promise.withResolvers<undefined>();
+    // An overlapping close would return success even though native cleanup is still pending.
+    transport.close.mockReturnValueOnce(stopped.promise).mockResolvedValue(undefined);
+    try {
+      await expect(session.close()).rejects.toThrow("could not stop safely");
+      await expect(session.close()).rejects.toThrow("could not stop safely");
+    } finally {
+      stopped.resolve(undefined);
+      await session.close();
+    }
+  });
+
+  it("retains a failed hard-cancel Transport and retries shutdown without allowing reuse", async () => {
     const { adapter, transports } = fixture({ cancelTimeoutMs: 10 });
     const session = await openSession(adapter);
     const events: HarnessOutput[] = [];
@@ -8671,6 +9302,16 @@ describe("Claude Code HarnessAdapter", () => {
     expect(
       events.some((output) => output.kind === "event" && output.event.type === "session.faulted"),
     ).toBe(true);
+
+    const rechecked = Promise.withResolvers<undefined>();
+    transport.close.mockReturnValue(rechecked.promise);
+    const confirmed = session.close();
+    expect(session.close()).toBe(confirmed);
+    await expect(session.execute(textTurn("still-unsafe"))).resolves.toMatchObject({ ok: false });
+    rechecked.resolve(undefined);
+    await expect(confirmed).resolves.toBeUndefined();
+    expect(session.close()).toBe(confirmed);
+    await expect(session.readSnapshot()).resolves.toMatchObject({ ok: false });
   });
 
   it("maps failed native results without faulting a reusable Session", async () => {

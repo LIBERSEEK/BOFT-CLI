@@ -17,6 +17,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import {
   THREAD_ARCHIVE_CONFIRM_METHOD,
+  THREAD_HANDOFF_METHOD,
   clientThreadPinsSchema,
   type ClientThreadSnapshot,
   type ClientWorkspaceSnapshot,
@@ -34,9 +35,15 @@ export interface ChHostClient {
   close(): void;
   readonly realtime?: {
     subscribe(listener: (event: HostClientUpdate) => void, after?: ClientChannelCursor): () => void;
-    request<T = unknown>(method: string, params: Record<string, unknown>): Promise<T>;
+    request<T = unknown>(
+      method: string,
+      params: Record<string, unknown>,
+      timeoutMs?: number,
+    ): Promise<T>;
     snapshot(threadId: string, options?: ClientSnapshotOptions): Promise<ClientThreadSnapshot>;
     respond(input: ClientChannelResponse): Promise<{ resolved: boolean }>;
+    /** True only when the connected Host Runtime descriptor advertises peer delegation support. */
+    peerDelegationSupported?: () => boolean;
   };
 }
 
@@ -47,8 +54,11 @@ export interface ChPinChange {
 
 export interface ChProjectSnapshot {
   projects: Array<{ id: string; name: string; rootPaths: string[] }>;
+  nativeProjects?: true | undefined;
   assignments: Record<string, string>;
   projectless: string[];
+  /** Projects in each native custom section, keyed by official section ID; shared Host only. */
+  sectionProjects?: Record<string, string[]> | undefined;
 }
 
 const exec = promisify(execFile);
@@ -56,6 +66,8 @@ const METHODS = new Set([
   THREAD_ARCHIVE_CONFIRM_METHOD,
   "codexhost/thread/tree/read",
   "codexhost/thread/pins/list",
+  "codexhost/thread/sections/list",
+  "codexhost/thread/sections/move",
   "codexhost/thread/pins/set",
   "codexhost/harness/display-settings/get",
   "codexhost/harness/display-settings/set",
@@ -97,6 +109,7 @@ const METHODS = new Set([
   "codexhost/skills/list",
   "codexhost/thread/command/execute",
   "codexhost/thread/fork",
+  THREAD_HANDOFF_METHOD,
   "codexhost/harness/session-import/sources",
   "codexhost/harness/session-import/list",
   "codexhost/harness/session-import/import",
@@ -224,7 +237,14 @@ export class DesktopChHostClient implements ChHostClient {
       if (!storage?.readGlobalState) throw new Error('Native project metadata unavailable');
       const [local, order, assigned, projectlessIds] = await Promise.all(['local-projects','project-order','thread-project-assignments','projectless-thread-ids'].map(key => storage.readGlobalState(key)));
       const ids = ${JSON.stringify(threadIds)};
-      const projects = Object.values(local ?? {}).filter(project => Array.isArray(order) && order.includes(project.id)).map(project => ({id:project.id,name:project.name,rootPaths:project.rootPaths}));
+      const stored = new Map();
+      for (const project of Object.values(local ?? {})) {
+        if (typeof project?.id === 'string' && !stored.has(project.id)) stored.set(project.id, project);
+      }
+      const projects = [...new Set(Array.isArray(order) ? order : [])].flatMap(id => {
+        const project = stored.get(id);
+        return project ? [{id:project.id,name:project.name,rootPaths:project.rootPaths}] : [];
+      });
       return {projects,assignments:Object.fromEntries(ids.flatMap(id => assigned?.[id]?.projectKind === 'local' ? [[id,assigned[id].projectId]] : [])),projectless:ids.filter(id => Array.isArray(projectlessIds) && projectlessIds.includes(id))};
     })()`;
     try {
@@ -301,17 +321,26 @@ export async function createChHostClient(
   }
   const request: ChHostClient["request"] = (method, params) =>
     hostOperation(channel.request(method, params));
+  const realtimeRequest = <T = unknown>(
+    method: string,
+    params: Record<string, unknown>,
+    timeoutMs?: number,
+  ): Promise<T> => hostOperation(channel.request<T>(method, params, timeoutMs));
   return {
     realtime: {
       subscribe: (listener, after) => channel.subscribe(listener, after),
-      request,
+      request: realtimeRequest,
       snapshot: (threadId, options) => hostOperation(channel.snapshot(threadId, options)),
       respond: (input) => hostOperation(channel.respond(input)),
+      peerDelegationSupported: () => channel.peerDelegationSupported,
     },
     request,
     projects: (ids) =>
       endpoint?.owner === "service"
-        ? channel.request<ClientWorkspaceSnapshot>("codexhost/workspace/read", { threadIds: ids })
+        ? channel.request<ClientWorkspaceSnapshot>("codexhost/workspace/read", {
+            threadIds: ids,
+            nativeProjects: true,
+          })
         : desktop.projects(ids),
     pins: (change) => requestPins((method, params) => channel.request(method, params), change),
     close() {

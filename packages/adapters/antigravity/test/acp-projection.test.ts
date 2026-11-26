@@ -5,7 +5,6 @@ import {
   hostInteractionIdSchema,
   hostItemIdSchema,
   hostTurnIdSchema,
-  nativeTurnRefSchema,
 } from "@codexhost/shared-contracts";
 import { applyPatch } from "diff";
 import { describe, expect, it, vi } from "vitest";
@@ -455,6 +454,53 @@ describe("tool lifecycle and file changes", () => {
     tools.handleToolEvent({ type: "tool.update", toolCallId: "send", status: "completed" });
     expect(spawned).toHaveBeenCalledTimes(2);
   });
+  it("keeps an unfinished diff with its detached tool until the native result", () => {
+    const { tools, events } = tracker();
+    tools.handleToolEvent({
+      type: "tool.call",
+      toolCallId: "edit",
+      name: "edit_file",
+      status: "in_progress",
+      content: [{ type: "diff", path: "/repo/a.ts", oldText: "before", newText: "after" }],
+    });
+    const started = events.flatMap((event) => (event.type === "item.started" ? [event.item] : []));
+    expect(started.map((item) => item.type)).toEqual(["toolExecution", "fileChange"]);
+    expect(tools.detachPending(new Set(["edit"]))).toEqual(new Set(["edit"]));
+    expect(
+      events.filter((event) => event.type === "item.detached").map((event) => event.itemId),
+    ).toEqual(started.map((item) => item.itemId));
+    tools.finishPending({ status: "succeeded" });
+    expect(tools.completedSnapshots()).toEqual([]);
+    tools.handleToolEvent({ type: "tool.update", toolCallId: "edit", status: "completed" });
+    expect(
+      tools.completedSnapshots().map(({ item, outcome }) => [item.type, outcome.status]),
+    ).toEqual([
+      ["toolExecution", "succeeded"],
+      ["fileChange", "succeeded"],
+    ]);
+  });
+  it("detaches a diff that first arrives after its tool", () => {
+    const { tools, events } = tracker();
+    tools.handleToolEvent({
+      type: "tool.call",
+      toolCallId: "edit",
+      name: "edit_file",
+      status: "in_progress",
+    });
+    expect(tools.detachPending(new Set(["edit"]))).toEqual(new Set(["edit"]));
+    tools.handleToolEvent({
+      type: "tool.update",
+      toolCallId: "edit",
+      status: "in_progress",
+      content: [{ type: "diff", path: "/repo/a.ts", oldText: "before", newText: "after" }],
+    });
+    expect(events.map((event) => event.type)).toEqual([
+      "item.started",
+      "item.detached",
+      "item.started",
+    ]);
+    expect(tools.completedSnapshots()).toEqual([]);
+  });
   it("emits generic tool output and closes pending items on cancellation", () => {
     const { tools, events } = tracker();
     tools.handleToolEvent({
@@ -524,8 +570,8 @@ describe("tool lifecycle and file changes", () => {
 describe("history replay", () => {
   const events: AntigravityAcpEvent[] = [
     { type: "session.info", title: "History" },
-    { type: "user.text", text: "Hel" },
-    { type: "user.text", text: "lo" },
+    { type: "user.text", text: "Hel", nativeTurnIndex: 0 },
+    { type: "user.text", text: "lo", nativeTurnIndex: 0 },
     { type: "agent.thought", text: "Think" },
     { type: "agent.thought", text: "ing" },
     {
@@ -543,7 +589,7 @@ describe("history replay", () => {
     { type: "agent.text", text: "One" },
     { type: "agent.text", text: " answer" },
     { type: "usage.context", used: 100, size: 1000 },
-    { type: "user.text", text: "Next" },
+    { type: "user.text", text: "Next", nativeTurnIndex: 1 },
     { type: "agent.text", text: "Two" },
   ];
   it("groups consecutive user chunks into logical turns and keeps all IDs deterministic", () => {
@@ -573,40 +619,32 @@ describe("history replay", () => {
     );
     expect(new Set(ids).size).toBe(ids.length);
   });
-  it("preserves known native turn keys independently of checkpoint positions", () => {
-    const known = nativeTurnRefSchema.parse({
-      harnessId: "antigravity",
-      nativeSessionId: "native",
-      nativeTurnKey: "stored-key",
-      formatVersion: 1,
-    });
+  it("keeps orphan replay keys separate and uses the last native boundary of merged inputs", () => {
     const result = projectReplayedEventsToTurns({
       nativeSessionId: "native",
       cwd: "/repo",
-      events,
-      knownTurnRefs: [known],
+      events: [
+        { type: "agent.text", text: "orphan reply" },
+        { type: "user.text", text: "first ", nativeTurnIndex: 0 },
+        { type: "user.text", text: "question", nativeTurnIndex: 2 },
+        { type: "agent.text", text: "first reply" },
+        { type: "history.autonomous", stepIndex: 8 },
+        { type: "agent.text", text: "wake reply" },
+        { type: "user.text", text: "follow up", nativeTurnIndex: 3 },
+        { type: "agent.text", text: "second reply" },
+      ],
     });
-    expect(result[0]?.nativeTurnRef.nativeTurnKey).toBe("stored-key");
-    expect(result[0]?.checkpoint?.checkpointId).toBe("turn-0");
-  });
-  it("preserves known turn keys and skips them when generating a fallback", () => {
-    const result = projectReplayedEventsToTurns({
-      nativeSessionId: "native",
-      cwd: "/repo",
-      events: [...events, { type: "user.text", text: "Third" }],
-      knownTurnRefs: ["turn-0", "turn-2"].map((nativeTurnKey) =>
-        nativeTurnRefSchema.parse({
-          harnessId: "antigravity",
-          nativeSessionId: "native",
-          nativeTurnKey,
-          formatVersion: 1,
-        }),
-      ),
-    });
-    expect(result.map(({ nativeTurnRef }) => nativeTurnRef.nativeTurnKey)).toEqual([
-      "turn-0",
-      "turn-2",
-      "turn-3",
+    expect(result[1]?.input).toEqual([{ type: "text", text: "first question" }]);
+    expect(
+      result.map(({ nativeTurnRef, checkpoint }) => [
+        nativeTurnRef.nativeTurnKey,
+        checkpoint?.checkpointId,
+      ]),
+    ).toEqual([
+      ["replay-0", undefined],
+      ["turn-2", "turn-2"],
+      ["wake-8", "wake-8"],
+      ["turn-3", "turn-3"],
     ]);
   });
   it("does not invent turns from metadata and marks unterminated tools interrupted", () => {
@@ -634,7 +672,7 @@ describe("history replay", () => {
       nativeSessionId: "native",
       cwd,
       events: [
-        { type: "user.text", text: "question" },
+        { type: "user.text", text: "question", nativeTurnIndex: 0 },
         { type: "agent.text", text: "answer " },
         { type: "agent.text", text: "before restart" },
         { type: "agent.text", text: "after restart" },
@@ -671,12 +709,12 @@ it("merges live commands with built-ins and ignores duplicates/invalid names", (
 describe("idle background output replay consistency", () => {
   const nativeSessionId = "native";
   const idleTail: AntigravityAcpEvent[] = [
-    { type: "user.text", text: "first question" },
+    { type: "user.text", text: "first question", nativeTurnIndex: 0 },
     { type: "agent.text", text: "first answer" },
     // Idle background output arrives after end_turn, before the next prompt.
     { type: "agent.text", text: "awake: " },
     { type: "agent.text", text: "done" },
-    { type: "user.text", text: "second question" },
+    { type: "user.text", text: "second question", nativeTurnIndex: 1 },
     { type: "agent.text", text: "second answer" },
   ];
 
@@ -698,7 +736,7 @@ describe("idle background output replay consistency", () => {
       .map(({ item }) => (item as { text: string }).text);
     expect(texts).toEqual(["first answerawake: done"]);
     expect(turns[1]?.items.map(({ item }) => item.type)).toEqual(["agentMessage"]);
-    // Native Turn keys stay positional and untouched by idle output.
+    // Idle output does not change the native boundaries.
     expect(turns.map((turn) => turn.nativeTurnRef.nativeTurnKey)).toEqual(["turn-0", "turn-1"]);
   });
 

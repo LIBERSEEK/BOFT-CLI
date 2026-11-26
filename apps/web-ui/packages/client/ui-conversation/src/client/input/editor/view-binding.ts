@@ -11,6 +11,7 @@ import { registerComposerKeymap } from "./keymap.ts";
 
 interface DraftViewGate {
   locked: boolean;
+  canPasteText: boolean;
   machineBusy: boolean;
   primaryAction: ComposerPrimaryAction | undefined;
   canSteerQueue: boolean;
@@ -60,6 +61,36 @@ export function focusDraftEditor(editor: LexicalEditor, revealSelection: () => v
   editor.focus(() => {
     revealSelection();
   });
+}
+
+/**
+ * Re-apply a live collapsed DOM selection inside the focused editor so WebKit
+ * recomputes and repaints the caret after sibling layout shifts (e.g. mounting
+ * or collapsing the attachment rail above the draft).
+ * @param editor - the Session-owned editor.
+ */
+export function refreshDraftCaret(editor: LexicalEditor): void {
+  const root = editor.getRootElement();
+  if (root === null || editor.isComposing()) return;
+  const doc = root.ownerDocument;
+  if (doc.activeElement !== root && !root.contains(doc.activeElement)) return;
+  const selection = doc.defaultView?.getSelection();
+  if (selection === null || selection === undefined) return;
+  if (selection.rangeCount > 0) {
+    if (!selection.isCollapsed) return;
+    const range = selection.getRangeAt(0).cloneRange();
+    if (root.contains(range.startContainer) && root.contains(range.endContainer)) {
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return;
+    }
+  }
+  const target = root.firstChild ?? root;
+  const range = doc.createRange();
+  range.setStart(target, 0);
+  range.collapse(true);
+  selection.removeAllRanges();
+  selection.addRange(range);
 }
 
 /**
@@ -164,10 +195,32 @@ export function installDraftKeymap(
       gate.current.intakeFiles(files, directories);
     },
     pasteText: (text) => {
-      if (gate.current.machineBusy || gate.current.locked) return;
+      if (gate.current.machineBusy || !gate.current.canPasteText) return;
       keyboard.paste(text);
     },
   });
+}
+
+/**
+ * Blur an active inline annotation note editor before a primary send press so
+ * its existing blur handler commits the edited comment synchronously before
+ * click-time submission, including on mobile where {@link keepDraftFocus}
+ * cancels mousedown without focusing the draft editor.
+ * @param doc - the button's owning document.
+ * @returns whether an active annotation textarea was blurred.
+ */
+export function blurActiveAnnotationEditor(doc: Document): boolean {
+  const active = doc.activeElement;
+  const TextArea = doc.defaultView?.HTMLTextAreaElement ?? globalThis.HTMLTextAreaElement;
+  if (
+    TextArea !== undefined &&
+    active instanceof TextArea &&
+    active.closest("[data-composer-annotations]") !== null
+  ) {
+    active.blur();
+    return true;
+  }
+  return false;
 }
 
 /**

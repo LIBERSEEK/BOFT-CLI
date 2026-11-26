@@ -34,7 +34,12 @@ import {
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import { pathPartsOf } from "@deepseek-ai/dsh-util-workspace-path";
 import type { TextInjected } from "./face.ts";
-import { emptyFailureRecourse, failureLine } from "./failure-line.ts";
+import {
+  emptyFailureRecourse,
+  failureLine,
+  remoteWorkspacePreviewBlockKey,
+  type RemoteHostWorkspaceCapabilities,
+} from "./failure-line.ts";
 import { LoadingIndicator } from "./LoadingIndicator.tsx";
 import { hostFileOf } from "./rpc.ts";
 import type { TextStore } from "./store.ts";
@@ -49,9 +54,29 @@ import css from "./TextPreview.module.css";
 export { linesOf, loadedPages, lastLineLoaded, scrollToLine } from "./text/lines.ts";
 export type { LoadedPage } from "./text/lines.ts";
 
+function formatByteSize(bytes: number): string {
+  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${bytes} B`;
+}
+
+function fileSpecLine(fileName: string, bytes: number | undefined): string | null {
+  const dot = fileName.lastIndexOf(".");
+  const ext = dot > 0 && dot < fileName.length - 1 ? fileName.slice(dot + 1).toUpperCase() : "";
+  const size =
+    typeof bytes === "number" && Number.isFinite(bytes) && bytes >= 0 ? formatByteSize(bytes) : "";
+  if (ext && size) return `${ext} · ${size}`;
+  return ext || size || null;
+}
+
 /** Private registration inputs; the framework binds the registry source to useDocumentPreviews. */
 export interface TextPreviewInjected extends TextInjected {
-  readonly openExternal: (path: string, signal: AbortSignal) => Promise<void>;
+  readonly openExternal: (
+    sessionId: import("@deepseek-ai/dsh-session/types").SessionId,
+    path: string,
+    signal: AbortSignal,
+  ) => Promise<void>;
   readonly hooks: {
     readonly documentPreviews: ObservableSnapshot<readonly DocumentPreviewDefinition[]>;
   };
@@ -76,6 +101,7 @@ export type TextPreviewProps = PropsRuntime<"sidebar.right.pane.tab"> &
  */
 export function TextPreview({
   useTabInfo,
+  useSessions,
   useResource,
   useStore,
   actions,
@@ -94,8 +120,16 @@ export function TextPreview({
   const { tab } = useTabInfo();
   const { navigation, signal } = tab;
   const meta = useResource<"file">(tab.contentId);
-  const canRead = meta.status !== "none";
   const file = useMemo(() => hostFileOf(tab.contentId), [tab.contentId]);
+  const remoteHost = useSessions(
+    (s) =>
+      (
+        s.byId[file.sessionId]?.projectionValues as
+          { readonly remoteHost?: RemoteHostWorkspaceCapabilities | null } | undefined
+      )?.remoteHost,
+  );
+  const remoteBlockKey = remoteWorkspacePreviewBlockKey(file.sessionId, remoteHost);
+  const canRead = meta.status !== "none" && remoteBlockKey === undefined;
   const state = useStore((s) => s.byTab[tab.id]);
   const definitions = useDocumentPreviews((value) => value);
   const unviewable = useMemo(() => unviewableBinaryPath(file.path), [file.path]);
@@ -136,6 +170,7 @@ export function TextPreview({
   const absolutePath = meta.value?.absolutePath ?? current?.complete?.absolutePath;
   const displayPath = absolutePath ?? file.path;
   const [openError, setOpenError] = useState<string>();
+  const isRemoteSession = file.sessionId.startsWith("web-remote:");
   const pathLabel = (
     <>
       <PathLabel
@@ -143,10 +178,11 @@ export function TextPreview({
         className={css.path}
         data-textpreview-path
         onClick={(event) => {
-          if (!(event.ctrlKey || event.metaKey) || absolutePath === undefined) return;
+          if (isRemoteSession || !(event.ctrlKey || event.metaKey) || absolutePath === undefined)
+            return;
           event.preventDefault();
           setOpenError(undefined);
-          void openExternal(absolutePath, signal).catch((error: unknown) => {
+          void openExternal(file.sessionId, absolutePath, signal).catch((error: unknown) => {
             if (!signal.aborted)
               setOpenError(error instanceof Error ? error.message : String(error));
           });
@@ -155,8 +191,12 @@ export function TextPreview({
       {openError !== undefined && <span role="alert">{openError}</span>}
     </>
   );
-  // Contributions that hand the file to the Host wait for its Host path.
-  const fileOwner = absolutePath === undefined ? undefined : { absolutePath };
+  // Workspace-scoped actions can act on `file.path` immediately; Host-native actions wait for `absolutePath`.
+  const fileOwner = useMemo(
+    () =>
+      absolutePath === undefined ? { filePath: file.path } : { filePath: file.path, absolutePath },
+    [file.path, absolutePath],
+  );
   // Every tab of this type is a `file` resource address, so its params are the
   // `file` type's; the union is narrowed on the one field read, not validated.
   const line =
@@ -357,6 +397,7 @@ export function TextPreview({
   // contributions that hand the file to the Host.
   if (selected === undefined && unviewable) {
     const { name: unsupportedName } = pathPartsOf(displayPath);
+    const spec = fileSpecLine(unsupportedName, meta.value?.bytes);
     return (
       <div
         className={css.preview}
@@ -365,18 +406,43 @@ export function TextPreview({
       >
         <div className={css.header}>
           {pathLabel}
-          {fileOwner !== undefined && renderSlot("sidebar.right.tab.document.actions", fileOwner)}
+          {renderSlot("sidebar.right.tab.document.actions", fileOwner)}
         </div>
         <div className={css.body} data-textpreview-body>
           <div className={css.empty} data-textpreview-unsupported>
+            <div className={css.emptyGlyph}>
+              <FileTypeIcon kind={classifyFileType(unsupportedName)} size={32} />
+            </div>
+            <div className={css.emptyMeta}>
+              <p className={css.emptyTitle}>{unsupportedName}</p>
+              {spec !== null && <p className={css.emptySpec}>{spec}</p>}
+            </div>
+            <p className={css.emptyLine}>{t("unsupportedFile")}</p>
+            <div className={css.emptyActions}>
+              {renderSlot("sidebar.right.tab.document.unpreviewable", fileOwner)}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+  if (remoteBlockKey !== undefined) {
+    const { name: blockedName } = pathPartsOf(displayPath);
+    return (
+      <div
+        className={css.preview}
+        data-textpreview-state="text"
+        data-textpreview-url={tab.contentId}
+      >
+        <div className={css.header}>{pathLabel}</div>
+        <div className={css.body} data-textpreview-body>
+          <div className={css.empty} data-textpreview-failed="remote/workspace-files-unsupported">
             <FileTypeIcon
-              kind={classifyFileType(unsupportedName)}
+              kind={classifyFileType(blockedName)}
               size={36}
               className={css.emptyIcon}
             />
-            <p className={css.emptyLine}>{t("unsupportedFile")}</p>
-            {fileOwner !== undefined &&
-              renderSlot("sidebar.right.tab.document.unpreviewable", fileOwner)}
+            <p className={css.emptyLine}>{t(remoteBlockKey)}</p>
           </div>
         </div>
       </div>
@@ -533,7 +599,7 @@ export function TextPreview({
           </button>
         </Tooltip>
         {/* jscpd:ignore-end */}
-        {fileOwner !== undefined && renderSlot("sidebar.right.tab.document.actions", fileOwner)}
+        {renderSlot("sidebar.right.tab.document.actions", fileOwner)}
       </div>
       <div
         ref={bindBody}
@@ -604,11 +670,27 @@ export function TextPreview({
             // contributions, and offer nothing for a path with nothing to show.
             // Metadata observation remains owned by the resource provider.
             <div className={css.empty} data-textpreview-failed={current.failure.code}>
-              <FileTypeIcon kind={classifyFileType(name)} size={36} className={css.emptyIcon} />
+              {emptyFailureRecourse(current.failure) === "open" ? (
+                <>
+                  <div className={css.emptyGlyph}>
+                    <FileTypeIcon kind={classifyFileType(name)} size={32} />
+                  </div>
+                  <div className={css.emptyMeta}>
+                    <p className={css.emptyTitle}>{name}</p>
+                    {fileSpecLine(name, meta.value?.bytes) !== null && (
+                      <p className={css.emptySpec}>{fileSpecLine(name, meta.value?.bytes)}</p>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <FileTypeIcon kind={classifyFileType(name)} size={36} className={css.emptyIcon} />
+              )}
               <p className={css.emptyLine}>{failureLine(t, current.failure)}</p>
-              {emptyFailureRecourse(current.failure) === "open" &&
-                fileOwner !== undefined &&
-                renderSlot("sidebar.right.tab.document.unpreviewable", fileOwner)}
+              {emptyFailureRecourse(current.failure) === "open" && (
+                <div className={css.emptyActions}>
+                  {renderSlot("sidebar.right.tab.document.unpreviewable", fileOwner)}
+                </div>
+              )}
               {emptyFailureRecourse(current.failure) === "retry" && (
                 <button type="button" className={css.retry} data-textpreview-retry onClick={reload}>
                   <IconRefreshOutlineRegular size={14} />

@@ -1,5 +1,6 @@
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::collections::{HashMap, HashSet};
+#[cfg(not(unix))]
 use std::env;
 use std::error::Error;
 use std::ffi::OsString;
@@ -9,22 +10,39 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+use codexhost_platform::descendant_executable_pair_exists;
+#[cfg(not(unix))]
+use codexhost_platform::desktop_root_process_ids_for_installation;
 use codexhost_platform::{
-    DesktopInstallation, PlatformError, ProcessSnapshot, descendant_executable_pair_exists,
-    desktop_root_process_ids_for_installation,
+    DesktopInstallation, HostChainObservation, PlatformError, ProcessSnapshot, observe_host_chain,
 };
 #[cfg(target_os = "windows")]
 use codexhost_platform::{process_executable_path, process_exists, terminate_process_by_id};
 
 use crate::ResolvedLaunchOptions;
+#[cfg(not(unix))]
+use crate::runtime_instance::read_descriptor;
+#[cfg(not(unix))]
+use crate::runtime_instance::try_acquire_launcher_guard;
 use crate::runtime_instance::{
-    LauncherGuard, RuntimeDescriptor, RuntimeDescriptorGuard, default_descriptor_path,
-    default_guard_path, random_nonce, read_descriptor, remove_matching_descriptor,
-    try_acquire_launcher_guard,
+    LauncherGuard, RuntimeDescriptor, default_descriptor_path, random_nonce,
 };
+#[cfg(target_os = "windows")]
+use crate::runtime_instance::{RuntimeDescriptorGuard, remove_matching_descriptor};
 
 const ATTACHMENT_RETRY_INITIAL_DELAY: Duration = Duration::from_millis(100);
 const ATTACHMENT_RETRY_MAX_DELAY: Duration = Duration::from_secs(1);
+const DIRECT_STOCK_CLI_GRACE: Duration = Duration::from_secs(2);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum HostChainWaitOutcome {
+    Ready,
+    Stopped,
+    DesktopExited,
+    DirectStockCliWithoutShim,
+    TimedOut,
+}
 
 #[derive(Debug)]
 pub(super) struct RuntimeControl {
@@ -53,51 +71,62 @@ pub(super) fn allocate_runtime_control() -> Result<RuntimeControl, Box<dyn Error
 }
 
 pub(super) enum LauncherOwnership {
-    Acquired(LauncherGuard),
+    Acquired(LauncherGuard, #[cfg(unix)] std::fs::File),
     Attached,
 }
 
 pub(super) fn acquire_launcher_ownership(
-    installation: &DesktopInstallation,
+    _installation: &DesktopInstallation,
     timeout: Duration,
+    #[cfg(unix)] data: &Path,
 ) -> Result<LauncherOwnership, Box<dyn Error>> {
-    let guard_path = default_guard_path()?;
-    if let Some(guard) = try_acquire_launcher_guard(&guard_path)? {
-        return Ok(LauncherOwnership::Acquired(guard));
-    }
-
     let descriptor_path = default_descriptor_path()?;
-    let started = Instant::now();
-    let mut retry_delay = ATTACHMENT_RETRY_INITIAL_DELAY;
-    while started.elapsed() < timeout {
-        let descriptor = read_descriptor(&descriptor_path).ok().flatten();
+    #[cfg(unix)]
+    let lifecycle = crate::desktop_lifecycle::Lifecycle::open(&descriptor_path, true)?;
+    #[cfg(not(unix))]
+    let guard_path = crate::runtime_instance::guard_path(&descriptor_path);
+    let deadline = Instant::now() + timeout;
+    let mut delay = ATTACHMENT_RETRY_INITIAL_DELAY;
+    loop {
+        #[cfg(unix)]
+        let descriptor = {
+            let operation = lifecycle.lock(deadline)?;
+            if let Some(guard) = lifecycle.launcher_guard()? {
+                return Ok(LauncherOwnership::Acquired(guard, operation));
+            }
+            lifecycle.attachment(data)?
+        };
+        #[cfg(not(unix))]
+        let descriptor = {
+            if let Some(guard) = try_acquire_launcher_guard(&guard_path)? {
+                return Ok(LauncherOwnership::Acquired(guard));
+            }
+            read_descriptor(&descriptor_path).ok().flatten()
+        };
         if let Some(descriptor) = &descriptor {
-            if try_activate_controlled_instance(descriptor)? {
+            if try_activate_until(descriptor, deadline)? {
                 return Ok(LauncherOwnership::Attached);
             }
-            if desktop_root_process_ids_for_installation(installation)?.is_empty() {
+            #[cfg(not(unix))]
+            if desktop_root_process_ids_for_installation(_installation)?.is_empty() {
                 stop_stale_launcher(descriptor)?;
-                let _ = remove_matching_descriptor(&descriptor_path, descriptor)?;
+                remove_matching_descriptor(&descriptor_path, descriptor)?;
+                if let Some(guard) = try_acquire_launcher_guard(&guard_path)? {
+                    return Ok(LauncherOwnership::Acquired(guard));
+                }
             }
         }
-        if let Some(guard) = try_acquire_launcher_guard(&guard_path)? {
-            return Ok(LauncherOwnership::Acquired(guard));
-        }
-        // A recovering Controller reports busy while one attachment owns the
-        // recovery work. Back off retries so another Launcher cannot create a
-        // connection storm while the healthy owner keeps its guard.
-        let remaining = timeout.saturating_sub(started.elapsed());
+        let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             break;
         }
-        thread::sleep(retry_delay.min(remaining));
-        retry_delay = retry_delay
-            .saturating_mul(2)
-            .min(ATTACHMENT_RETRY_MAX_DELAY);
+        thread::sleep(delay.min(remaining));
+        delay = (delay * 2).min(ATTACHMENT_RETRY_MAX_DELAY);
     }
     Err("another BOFT CLI Launcher did not become attachable before timeout".into())
 }
 
+#[cfg(not(unix))]
 pub(super) fn endpoint_ready(port: u16, timeout: Duration) -> bool {
     TcpStream::connect_timeout(
         &format!("127.0.0.1:{port}")
@@ -108,22 +137,43 @@ pub(super) fn endpoint_ready(port: u16, timeout: Duration) -> bool {
     .is_ok()
 }
 
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 pub(super) fn wait_for_host_chain(
     desktop: &ProcessSnapshot,
     options: &ResolvedLaunchOptions,
     timeout: Duration,
+    stopping: impl FnMut() -> Result<bool, Box<dyn Error>>,
 ) -> Result<bool, Box<dyn Error>> {
-    let nodes =
-        host_runtime_node_candidates(options.node.clone(), env::var_os(crate::NPM_NODE_PATH_ENV));
-    wait_for_host_chain_with_nodes(desktop, options, &nodes, timeout)
+    Ok(
+        wait_for_host_chain_outcome(desktop, options, None, timeout, stopping)?
+            == HostChainWaitOutcome::Ready,
+    )
 }
 
-/// The Shim runs the Host Runtime on the Node selected at launch
-/// (`options.node`, the Desktop cua_node in installer layouts) — but on
-/// npm-managed installs it overrides the Host Runtime to
-/// `CODEXHOST_NPM_NODE_PATH` (the npm wrapper's `process.execPath`). Readiness
-/// must accept that Node too, or the wait blocks on a late, unrelated Desktop
-/// `cua_node` helper instead of the actual Host Runtime process.
+pub(super) fn wait_for_host_chain_outcome(
+    desktop: &ProcessSnapshot,
+    options: &ResolvedLaunchOptions,
+    stock_cli: Option<&Path>,
+    timeout: Duration,
+    stopping: impl FnMut() -> Result<bool, Box<dyn Error>>,
+) -> Result<HostChainWaitOutcome, Box<dyn Error>> {
+    let nodes = host_runtime_node_candidates(
+        options.node.clone(),
+        crate::installation_layout::inherited_npm_node(),
+    );
+    wait_for_host_chain_with_observer(
+        desktop,
+        &options.shim,
+        &nodes,
+        timeout,
+        DIRECT_STOCK_CLI_GRACE,
+        stopping,
+        || observe_host_chain(desktop, &options.shim, &nodes, stock_cli),
+    )
+}
+
+/// Installed npm launches may also use the wrapper's Node. Count it alongside
+/// the Node selected at launch when checking the Host process chain.
 pub(super) fn host_runtime_node_candidates(
     default_node: PathBuf,
     npm_node: Option<OsString>,
@@ -138,22 +188,110 @@ pub(super) fn host_runtime_node_candidates(
     nodes
 }
 
-pub(super) fn wait_for_host_chain_with_nodes(
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+fn wait_for_host_chain_with_nodes(
     desktop: &ProcessSnapshot,
     options: &ResolvedLaunchOptions,
     nodes: &[PathBuf],
     timeout: Duration,
 ) -> Result<bool, Box<dyn Error>> {
-    wait_for_host_chain_with_inspector(desktop, &options.shim, nodes, timeout, |node| {
-        descendant_executable_pair_exists(desktop, &options.shim, node)
-    })
+    wait_for_host_chain_with_inspector(
+        desktop,
+        &options.shim,
+        nodes,
+        timeout,
+        || Ok(false),
+        |node| descendant_executable_pair_exists(desktop, &options.shim, node),
+    )
 }
 
+fn wait_for_host_chain_with_observer(
+    desktop: &ProcessSnapshot,
+    shim: &Path,
+    nodes: &[PathBuf],
+    timeout: Duration,
+    direct_stock_cli_grace: Duration,
+    mut stopping: impl FnMut() -> Result<bool, Box<dyn Error>>,
+    mut observe: impl FnMut() -> Result<HostChainObservation, PlatformError>,
+) -> Result<HostChainWaitOutcome, Box<dyn Error>> {
+    let started = Instant::now();
+    // `unresolved_error` belongs to the latest round that could not inspect
+    // the Desktop subtree and alone decides whether a timeout is an error.
+    let mut unresolved_error = None;
+    let mut last_error = None;
+    let mut last_observation = None;
+    let mut direct_stock_cli_since: Option<Instant> = None;
+    while started.elapsed() < timeout {
+        if stopping()? {
+            return Ok(HostChainWaitOutcome::Stopped);
+        }
+        match observe() {
+            Ok(observation) => {
+                unresolved_error = None;
+                let ready = observation.pair_exists;
+                let root_alive = observation.root_alive;
+                let direct_stock_cli = observation.direct_stock_cli_without_shim;
+                last_observation = Some(observation);
+                if ready {
+                    return Ok(HostChainWaitOutcome::Ready);
+                }
+                if !root_alive {
+                    crate::startup_trace(&host_chain_failure_diagnostic(
+                        "Host chain wait ended early (Desktop exited)",
+                        desktop,
+                        shim,
+                        nodes,
+                        last_observation.as_ref(),
+                        last_error.as_deref(),
+                    ));
+                    return Ok(HostChainWaitOutcome::DesktopExited);
+                }
+                if direct_stock_cli {
+                    let first_seen = *direct_stock_cli_since.get_or_insert_with(Instant::now);
+                    if first_seen.elapsed() >= direct_stock_cli_grace {
+                        crate::startup_trace(&host_chain_failure_diagnostic(
+                            "Host chain wait ended early (official CLI started without Shim)",
+                            desktop,
+                            shim,
+                            nodes,
+                            last_observation.as_ref(),
+                            last_error.as_deref(),
+                        ));
+                        return Ok(HostChainWaitOutcome::DirectStockCliWithoutShim);
+                    }
+                } else {
+                    direct_stock_cli_since = None;
+                }
+            }
+            Err(error) => {
+                let message = error.to_string();
+                last_error = Some(message.clone());
+                unresolved_error = Some(message);
+            }
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    crate::startup_trace(&host_chain_failure_diagnostic(
+        "Host chain wait timed out",
+        desktop,
+        shim,
+        nodes,
+        last_observation.as_ref(),
+        last_error.as_deref(),
+    ));
+    if let Some(error) = unresolved_error {
+        return Err(error.into());
+    }
+    Ok(HostChainWaitOutcome::TimedOut)
+}
+
+#[cfg(test)]
 fn wait_for_host_chain_with_inspector(
     desktop: &ProcessSnapshot,
     shim: &Path,
     nodes: &[PathBuf],
     timeout: Duration,
+    mut stopping: impl FnMut() -> Result<bool, Box<dyn Error>>,
     mut inspect: impl FnMut(&Path) -> Result<bool, PlatformError>,
 ) -> Result<bool, Box<dyn Error>> {
     let started = Instant::now();
@@ -165,6 +303,9 @@ fn wait_for_host_chain_with_inspector(
     let mut unresolved_error = None;
     let mut last_error = None;
     while started.elapsed() < timeout {
+        if stopping()? {
+            return Ok(false);
+        }
         let mut round_error = None;
         for node in nodes {
             match inspect(node) {
@@ -183,10 +324,12 @@ fn wait_for_host_chain_with_inspector(
     // launch, a stalled Controller, or an unobservable process tree (#882).
     // Record what the wait was matching against and what was last observed so
     // the next report can pin the failing stage.
-    crate::startup_trace(&host_chain_timeout_diagnostic(
+    crate::startup_trace(&host_chain_failure_diagnostic(
+        "Host chain wait timed out",
         desktop,
         shim,
         nodes,
+        None,
         last_error.as_deref(),
     ));
     if let Some(error) = unresolved_error {
@@ -195,11 +338,13 @@ fn wait_for_host_chain_with_inspector(
     Ok(false)
 }
 
-/// One-shot diagnostic snapshot taken when the Host chain wait times out.
-fn host_chain_timeout_diagnostic(
+/// One-shot diagnostic snapshot taken when the Host chain wait ends unsuccessfully.
+fn host_chain_failure_diagnostic(
+    reason: &str,
     desktop: &ProcessSnapshot,
     shim: &Path,
     nodes: &[PathBuf],
+    observation: Option<&HostChainObservation>,
     last_error: Option<&str>,
 ) -> String {
     let nodes_display = nodes
@@ -208,35 +353,49 @@ fn host_chain_timeout_diagnostic(
         .collect::<Vec<_>>()
         .join(", ");
     let mut diagnostic = format!(
-        "Host chain wait timed out: Desktop root pid {} ({}), expected shim '{}' and node candidates [{}]",
+        "{reason}: Desktop root pid {} ({}), expected shim '{}' and node candidates [{}]",
         desktop.id,
         desktop.executable.display(),
         shim.display(),
         nodes_display,
     );
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    match codexhost_platform::process_snapshots() {
-        Ok(snapshots) => match snapshots_in_desktop_tree(desktop, &snapshots) {
-            Some(tree) => {
-                let shim_running = tree.iter().any(|process| process.executable == shim);
-                let node_running = tree
-                    .iter()
-                    .any(|process| nodes.iter().any(|node| &process.executable == node));
-                diagnostic = format!(
-                    "{diagnostic}; {} live processes observed, {} in this Desktop tree, shim running in this Desktop tree: {shim_running}, node running in this Desktop tree: {node_running}",
-                    snapshots.len(),
-                    tree.len()
-                );
+    if let Some(observation) = observation {
+        if observation.root_alive {
+            diagnostic = format!(
+                "{diagnostic}; {} in this Desktop tree, shim running in this Desktop tree: {}, node running in this Desktop tree: {}, direct official CLI without shim: {}",
+                observation.tree_size,
+                observation.shim_running,
+                observation.node_running,
+                observation.direct_stock_cli_without_shim,
+            );
+        } else {
+            diagnostic = format!("{diagnostic}; original Desktop instance is not visible");
+        }
+    } else {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        match codexhost_platform::process_snapshots() {
+            Ok(snapshots) => match snapshots_in_desktop_tree(desktop, &snapshots) {
+                Some(tree) => {
+                    let shim_running = tree.iter().any(|process| process.executable == shim);
+                    let node_running = tree
+                        .iter()
+                        .any(|process| nodes.iter().any(|node| &process.executable == node));
+                    diagnostic = format!(
+                        "{diagnostic}; {} live processes observed, {} in this Desktop tree, shim running in this Desktop tree: {shim_running}, node running in this Desktop tree: {node_running}",
+                        snapshots.len(),
+                        tree.len()
+                    );
+                }
+                None => {
+                    diagnostic = format!(
+                        "{diagnostic}; {} live processes observed, original Desktop instance is not visible",
+                        snapshots.len()
+                    );
+                }
+            },
+            Err(error) => {
+                diagnostic = format!("{diagnostic}; live process enumeration failed: {error}");
             }
-            None => {
-                diagnostic = format!(
-                    "{diagnostic}; {} live processes observed, original Desktop instance is not visible",
-                    snapshots.len()
-                );
-            }
-        },
-        Err(error) => {
-            diagnostic = format!("{diagnostic}; live process enumeration failed: {error}");
         }
     }
     if let Some(error) = last_error {
@@ -274,6 +433,7 @@ fn snapshots_in_desktop_tree<'a>(
     Some(tree)
 }
 
+#[cfg(target_os = "windows")]
 pub(super) fn publish_runtime_descriptor(
     descriptor_path: &Path,
     control: &RuntimeControl,
@@ -289,30 +449,19 @@ pub(super) fn publish_runtime_descriptor(
     )?)
 }
 
-fn connect_controlled_instance(descriptor: &RuntimeDescriptor) -> std::io::Result<TcpStream> {
-    TcpStream::connect_timeout(
-        &format!("127.0.0.1:{}", descriptor.control_port)
-            .parse()
-            .expect("valid loopback socket address"),
-        Duration::from_secs(2),
-    )
-}
-
-fn send_controlled_attachment(
-    stream: TcpStream,
-    descriptor: &RuntimeDescriptor,
-) -> Result<bool, Box<dyn Error>> {
-    send_controlled_attachment_with_timeout(stream, descriptor, Duration::from_secs(10))
-}
-
 fn send_controlled_attachment_with_timeout(
     mut stream: TcpStream,
     descriptor: &RuntimeDescriptor,
     read_timeout: Duration,
 ) -> Result<bool, Box<dyn Error>> {
-    stream.set_read_timeout(Some(read_timeout))?;
-    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+    let started = Instant::now();
+    stream.set_write_timeout(Some(read_timeout.min(Duration::from_secs(2))))?;
     writeln!(stream, "ATTACH {}", descriptor.nonce)?;
+    let remaining = read_timeout.saturating_sub(started.elapsed());
+    if remaining.is_zero() {
+        return Ok(false);
+    }
+    stream.set_read_timeout(Some(remaining))?;
     let mut response = String::new();
     match BufReader::new(stream).read_line(&mut response) {
         Ok(_) => {}
@@ -343,14 +492,28 @@ fn send_controlled_attachment_with_timeout(
     }
 }
 
-pub(super) fn try_activate_controlled_instance(
+fn try_activate_until(
     descriptor: &RuntimeDescriptor,
+    deadline: Instant,
 ) -> Result<bool, Box<dyn Error>> {
-    let stream = match connect_controlled_instance(descriptor) {
-        Ok(stream) => stream,
-        Err(_) => return Ok(false),
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Ok(false);
+    }
+    let address = std::net::SocketAddr::from(([127, 0, 0, 1], descriptor.control_port));
+    let Ok(stream) = TcpStream::connect_timeout(&address, remaining.min(Duration::from_secs(2)))
+    else {
+        return Ok(false);
     };
-    send_controlled_attachment(stream, descriptor)
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Ok(false);
+    }
+    send_controlled_attachment_with_timeout(
+        stream,
+        descriptor,
+        remaining.min(Duration::from_secs(10)),
+    )
 }
 
 #[cfg(target_os = "windows")]
@@ -377,11 +540,6 @@ pub(super) fn stop_stale_launcher(descriptor: &RuntimeDescriptor) -> Result<(), 
     Ok(())
 }
 
-#[cfg(not(target_os = "windows"))]
-pub(super) fn stop_stale_launcher(_descriptor: &RuntimeDescriptor) -> Result<(), Box<dyn Error>> {
-    Ok(())
-}
-
 /// A recorded launcher PID may since have been reused by an unrelated process.
 /// Only an inspected executable matching this launcher proves ownership; a PID
 /// the current user cannot inspect (for example a reused SYSTEM service PID)
@@ -394,6 +552,7 @@ fn recorded_launcher_is_current<E>(inspected: Result<PathBuf, E>, expected: &Pat
         .is_some_and(|path| path == expected)
 }
 
+#[cfg(not(unix))]
 pub(super) fn managed_processes(
     data: &Path,
 ) -> Result<
@@ -403,27 +562,72 @@ pub(super) fn managed_processes(
     )>,
     Box<dyn Error>,
 > {
-    let Some(descriptor) = read_descriptor(&default_descriptor_path()?)? else {
+    managed_processes_at(&default_descriptor_path()?, data)
+}
+
+#[cfg(not(unix))]
+pub(super) fn managed_processes_at(
+    descriptor_path: &Path,
+    data: &Path,
+) -> Result<
+    Option<(
+        codexhost_platform::ProcessSnapshot,
+        codexhost_platform::ProcessSnapshot,
+    )>,
+    Box<dyn Error>,
+> {
+    let Some(descriptor) = read_descriptor(descriptor_path)? else {
         return Ok(None);
     };
     if !endpoint_ready(descriptor.control_port, Duration::from_millis(300)) {
         return Ok(None);
     }
-    let document: serde_json::Value = serde_json::from_slice(&std::fs::read(
-        data.join("diagnostics/desktop-controller-v1.json"),
-    )?)?;
-    let pid = document["pid"]
-        .as_u64()
-        .and_then(|pid| u32::try_from(pid).ok())
-        .ok_or("Invalid Desktop Controller pid")?;
+    let Some(controller) = recorded_controller(data)? else {
+        return Ok(None);
+    };
     let launcher = codexhost_platform::process_snapshot(descriptor.launcher_pid)?;
-    let controller = codexhost_platform::process_snapshot(pid)?;
-    if controller.parent_id != launcher.id {
+    if controller.parent_id != launcher.id
+        || controller.started_at_micros < launcher.started_at_micros
+    {
         return Err("Desktop Controller does not belong to the recorded Launcher".into());
     }
     Ok(Some((launcher, controller)))
 }
 
+pub(super) fn recorded_controller(data: &Path) -> Result<Option<ProcessSnapshot>, Box<dyn Error>> {
+    let bytes = match std::fs::read(data.join("diagnostics/desktop-controller-v1.json")) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let document: serde_json::Value = serde_json::from_slice(&bytes)?;
+    let pid = document["pid"]
+        .as_u64()
+        .and_then(|pid| u32::try_from(pid).ok())
+        .filter(|pid| *pid > 1)
+        .ok_or("Invalid Desktop Controller pid")?;
+    match codexhost_platform::process_snapshot(pid) {
+        Ok(controller) => Ok(Some(controller)),
+        Err(PlatformError::NotFound(_)) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+#[cfg(unix)]
+pub(super) use crate::desktop_lifecycle::{running_for_update, stop_managed};
+
+#[cfg(not(unix))]
+pub(super) fn running_for_update(data: &Path) -> Result<bool, Box<dyn Error>> {
+    let desktop = managed_processes(data)?;
+    if let Some((launcher, _)) = &desktop
+        && launcher.executable.canonicalize()? != env::current_exe()?.canonicalize()?
+    {
+        return Err("The running Desktop belongs to a different installation".into());
+    }
+    Ok(desktop.is_some())
+}
+
+#[cfg(not(unix))]
 pub(super) fn stop_managed(data: &Path) -> Result<bool, Box<dyn Error>> {
     let Some((launcher, controller)) = managed_processes(data)? else {
         return Ok(false);
@@ -436,7 +640,7 @@ pub(super) fn stop_managed(data: &Path) -> Result<bool, Box<dyn Error>> {
 // The Launcher exits only after its Controller does. A Controller that keeps waiting on an
 // unresponsive Renderer after SIGTERM is forced, so the Launcher can release Desktop ownership
 // instead of failing the update and blocking the recovery Launcher.
-fn stop_controller(
+pub(super) fn stop_controller(
     launcher: &ProcessSnapshot,
     controller: &ProcessSnapshot,
     timeout: Duration,
@@ -457,48 +661,6 @@ mod tests {
     fn descriptor(port: u16) -> RuntimeDescriptor {
         RuntimeDescriptor::new(10, port, "0123456789abcdef0123456789abcdef".into())
             .expect("runtime descriptor")
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    #[test]
-    fn stop_controller_forces_a_controller_that_ignores_sigterm() {
-        use codexhost_platform::process_snapshot;
-        use std::process::{Command, Stdio};
-
-        // The fixture Launcher exits once its Controller child does, like the real Launcher. The
-        // Controller reports its PID only after installing the SIGTERM trap.
-        let mut command = Command::new("/bin/bash");
-        command
-            .args([
-                "-c",
-                "/bin/bash -c 'trap \"\" TERM; echo $$; while :; do sleep 0.05; done' & wait $!",
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        let mut launcher_child = command.spawn().unwrap();
-        let mut line = String::new();
-        BufReader::new(launcher_child.stdout.take().unwrap())
-            .read_line(&mut line)
-            .unwrap();
-        let controller = process_snapshot(line.trim().parse().unwrap()).unwrap();
-        let launcher = process_snapshot(launcher_child.id()).unwrap();
-        let reaper = thread::spawn(move || launcher_child.wait());
-
-        let started = Instant::now();
-        let result = stop_controller(&launcher, &controller, Duration::from_secs(6));
-        let elapsed = started.elapsed();
-        let _ = codexhost_platform::terminate_process_instance(&controller, true);
-        reaper.join().unwrap().unwrap();
-        assert!(
-            result.is_ok(),
-            "stuck Controller blocked shutdown: {result:?}"
-        );
-        // The Controller ignores SIGTERM, so only the 2s escalation can end it.
-        assert!(
-            elapsed >= Duration::from_secs(2) && elapsed < Duration::from_secs(6),
-            "shutdown took {elapsed:?}"
-        );
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -540,7 +702,10 @@ mod tests {
             pi: None,
         };
         // A pair of sibling executables is not a parent -> child runtime chain.
-        let ready = wait_for_host_chain(&snapshot, &options, Duration::from_millis(200)).unwrap();
+        let ready = wait_for_host_chain(&snapshot, &options, Duration::from_millis(200), || {
+            Ok(false)
+        })
+        .unwrap();
         root.force_terminate().unwrap();
         root.wait().unwrap();
         assert!(
@@ -579,7 +744,8 @@ mod tests {
             renderer_extension: sleep,
             pi: None,
         };
-        let ready = wait_for_host_chain(&snapshot, &options, Duration::from_secs(2)).unwrap();
+        let ready =
+            wait_for_host_chain(&snapshot, &options, Duration::from_secs(2), || Ok(false)).unwrap();
         root.force_terminate().unwrap();
         root.wait().unwrap();
         assert!(
@@ -735,6 +901,7 @@ mod tests {
             Path::new("/fixture/shim"),
             &[PathBuf::from("/fixture/node")],
             Duration::from_millis(350),
+            || Ok(false),
             |_| {
                 calls += 1;
                 results(calls)
@@ -773,6 +940,85 @@ mod tests {
         })
         .expect_err("a trailing incomplete round keeps the error");
         assert!(error.to_string().contains("tree not observable"));
+    }
+
+    #[test]
+    fn host_chain_observer_aborts_early_on_desktop_exit_or_persistent_direct_stock_cli() {
+        let desktop = snapshot(10, 1, 100);
+        let shim = Path::new("/fixture/shim");
+        let nodes = [PathBuf::from("/fixture/node")];
+
+        // Exited root must abort immediately without waiting for timeout.
+        let started = Instant::now();
+        let outcome = wait_for_host_chain_with_observer(
+            &desktop,
+            shim,
+            &nodes,
+            Duration::from_secs(5),
+            Duration::from_millis(150),
+            || Ok(false),
+            || {
+                Ok(HostChainObservation {
+                    root_alive: false,
+                    tree_size: 0,
+                    pair_exists: false,
+                    shim_running: false,
+                    node_running: false,
+                    direct_stock_cli_without_shim: false,
+                })
+            },
+        )
+        .unwrap();
+        assert_eq!(outcome, HostChainWaitOutcome::DesktopExited);
+        assert!(started.elapsed() < Duration::from_secs(1));
+
+        // Persistent direct stock CLI without shim aborts once grace elapses.
+        let started = Instant::now();
+        let outcome = wait_for_host_chain_with_observer(
+            &desktop,
+            shim,
+            &nodes,
+            Duration::from_secs(5),
+            Duration::from_millis(150),
+            || Ok(false),
+            || {
+                Ok(HostChainObservation {
+                    root_alive: true,
+                    tree_size: 3,
+                    pair_exists: false,
+                    shim_running: false,
+                    node_running: false,
+                    direct_stock_cli_without_shim: true,
+                })
+            },
+        )
+        .unwrap();
+        assert_eq!(outcome, HostChainWaitOutcome::DirectStockCliWithoutShim);
+        assert!(started.elapsed() < Duration::from_secs(1));
+
+        // A transient direct stock CLI probe followed by a real Host chain becomes Ready.
+        let mut calls = 0_usize;
+        let outcome = wait_for_host_chain_with_observer(
+            &desktop,
+            shim,
+            &nodes,
+            Duration::from_secs(5),
+            Duration::from_secs(2),
+            || Ok(false),
+            || {
+                calls += 1;
+                Ok(HostChainObservation {
+                    root_alive: true,
+                    tree_size: 4,
+                    pair_exists: calls >= 2,
+                    shim_running: calls >= 2,
+                    node_running: calls >= 2,
+                    direct_stock_cli_without_shim: calls == 1,
+                })
+            },
+        )
+        .unwrap();
+        assert_eq!(outcome, HostChainWaitOutcome::Ready);
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -840,20 +1086,36 @@ mod tests {
     }
 
     #[test]
-    fn controlled_attachment_treats_busy_as_transient() {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("attachment listener");
-        let descriptor = descriptor(listener.local_addr().expect("attachment address").port());
-        let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("attachment connection");
-            let mut request = String::new();
-            BufReader::new(stream.try_clone().expect("clone stream"))
-                .read_line(&mut request)
-                .expect("attachment request");
-            writeln!(stream, "busy").expect("attachment response");
-        });
-
-        assert!(!try_activate_controlled_instance(&descriptor).expect("busy Controller"));
-        server.join().expect("attachment server");
+    fn controlled_attachment_checks_nonce_and_treats_busy_eof_or_absence_as_transient() {
+        for (reply, expected) in [
+            (Some("ready\n"), true),
+            (Some("busy\n"), false),
+            (Some(""), false),
+            (None, false),
+        ] {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let descriptor = descriptor(listener.local_addr().unwrap().port());
+            let nonce = descriptor.nonce.clone();
+            let server = if let Some(reply) = reply {
+                Some(thread::spawn(move || {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    let mut request = String::new();
+                    BufReader::new(&stream).read_line(&mut request).unwrap();
+                    assert_eq!(request, format!("ATTACH {nonce}\n"));
+                    stream.write_all(reply.as_bytes()).unwrap();
+                }))
+            } else {
+                drop(listener);
+                None
+            };
+            assert_eq!(
+                try_activate_until(&descriptor, Instant::now() + Duration::from_secs(2)).unwrap(),
+                expected
+            );
+            if let Some(server) = server {
+                server.join().unwrap();
+            }
+        }
     }
 
     #[test]
@@ -869,7 +1131,8 @@ mod tests {
             thread::sleep(Duration::from_millis(100));
             drop(stream);
         });
-        let stream = connect_controlled_instance(&descriptor).expect("Controller connection");
+        let stream = TcpStream::connect(("127.0.0.1", descriptor.control_port))
+            .expect("Controller connection");
 
         assert!(
             !send_controlled_attachment_with_timeout(

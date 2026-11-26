@@ -65,6 +65,23 @@
   backdrop-filter: blur(12px);
 }
 
+/* Top-level rows away from the viewport drop the blur; see near-viewport.ts. */
+:global(
+    body[data-codexhost-wallpaper]
+      [data-chat-flow-key]:not([data-chat-flow-key] *, [data-chat-near-viewport])
+  )
+  .bubble {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+/* Keep the blurred bubble in a stable layer on iOS WebKit. */
+@supports (-webkit-touch-callout: none) {
+  :global(body[data-codexhost-wallpaper]) .userRow {
+    transform: translateZ(0);
+  }
+}
+
 .referenceSummary {
   color: var(--dsw-alias-label-tertiary);
   font-size: var(--dsh-content-font-size-secondary, 13px);
@@ -124,6 +141,16 @@
   backdrop-filter: blur(12px);
 }
 
+:global(
+    body[data-codexhost-wallpaper]
+      [data-chat-flow-key]:not([data-chat-flow-key] *, [data-chat-near-viewport])
+  )
+  .compactionRow:has(.compactionBody)
+  .compactionButton {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
 /* A fenced code block in the summary pins its banner at the scrollport top,
    where this pinned toggle already sits, and the toggle's band covers the
    banner's Copy control. Stop the banner below the toggle instead, on the same
@@ -134,22 +161,29 @@
   top: var(--dsh-compaction-header-height);
 }
 
-/* Pinned, the toggle needs an opaque hover fill: the default translucent hover
-   token below would let the scrolling prose show through the moment the pointer
-   lands on the toggle to collapse it. */
-.compactionRow:has(.compactionBody) .compactionButton:hover {
-  background: var(--dsw-alias-interactive-bg-hover-solid);
+@media (hover: hover) {
+  /* Pinned, the toggle needs an opaque hover fill: the default translucent hover
+     token below would let the scrolling prose show through the moment the pointer
+     lands on the toggle to collapse it. */
+  .compactionRow:has(.compactionBody) .compactionButton:hover {
+    background: var(--dsw-alias-interactive-bg-hover-solid);
+  }
+
+  .compactionButton:hover {
+    color: var(--dsw-alias-label-secondary);
+  }
+
+  .compactionButton:not(:disabled):hover {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
 }
 
 .compactionButton:not(:disabled) {
   cursor: pointer;
 }
 
-.compactionButton:hover {
+.compactionButton:not(:disabled):active {
   color: var(--dsw-alias-label-secondary);
-}
-
-.compactionButton:not(:disabled):hover {
   background: var(--dsw-alias-interactive-bg-hover);
 }
 

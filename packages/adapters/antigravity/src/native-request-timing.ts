@@ -5,7 +5,13 @@ import { decodeVarint, readProtoFields, type ProtoField } from "./native-protobu
 
 export interface AntigravityRequestMetadata {
   reasoningOutputTokens: number;
-  timing?: { startedAtMs: number; completedAtMs: number };
+  contextWindowTokens?: number;
+  timing?: {
+    requestStartedAtMs: number;
+    timeToFirstOutputMs: number;
+    startedAtMs: number;
+    completedAtMs: number;
+  };
 }
 
 const MAX_METADATA_BYTES = 8 * 1024 * 1024;
@@ -36,7 +42,13 @@ function nanoseconds(fields: ProtoField[] | null): bigint | null {
   const result = seconds * 1_000_000_000n + nanos;
   return result / NANOSECONDS_PER_MS <= MAX_MS ? result : null;
 }
-function stepIndices(fields: ProtoField[]): number[] | null {
+export function nativeStepCreatedAtMs(blob: unknown): number | undefined {
+  const fields = blob instanceof Uint8Array && readProtoFields(blob);
+  const timestamp = fields ? nanoseconds(message(fields, 1)) : null;
+  return timestamp === null ? undefined : Number(timestamp / NANOSECONDS_PER_MS);
+}
+
+export function generatorStepIndices(fields: ProtoField[]): number[] | null {
   const result: number[] = [];
   for (const item of fields.filter((candidate) => candidate.number === 2)) {
     if (item.wire === 0 && typeof item.value === "bigint") {
@@ -77,10 +89,20 @@ function closeTo(left: bigint, right: bigint): boolean {
   return difference >= -NANOSECONDS_PER_MS && difference <= NANOSECONDS_PER_MS;
 }
 
+function contextWindowTokens(chat: ProtoField[]): number | undefined {
+  const start = message(chat, 9);
+  const context = start && message(start, 10);
+  const maxTokens = context && unsigned(context, 4);
+  return maxTokens !== null && maxTokens > 0n && maxTokens <= BigInt(Number.MAX_SAFE_INTEGER)
+    ? Number(maxTokens)
+    : undefined;
+}
+
 /**
- * agy 1.5.9: CortexStepMetadata 1/6/7 are created/viewable/finished timestamps;
+ * agy 1.5.9+: CortexStepMetadata 1/6/7 are created/viewable/finished timestamps;
  * CortexStepGeneratorMetadata 2 names its steps and 1 contains ChatModelMetadata.
- * ChatModelMetadata 11/12 are TTFT/streaming durations; 4 is ModelUsageStats.
+ * ChatModelMetadata 4 is ModelUsageStats, 9 is ChatStartMetadata (10 is ContextWindowMetadata,
+ * 4 is max_context_tokens), and 11/12 are TTFT/streaming durations.
  * ModelUsageStats 9 is thinking_output_tokens (proto3 uint64).
  * viewable_at is the first visible output, not when hidden thinking began; callers time only
  * the non-thinking Tokens over viewable_at through finished_generating_at.
@@ -103,7 +125,11 @@ function requestMetadata(
     return null;
   const thought = unsigned(stepUsage, 9);
   if (thought === null || thought !== unsigned(chatUsage, 9)) return null;
-  const facts: AntigravityRequestMetadata = { reasoningOutputTokens: Number(thought) };
+  const maxContextTokens = contextWindowTokens(chat);
+  const facts: AntigravityRequestMetadata = {
+    reasoningOutputTokens: Number(thought),
+    ...(maxContextTokens !== undefined ? { contextWindowTokens: maxContextTokens } : {}),
+  };
   // Multiple attempts cannot share one trustworthy generation interval.
   if (unsigned(chat, 14) !== 0n || chat.filter((value) => value.number === 17).length > 1)
     return facts;
@@ -125,11 +151,14 @@ function requestMetadata(
     !closeTo(completed - started, streamed)
   )
     return facts;
-  const startedAtMs = Number(started / NANOSECONDS_PER_MS);
-  const completedAtMs = Number(completed / NANOSECONDS_PER_MS);
   return {
     ...facts,
-    ...(completedAtMs > startedAtMs ? { timing: { startedAtMs, completedAtMs } } : {}),
+    timing: {
+      requestStartedAtMs: Number(created / NANOSECONDS_PER_MS),
+      timeToFirstOutputMs: Number(ttft / NANOSECONDS_PER_MS),
+      startedAtMs: Number(started / NANOSECONDS_PER_MS),
+      completedAtMs: Number(completed / NANOSECONDS_PER_MS),
+    },
   };
 }
 
@@ -184,7 +213,7 @@ export async function readAntigravityRequestMetadata(
       const generated = generatorQuery.get(Number(generatorIndex));
       if (!(generated?.data instanceof Uint8Array)) continue;
       const fields = readProtoFields(generated.data);
-      const indices = fields && stepIndices(fields);
+      const indices = fields && generatorStepIndices(fields);
       if (!fields || !indices) continue;
       const plannerSteps = [...new Set(indices.filter((step) => requests.get(step)))];
       if (plannerSteps.length !== 1 || plannerSteps[0] !== index) continue;

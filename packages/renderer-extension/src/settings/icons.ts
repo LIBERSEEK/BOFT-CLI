@@ -56,6 +56,7 @@ import Users from "lucide/dist/esm/icons/users.mjs";
 import X from "lucide/dist/esm/icons/x.mjs";
 import codexhostBrandIconUrl from "../assets/codexhost-brand-icon.png";
 import Upload from "lucide/dist/esm/icons/upload.mjs";
+import Workflow from "lucide/dist/esm/icons/workflow.mjs";
 import Zap from "lucide/dist/esm/icons/zap.mjs";
 
 export const RENDERER_SETTINGS_ICON_NAMES = [
@@ -66,6 +67,7 @@ export const RENDERER_SETTINGS_ICON_NAMES = [
   "language",
   "connections",
   "plugins",
+  "delegation",
   "extensions",
   "accounts",
   "session-import",
@@ -140,6 +142,7 @@ const iconNodes = {
   language: Languages,
   connections: PlugZap,
   plugins: Puzzle,
+  delegation: Workflow,
   extensions: Puzzle,
   accounts: Users,
   "session-import": FolderInput,

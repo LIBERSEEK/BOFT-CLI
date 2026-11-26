@@ -1,9 +1,15 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import type * as FsPromises from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { harnessPreferencePatchSchema } from "@codexhost/shared-contracts";
 import { HarnessPreferencesStore } from "../src/preferences.js";
+
+vi.mock("node:fs/promises", async (original) => {
+  const actual = await original<typeof FsPromises>();
+  return { ...actual, rename: vi.fn(actual.rename) };
+});
 
 describe("shared Harness preferences", () => {
   it("merges granular writes, migrates only missing values, and survives restart", async () => {
@@ -52,6 +58,35 @@ describe("shared Harness preferences", () => {
       await rm(directory, { recursive: true, force: true });
     }
   });
+
+  it("retries a Windows rename blocked by a reader and publishes the saved revision", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "harness-preferences-"));
+    const store = new HarnessPreferencesStore(directory);
+    const platform = process.platform;
+    const previous = JSON.stringify({ version: 1, revision: 7, scopes: {} });
+    try {
+      await writeFile(store.file, previous);
+      Object.defineProperty(process, "platform", { value: "win32" });
+      vi.mocked(rename).mockImplementationOnce(async () => {
+        expect(await readFile(store.file, "utf8")).toBe(previous);
+        throw Object.assign(new Error("Windows sharing violation"), { code: "EPERM" });
+      });
+
+      const updated = await store.patch(
+        harnessPreferencePatchSchema.parse({
+          expectedRevision: 7,
+          operations: [{ kind: "favorite", harnessId: "pi", modelId: "model", enabled: true }],
+        }),
+      );
+      expect(updated).toMatchObject({ revision: 8, values: { favorites: { pi: ["model"] } } });
+      expect(await store.get()).toEqual(updated);
+      expect(await readdir(directory)).toEqual(["harness-preferences-v1.json"]);
+    } finally {
+      Object.defineProperty(process, "platform", { value: platform });
+      await store.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
   it("accepts official Codex preferences in the shared external scope but rejects retired scopes", async () => {
     const directory = await mkdtemp(join(tmpdir(), "harness-pref-scopes-"));
     const store = new HarnessPreferencesStore(directory);
@@ -70,6 +105,84 @@ describe("shared Harness preferences", () => {
       await rm(directory, { recursive: true, force: true });
     }
   });
+  it("stores, replaces and clears delegation defaults independently of new Thread defaults", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "harness-preferences-"));
+    const store = new HarnessPreferencesStore(directory);
+    const patch = (operations: unknown[], initializeOnly = false) =>
+      store.patch(harnessPreferencePatchSchema.parse({ operations, initializeOnly }));
+    const delegation = (harnessId: string, configuration: unknown) => ({
+      kind: "delegation",
+      harnessId,
+      configuration,
+    });
+    try {
+      expect(await patch([delegation("codex", null)])).toMatchObject({ revision: 0 });
+      const normal = await patch([
+        {
+          kind: "newThread",
+          lastHarness: "codex",
+          harnessId: "codex",
+          configuration: { model: { id: "normal" } },
+        },
+      ]);
+      const codex = { model: { id: "delegated" }, thinkingOptionId: "high" };
+      const external = { thinkingOptionId: "low" };
+      const written = await patch([
+        delegation("codex", codex),
+        delegation("local-agent", external),
+      ]);
+      expect(written.revision).toBe(normal.revision + 1);
+      expect(written.values.delegation?.byHarness).toEqual({ codex, "local-agent": external });
+
+      const replacement = { model: { id: "replacement" } };
+      const replaced = await patch([delegation("codex", replacement)]);
+      expect(replaced.revision).toBe(written.revision + 1);
+      expect(replaced.values.delegation?.byHarness).toEqual({
+        codex: replacement,
+        "local-agent": external,
+      });
+      expect(await patch([delegation("codex", replacement)])).toEqual(replaced);
+
+      const initialized = await patch(
+        [delegation("codex", codex), delegation("local-agent", null), delegation("pi", external)],
+        true,
+      );
+      expect(initialized.values.delegation?.byHarness).toEqual({
+        codex: replacement,
+        "local-agent": external,
+        pi: external,
+      });
+      const cleared = await patch([delegation("codex", null)]);
+      expect(cleared.revision).toBe(initialized.revision + 1);
+      expect(cleared.values.delegation?.byHarness).toEqual({
+        "local-agent": external,
+        pi: external,
+      });
+      expect(cleared.values.newThread).toEqual(normal.values.newThread);
+      expect(await patch([delegation("codex", null)])).toEqual(cleared);
+      const reopened = new HarnessPreferencesStore(directory);
+      try {
+        expect(await reopened.get()).toEqual(cleared);
+      } finally {
+        await reopened.close();
+      }
+    } finally {
+      await store.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each([undefined, {}, { model: { id: "m" }, permissionModeId: "default" }])(
+    "rejects an incomplete or non-delegation configuration: %j",
+    (configuration) => {
+      expect(
+        harnessPreferencePatchSchema.safeParse({
+          operations: [{ kind: "delegation", harnessId: "codex", configuration }],
+        }).success,
+      ).toBe(false);
+    },
+  );
+
   it("reads external preferences beside retired scopes and keeps those scopes on write", async () => {
     const directory = await mkdtemp(join(tmpdir(), "harness-preferences-"));
     const store = new HarnessPreferencesStore(directory);

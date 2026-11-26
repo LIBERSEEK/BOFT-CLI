@@ -5,7 +5,7 @@ codexhost 对外部 Harness Thread 保留一个「调整方向」操作，按当
 - **原生同轮插入**：Session 此刻声明 `capabilities.steer` 时，Host 发送公共命令 `turn.steer`，由 Adapter 调用 Harness 自己的插入原语，在原生安全边界把输入送入**当前 Turn**，不取消、不另起 Turn。
 - **停止后重发（退路）**：其余情况下，Host **取消当前 Turn，等待它终结，再自动执行本次新输入**。写入前不能并入当前 Turn 或 Harness 明确未接纳时走这条路径；写入后交付结果不确定则报错，不自动重发。
 
-用户继续使用 Codex Desktop 原有按钮、跟进处理方式设置和单条消息反向操作，不需要手动停止后重发。官方 Codex Thread 仍透传原生 `turn/steer`，不改变同轮追加输入的语义。Claude Code、Pi 和 OMP 按各自原生执行窗口动态声明 `capabilities.steer`；具体条件见 [Claude](../harnesses/claude-code/claude-code-steer.md)、[Pi](../harnesses/pi/pi-steer.md)、[OMP](../harnesses/omp/omp-steer.md)。其余 Adapter 对 `turn.steer` 返回 `unsupported`，保持停止后重发。
+用户继续使用 Codex Desktop 原有按钮、跟进处理方式设置和单条消息反向操作，不需要手动停止后重发。官方 Codex Thread 仍透传原生 `turn/steer`，不改变同轮追加输入的语义。Claude Code、Pi、OMP 和 Antigravity 按各自原生执行窗口动态声明 `capabilities.steer`；具体条件见 [Claude](../harnesses/claude-code/claude-code-steer.md)、[Pi](../harnesses/pi/pi-steer.md)、[OMP](../harnesses/omp/omp-steer.md) 与 [能力边界（Antigravity）](../harnesses/capability-boundaries.md#antigravity-acp-审批派生压缩与空闲唤醒)。其余 Adapter 对 `turn.steer` 返回 `unsupported`，保持停止后重发。
 
 ## 原生同轮插入
 
@@ -17,6 +17,7 @@ codexhost 对外部 Harness Thread 保留一个「调整方向」操作，按当
   1. `turn/steer` 带有 `codexhostSteerDelivery`（Renderer 已经按该方式展示）时照它执行：`newTurn` 停止后重发；`activeTurn` 原生插入，Harness 没收下时报错、不改走退路，避免和 Desktop 已有的展示不一致。
   2. 输入是 Harness 命令（Session 提供命令、文本以 `/命令` 开头）时停止后重发，命令照常解析和执行。
   3. 其余情况读取实时的 `capabilities.steer`：为 `true` 时原生插入，Harness 没收下就改走停止后重发；如果当前 Turn 在此期间已经结束，直接把输入作为下一个 Turn 启动。
+- 本机和远程 Web 插话要求所属 Host 在外部 Thread 的头部返回 `codexhostSupportsStrictSteer: true`。本机 Web 通过 Client Channel 写入，远程 Web 经 Desktop Controller 写入，两者都发送 `expectedTurnId` 和 `codexhostSteerStrictTarget: true`。目标自然结束或发生切换时，Host 拒绝迟到的输入。只有目标仍有效时，Host 才能选择原生同轮插入或取消目标后开始替换 Turn。缺少能力声明时保留草稿。
 - 原生调用抛错表示交付结果不确定，不触发停止后重发。Host 保留有界的失败回执，防止同一消息身份被自动重试；若输入来自队列，恢复原位置并禁止 Host 自动推进它，包括后续其他 Turn 完成之后。输入钩子的副作用不能假定已撤销；用户应检查影响后再决定手动发送或删除，见[队列执行语义](external-thread-queue.md#执行语义)。
 - `turn/steer` 回执包含 `turnId` 和 `delivery`：`activeTurn` 表示送入当前 Turn，`newTurn` 表示停止旧 Turn 后开始了新 Turn。
 - `codexhost/thread/steering/inspect { threadId, text? }` 按同样的规则（第 2、3 步）预先给出送达方式；读取失败返回 `-32081`。

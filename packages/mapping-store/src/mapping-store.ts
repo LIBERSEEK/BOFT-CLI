@@ -23,8 +23,14 @@ import type {
   HostThreadId,
   HostTurnId,
   NativeSessionRef,
+  ThreadHandoffMetadata,
 } from "@codexhost/shared-contracts";
 
+import {
+  hasDisplacedAntigravityTurn,
+  planAntigravityTurnRepair,
+  type SnapshotTurnIdentity,
+} from "./antigravity-turn-repair.js";
 import {
   MAX_PENDING_INJECTED_TEXTS,
   THREAD_METADATA_FIELDS,
@@ -52,6 +58,7 @@ import {
   writeSectionPlacementsFile,
   type StoredSectionPlacementV1,
 } from "./section-placements.js";
+import { readThreadHandoffsFile, writeThreadHandoffsFile } from "./thread-handoffs.js";
 import {
   readSupersededSessionsFile,
   writeSupersededSessionsFile,
@@ -126,6 +133,27 @@ function sameTurns(left: StoredTurnMappingV1[], right: StoredTurnMappingV1[]): b
       );
     })
   );
+}
+
+function failuresBeforeRollback(
+  record: StoredThreadRecordV1,
+  retained: StoredTurnMappingV1[],
+): StoredThreadRecordV1["failedTurns"] {
+  if (!record.failedTurns) return;
+  const undone = new Set(
+    record.turnMappings.slice(retained.length).map(({ hostTurnId }) => hostTurnId),
+  );
+  const kept = record.failedTurns
+    .filter(
+      ({ hostTurnId, afterTurnId }) =>
+        !undone.has(hostTurnId) && (afterTurnId === undefined || !undone.has(afterTurnId)),
+    )
+    .map((failure) => ({
+      ...failure,
+      nativeTurnRef: retained.find(({ hostTurnId }) => hostTurnId === failure.hostTurnId)
+        ?.nativeTurnRef,
+    }));
+  return kept.length ? kept : undefined;
 }
 
 /** Records must not persist credentials, such as a token embedded in a Git remote URL. */
@@ -249,6 +277,7 @@ async function exists(file: string): Promise<boolean> {
 export class MappingStore {
   readonly #backupsDirectory: string;
   readonly #delegationsDirectory: string;
+  readonly #handoffsDirectory: string;
   readonly #beforeReplace: MappingStoreOptions["beforeReplace"];
   readonly #directory: string;
   readonly #instanceId: string;
@@ -267,6 +296,7 @@ export class MappingStore {
   readonly #hostTurns = new Map<HostTurnId, HostThreadId>();
   readonly #nativeTurns = new Map<string, HostTurnId>();
   #sectionPlacements: StoredSectionPlacementV1[] = [];
+  #threadHandoffs = new Map<HostThreadId, ThreadHandoffMetadata>();
   #supersededSessions: StoredSupersededSessionV1[] = [];
   // ponytail: A Store-wide queue caps write concurrency at one; shard only if measured throughput requires it.
   #writeTail: Promise<void> = Promise.resolve();
@@ -276,6 +306,7 @@ export class MappingStore {
     this.#directory = path.resolve(options.directory);
     this.#threadsDirectory = path.join(this.#directory, "threads");
     this.#delegationsDirectory = path.join(this.#directory, "delegations");
+    this.#handoffsDirectory = path.join(this.#directory, "handoffs");
     this.#backupsDirectory = path.join(this.#directory, "backups");
     this.#quarantineDirectory = path.join(this.#directory, "quarantine");
     this.#sectionsDirectory = path.join(this.#directory, "sections");
@@ -291,6 +322,7 @@ export class MappingStore {
     await Promise.all([
       mkdir(this.#threadsDirectory, { recursive: true }),
       mkdir(this.#delegationsDirectory, { recursive: true }),
+      mkdir(this.#handoffsDirectory, { recursive: true }),
       mkdir(this.#backupsDirectory, { recursive: true }),
       mkdir(this.#quarantineDirectory, { recursive: true }),
       mkdir(this.#sectionsDirectory, { recursive: true }),
@@ -343,7 +375,13 @@ export class MappingStore {
             continue;
           }
         }
-        if (record.state === "creating" && !record.nativeSessionRef && !record.importSourceRef) {
+        const hasPendingInjection = (record.pendingInjectedText?.length ?? 0) > 0;
+        if (
+          record.state === "creating" &&
+          !record.nativeSessionRef &&
+          !record.importSourceRef &&
+          !hasPendingInjection
+        ) {
           await rm(primary, { force: true });
           await rm(backup, { force: true });
           await rm(this.#metadataPath(record.hostThreadId), { force: true });
@@ -406,6 +444,19 @@ export class MappingStore {
         this.#sectionPlacements = [];
       }
       try {
+        this.#threadHandoffs = await readThreadHandoffsFile(this.#threadHandoffsPath);
+      } catch {
+        // Handoff provenance is presentation metadata; losing it must not block Thread access.
+        await rename(
+          this.#threadHandoffsPath,
+          path.join(
+            this.#quarantineDirectory,
+            `thread-handoffs.json.${this.#now().getTime()}.invalid`,
+          ),
+        ).catch(() => undefined);
+        this.#threadHandoffs = new Map();
+      }
+      try {
         this.#supersededSessions = await readSupersededSessionsFile(this.#supersededSessionsPath);
       } catch {
         // Only import suggestions depend on this; losing it must not block Thread access.
@@ -425,6 +476,7 @@ export class MappingStore {
       this.#records.clear();
       this.#delegations.clear();
       this.#sectionPlacements = [];
+      this.#threadHandoffs.clear();
       this.#supersededSessions = [];
       this.#rebuildIndexes();
       await this.close().catch(() => undefined);
@@ -599,6 +651,7 @@ export class MappingStore {
         transportModelId: input.transportModelId,
         ephemeral: input.ephemeral,
         historyMode: input.historyMode,
+        ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
         ...(input.projectlessWorkspace ? { projectlessWorkspace: input.projectlessWorkspace } : {}),
         ...(input.forkSource ? { forkSource: input.forkSource } : {}),
         ...(input.attachedToThreadId ? { attachedToThreadId: input.attachedToThreadId } : {}),
@@ -704,6 +757,7 @@ export class MappingStore {
         nativeSessionRef: input.nativeSessionRef,
         turnMappings: input.turnMappings,
         forkSource: input.forkSource,
+        failedTurns: failuresBeforeRollback(current, input.turnMappings),
       };
     });
   }
@@ -739,6 +793,7 @@ export class MappingStore {
         ...current,
         nativeSessionRef: input.nativeSessionRef,
         turnMappings: input.turnMappings,
+        failedTurns: failuresBeforeRollback(current, input.turnMappings),
       };
     });
   }
@@ -806,6 +861,57 @@ export class MappingStore {
     }));
   }
 
+  async saveFailedTurn(
+    hostThreadId: HostThreadId,
+    failure: NonNullable<StoredThreadRecordV1["failedTurns"]>[number],
+  ): Promise<StoredThreadRecordV1> {
+    return this.#update(hostThreadId, (record) => {
+      const ref = failure.nativeTurnRef;
+      if (
+        ref &&
+        (ref.harnessId !== record.harnessId ||
+          ref.nativeSessionId !== record.nativeSessionRef?.nativeSessionId)
+      ) {
+        throw new MappingStoreError(
+          "MAPPING_CONFLICT",
+          "Failed Turn belongs to another Native Session",
+        );
+      }
+      if (record.failedTurns?.some((turn) => turn.hostTurnId === failure.hostTurnId)) return null;
+      return { ...record, failedTurns: [...(record.failedTurns ?? []), failure] };
+    });
+  }
+
+  /** Rekey only confirmed Antigravity foreground boundaries, without replacing Host identities. */
+  async repairAntigravityTurnMappings(
+    hostThreadId: HostThreadId,
+    expectedRevision: number,
+    snapshot: readonly SnapshotTurnIdentity[],
+  ): Promise<StoredThreadRecordV1> {
+    return this.#update(
+      hostThreadId,
+      (current) => {
+        if (current.revision !== expectedRevision) {
+          throw new MappingStoreError(
+            "MAPPING_CONFLICT",
+            "Antigravity boundary repair source is stale",
+          );
+        }
+        if (!current.turnMappings.some(hasDisplacedAntigravityTurn)) return null;
+        const repaired = planAntigravityTurnRepair(current, snapshot);
+        if (!repaired) {
+          throw new MappingStoreError(
+            "MAPPING_CONFLICT",
+            "Antigravity Turn boundaries cannot be repaired unambiguously",
+          );
+        }
+        return { ...current, turnMappings: repaired };
+      },
+      true,
+      "antigravityBoundaryRepair",
+    );
+  }
+
   async reconcileTurnMappings(
     hostThreadId: HostThreadId,
     mappings: StoredTurnMappingV1[],
@@ -859,8 +965,27 @@ export class MappingStore {
     );
   }
 
-  async setTitle(hostThreadId: HostThreadId, title: string): Promise<StoredThreadRecordV1> {
-    return this.#update(hostThreadId, (current) => ({ ...current, title }));
+  async setTitle(
+    hostThreadId: HostThreadId,
+    title: string,
+    options?: { ifUnnamed?: boolean; source?: "prompt-fallback" | "native" },
+  ): Promise<StoredThreadRecordV1> {
+    return this.#update(
+      hostThreadId,
+      (current) => {
+        if (
+          options?.ifUnnamed &&
+          current.title &&
+          !(options.source === "native" && current.titleIsPromptFallback)
+        )
+          return null;
+        const next = { ...current, title };
+        if (options?.source === "prompt-fallback") next.titleIsPromptFallback = true;
+        else delete next.titleIsPromptFallback;
+        return next;
+      },
+      options?.ifUnnamed === true,
+    );
   }
 
   async setCwd(hostThreadId: HostThreadId, cwd: string): Promise<StoredThreadRecordV1> {
@@ -1023,6 +1148,53 @@ export class MappingStore {
     return result;
   }
 
+  /** Persisted handoff metadata for a target Thread (official Codex or External Harness). */
+  async getThreadHandoff(targetThreadId: HostThreadId): Promise<ThreadHandoffMetadata | null> {
+    this.#requireInitialized();
+    const handoff = this.#threadHandoffs.get(targetThreadId);
+    return handoff ? cloneRecord(handoff) : null;
+  }
+
+  /** Atomically persists handoff metadata for a target Thread without mutating Thread records. */
+  async saveThreadHandoff(
+    targetThreadId: HostThreadId,
+    handoff: ThreadHandoffMetadata,
+  ): Promise<ThreadHandoffMetadata> {
+    this.#requireInitialized();
+    let result: ThreadHandoffMetadata | undefined;
+    await this.#enqueue(async () => {
+      const next = new Map(this.#threadHandoffs);
+      next.set(targetThreadId, cloneRecord(handoff));
+      try {
+        this.#threadHandoffs = await writeThreadHandoffsFile(this.#threadHandoffsPath, next);
+      } catch (error) {
+        throw new MappingStoreError("IO_ERROR", "Thread handoff metadata could not be persisted", {
+          cause: error,
+        });
+      }
+      result = this.#threadHandoffs.get(targetThreadId);
+    });
+    if (!result) throw new MappingStoreError("IO_ERROR", "Thread handoff write produced no result");
+    return cloneRecord(result);
+  }
+
+  /** Removes persisted handoff metadata for a target Thread, if present. */
+  async removeThreadHandoff(targetThreadId: HostThreadId): Promise<void> {
+    this.#requireInitialized();
+    await this.#enqueue(async () => {
+      if (!this.#threadHandoffs.has(targetThreadId)) return;
+      const next = new Map(this.#threadHandoffs);
+      next.delete(targetThreadId);
+      try {
+        this.#threadHandoffs = await writeThreadHandoffsFile(this.#threadHandoffsPath, next);
+      } catch (error) {
+        throw new MappingStoreError("IO_ERROR", "Thread handoff metadata could not be persisted", {
+          cause: error,
+        });
+      }
+    });
+  }
+
   async removeProvisional(hostThreadId: HostThreadId): Promise<void> {
     this.#requireInitialized();
     await this.#enqueue(async () => {
@@ -1093,6 +1265,15 @@ export class MappingStore {
     }
     this.#records.delete(hostThreadId);
     this.#rebuildIndexes();
+    if (this.#threadHandoffs.has(hostThreadId)) {
+      const next = new Map(this.#threadHandoffs);
+      next.delete(hostThreadId);
+      try {
+        this.#threadHandoffs = await writeThreadHandoffsFile(this.#threadHandoffsPath, next);
+      } catch {
+        // Retain the in-memory entry when disk persistence fails so removal can be retried.
+      }
+    }
   }
 
   async close(): Promise<void> {
@@ -1111,6 +1292,7 @@ export class MappingStore {
     change: (current: StoredThreadRecordV1) => StoredThreadRecordV1 | null,
     preserveUpdatedAt:
       boolean | ((current: StoredThreadRecordV1, next: StoredThreadRecordV1) => boolean) = false,
+    mode?: "antigravityBoundaryRepair",
   ): Promise<StoredThreadRecordV1> {
     this.#requireInitialized();
     let result: StoredThreadRecordV1 | null = null;
@@ -1132,7 +1314,7 @@ export class MappingStore {
         revision: current.revision + 1,
         updatedAt: preserve ? current.updatedAt : this.#now().toISOString(),
       }) as StoredThreadRecordV1;
-      this.#validateGlobal(next, hostThreadId);
+      this.#validateGlobal(next, hostThreadId, mode === "antigravityBoundaryRepair");
       await this.#replaceFile(this.#recordPath(hostThreadId), next, true);
       const metadata = threadMetadataOf(next);
       if (!sameJson(threadMetadataOf(current), metadata)) {
@@ -1196,7 +1378,7 @@ export class MappingStore {
   async #writeNew(record: StoredThreadRecordV1): Promise<void> {
     this.#validateGlobal(record, null);
     // Publish placement metadata first. A crash may leave an orphan sidecar
-    // (initialize removes it), never an admitted Thread missing its no-project fact.
+    // (initialize removes it), never an admitted Thread missing its project metadata.
     const metadata = threadMetadataOf(record);
     if (metadata) await this.#writeMetadataFile(record.hostThreadId, metadata);
     try {
@@ -1336,10 +1518,11 @@ export class MappingStore {
   }
 
   async #cleanupResidue(): Promise<void> {
-    const [threadNames, delegationNames, sectionNames, rootNames, metadataNames] =
+    const [threadNames, delegationNames, handoffNames, sectionNames, rootNames, metadataNames] =
       await Promise.all([
         readdir(this.#threadsDirectory),
         readdir(this.#delegationsDirectory),
+        readdir(this.#handoffsDirectory),
         readdir(this.#sectionsDirectory),
         readdir(this.#directory),
         readdir(this.#metadataDirectory),
@@ -1351,6 +1534,9 @@ export class MappingStore {
       ...delegationNames
         .filter((name) => name.includes(".tmp-"))
         .map((name) => rm(path.join(this.#delegationsDirectory, name), { force: true })),
+      ...handoffNames
+        .filter((name) => name.includes(".tmp-"))
+        .map((name) => rm(path.join(this.#handoffsDirectory, name), { force: true })),
       ...sectionNames
         .filter((name) => name.includes(".tmp-"))
         .map((name) => rm(path.join(this.#sectionsDirectory, name), { force: true })),
@@ -1406,7 +1592,11 @@ export class MappingStore {
     }
   }
 
-  #validateGlobal(record: StoredThreadRecordV1, replacing: HostThreadId | null): void {
+  #validateGlobal(
+    record: StoredThreadRecordV1,
+    replacing: HostThreadId | null,
+    allowOwnNativeTurnRekeys = false,
+  ): void {
     const duplicateCreate = this.#createRequests.get(record.createRequestId);
     if (duplicateCreate && duplicateCreate !== replacing) {
       throw new MappingStoreError("DUPLICATE_CREATE_REQUEST", "Create request is already stored");
@@ -1423,7 +1613,11 @@ export class MappingStore {
         throw new MappingStoreError("MAPPING_CONFLICT", "Host Turn is already mapped");
       }
       const duplicateNativeTurn = this.#nativeTurns.get(nativeTurnKey(mapping));
-      if (duplicateNativeTurn && duplicateNativeTurn !== mapping.hostTurnId) {
+      if (
+        duplicateNativeTurn &&
+        duplicateNativeTurn !== mapping.hostTurnId &&
+        !(allowOwnNativeTurnRekeys && this.#hostTurns.get(duplicateNativeTurn) === replacing)
+      ) {
         throw new MappingStoreError("MAPPING_CONFLICT", "Native Turn is already mapped");
       }
     }
@@ -1477,6 +1671,10 @@ export class MappingStore {
 
   get #sectionPlacementsPath(): string {
     return path.join(this.#sectionsDirectory, "placements.json");
+  }
+
+  get #threadHandoffsPath(): string {
+    return path.join(this.#handoffsDirectory, "handoffs.json");
   }
 
   get #supersededSessionsPath(): string {

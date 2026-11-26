@@ -161,6 +161,10 @@ class FakeElement {
     this.#listeners.get(name)?.(event);
   }
 
+  click(): void {
+    if (!this.disabled) this.dispatch("click", new Event("click"));
+  }
+
   focus(): void {
     this.focused = true;
   }
@@ -852,6 +856,9 @@ describe("Harness CLI version panel", () => {
     expect(button("update").disabled).toBe(true);
     updated.resolve({ ...state, currentVersion: "1.1.0", updateAvailable: false });
     await vi.waitFor(() => expect(visibleText(panel)).toContain("Update verified"));
+    expect(visibleText(panel)).toContain(
+      "may still use the old version until that process restarts",
+    );
     expect(button("update").disabled).toBe(true);
     abort.abort();
   });
@@ -1016,6 +1023,135 @@ describe("Harness installation actions", () => {
 });
 
 describe("Renderer Connections page", () => {
+  it.each([
+    { hostId: "local", directoryUnsupported: true, showsGuidance: true },
+    { hostId: "remote-test", directoryUnsupported: true, showsGuidance: false },
+    { hostId: "local", directoryUnsupported: false, showsGuidance: false },
+  ])(
+    "scopes WSL guidance to missing local Harness RPCs (%j)",
+    ({ hostId, directoryUnsupported, showsGuidance }) => {
+      const directoryError = directoryUnsupported
+        ? "codexhost/harness/plugins/list is unsupported on this Host connection"
+        : "Connection timed out";
+      const local = {
+        hostId: "local",
+        active: hostId === "local",
+        agents: [],
+      };
+      const failedHost = {
+        hostId,
+        active: true,
+        directoryError,
+        directoryUnsupported,
+        agents: [],
+      };
+      const diagnostics: RendererConnectionDiagnostics = {
+        snapshot: () => ({
+          adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+          hosts: hostId === "local" ? [failedHost] : [local, failedHost],
+        }),
+        refresh: vi.fn(async () => undefined),
+        subscribe: () => () => undefined,
+      };
+      const store = createAgentGroupPreferenceStore(null);
+      store.setSyncStatus("error");
+      const page = createConnectionsSettingsPage(
+        rendererSettingsMessages("en"),
+        () => diagnostics,
+        store,
+      );
+      const document = new FakeDocument("Win32");
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      const cleanup = page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (op, handlers) => scope.runLatest(op, handlers),
+      });
+      const text = visibleText(content);
+      expect(text).toContain("Renderer adapter");
+      expect(text).toContain(directoryError);
+      if (showsGuidance) {
+        expect(text).toMatch(/if .*Agent environment.*WSL/i);
+        expect(text).toContain("Remote SSH");
+        expect(text).not.toContain("Could not sync Harness order");
+      } else {
+        expect(text).not.toContain("WSL");
+        expect(text).toContain("Could not sync Harness order");
+      }
+      expect(elementWithClass(content, "settings-connection-stderr").textContent).toContain(
+        `retryable: ${!directoryUnsupported}`,
+      );
+      cleanup?.();
+      scope.dispose();
+    },
+  );
+
+  it("keeps the last confirmed Harness order read-only until the local RPCs are available", async () => {
+    let directoryUnsupported = true;
+    let notify: () => void = () => undefined;
+    const diagnostics: RendererConnectionDiagnostics = {
+      snapshot: () => ({
+        adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+        hosts: [
+          { hostId: "local", active: false, agents: [], directoryUnsupported },
+          {
+            hostId: "remote-test",
+            active: true,
+            agents: [
+              { agent: "pi", plugin: pluginDescriptor("pi"), availability: "ready", error: null },
+            ],
+          },
+        ],
+      }),
+      refresh: vi.fn(async () => undefined),
+      subscribe: (listener) => {
+        notify = listener;
+        return () => undefined;
+      },
+    };
+    const store = createAgentGroupPreferenceStore(null);
+    store.replace([{ agent: "pi", section: "more" }]);
+    store.setSyncStatus("error");
+    const write = vi.fn();
+    store.setWriter(write);
+    const page = createConnectionsSettingsPage(
+      rendererSettingsMessages("en"),
+      () => diagnostics,
+      store,
+    );
+    const content = new FakeDocument().createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (op, handlers) => scope.runLatest(op, handlers),
+    });
+    const reset = elementWithClass(content, "settings-connection-group-reset");
+    const toggle = elementWithClass(content, "settings-connection-row__group-toggle");
+    expect(reset.disabled).toBe(true);
+    expect(toggle.disabled).toBe(true);
+    expect(
+      descendants(content).find(({ dataset }) => dataset.connectionItem === "pi")?.dataset
+        .connectionGroupSection,
+    ).toBe("more");
+    expect(visibleText(content)).toContain("Harness order is read-only");
+    expect(visibleText(content)).not.toContain("WSL");
+    reset.click();
+    toggle.click();
+    expect(write).not.toHaveBeenCalled();
+
+    directoryUnsupported = false;
+    notify();
+    await vi.waitFor(() => {
+      expect(reset.disabled).toBe(false);
+      expect(toggle.disabled).toBe(false);
+      expect(visibleText(content)).not.toContain("Harness order is read-only");
+    });
+    cleanup?.();
+    scope.dispose();
+  });
+
   it("starts all eligible updates concurrently on the original Host and isolates failures", async () => {
     const first = deferred<{
       currentVersion: string;
@@ -1121,6 +1257,136 @@ describe("Renderer Connections page", () => {
     if (typeof cleanup === "function") cleanup();
     scope.dispose();
   });
+
+  it.each([
+    { choice: "Skip this update" },
+    { choice: "Escape" },
+    { choice: "Update anyway" },
+    { choice: "Update anyway", newTarget: { version: "3.0.0", choice: "Skip this update" } },
+    { choice: "Update anyway", newTarget: { version: "1.5.0", choice: "Update" } },
+  ])(
+    "requires confirmation for the exact target even if it changes during a batch update: %j",
+    async ({ choice, newTarget }) => {
+      const installation = vi.fn(
+        async (_host: string, agent: string, action: string, confirmedVersion?: string) => {
+          const isDeepSeek = agent === "deepseek-harness";
+          const latestVersion =
+            (isDeepSeek && action === "update" && newTarget?.version) || "2.0.0";
+          const confirmationRequired =
+            isDeepSeek && action === "update" && confirmedVersion !== latestVersion;
+          const updateAvailable = action === "check" || confirmationRequired;
+          return {
+            currentVersion: updateAvailable ? "1.0.0" : latestVersion,
+            latestVersion,
+            canUpdate: true,
+            updateAvailable,
+            ...(confirmationRequired ? { confirmationRequired: true as const } : {}),
+            ...(isDeepSeek && updateAvailable && latestVersion !== "1.5.0"
+              ? { latestVerifiedVersion: "1.5.0" }
+              : {}),
+          };
+        },
+      );
+      const diagnostics: RendererConnectionDiagnostics = {
+        snapshot: () => ({
+          adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+          hosts: [
+            {
+              hostId: "local",
+              active: true,
+              agents: ["pi", "deepseek-harness"].map((agent) => ({
+                agent,
+                availability: "ready" as const,
+                error: null,
+              })),
+            },
+          ],
+        }),
+        installation,
+        refresh: async () => undefined,
+        subscribe: () => () => undefined,
+      };
+      const content = new FakeDocument().createElement("main");
+      const scope = new RendererSettingsPageScope();
+      try {
+        const page = createDefaultRendererSettingsPages(
+          rendererSettingsMessages("en"),
+          () => null,
+          () => diagnostics,
+        ).find(({ id }) => id === "connections");
+        assert(page);
+        page.mount({
+          content: content as unknown as HTMLElement,
+          signal: scope.signal,
+          runLatest: (op, handlers) => scope.runLatest(op, handlers),
+        });
+        const bulk = () => {
+          const button = descendants(content).find(
+            ({ dataset }) => dataset.connectionAction === "update-all",
+          );
+          assert(button);
+          return button;
+        };
+        const updates = () => installation.mock.calls.filter(([, , action]) => action === "update");
+        await vi.waitFor(() => expect(visibleNotesText(bulk())).toContain("Update all (2)"));
+        const deepSeekRow = descendants(content).find(
+          ({ dataset }) => dataset.connectionItem === "deepseek-harness",
+        );
+        assert(deepSeekRow);
+        deepSeekRow.dispatch("click", { target: null });
+        bulk().dispatch("click");
+        const firstDialog = descendants(content).find(({ tagName }) => tagName === "dialog");
+        assert(firstDialog?.open);
+        expect(visibleNotesText(firstDialog)).toContain("2.0.0");
+        expect(visibleNotesText(firstDialog)).toContain("1.5.0");
+        expect(updates()).toEqual([["local", "pi", "update"]]);
+        if (choice === "Escape") {
+          const preventDefault = vi.fn();
+          const stopPropagation = vi.fn();
+          firstDialog.dispatch("keydown", { key: "Escape", preventDefault, stopPropagation });
+          expect(preventDefault).toHaveBeenCalledOnce();
+          expect(stopPropagation).toHaveBeenCalledOnce();
+        } else {
+          const button = descendants(firstDialog).find(({ textContent }) => textContent === choice);
+          assert(button);
+          button.dispatch("click");
+        }
+
+        const expectedUpdates = [["local", "pi", "update"]];
+        if (choice === "Update anyway")
+          expectedUpdates.push(["local", "deepseek-harness", "update", "2.0.0"]);
+        if (newTarget) {
+          const nextDialog = await vi.waitFor(() => {
+            const dialog = descendants(content).find(({ tagName }) => tagName === "dialog");
+            assert(dialog?.open);
+            expect(dialog).not.toBe(firstDialog);
+            expect(visibleNotesText(dialog)).toContain(newTarget.version);
+            expect(visibleNotesText(bulk())).toContain("Updating 1/2");
+            return dialog;
+          });
+          expect(updates()).toEqual(expectedUpdates);
+          expect(visibleText(content)).toContain("Current version: 1.0.0");
+          expect(visibleText(content)).not.toContain("Could not complete");
+          const nextChoice = descendants(nextDialog).find(
+            ({ textContent }) => textContent === newTarget.choice,
+          );
+          assert(nextChoice);
+          nextChoice.dispatch("click");
+          if (newTarget.choice === "Update")
+            expectedUpdates.push(["local", "deepseek-harness", "update", newTarget.version]);
+        }
+        const skipped = (newTarget?.choice ?? choice) === "Skip this update" || choice === "Escape";
+        await vi.waitFor(() =>
+          expect(visibleText(content)).toContain(
+            skipped ? "Updated 1; failed 0. Skipped 1." : "Updated 2; failed 0.",
+          ),
+        );
+        expect(updates()).toEqual(expectedUpdates);
+      } finally {
+        scope.dispose();
+      }
+    },
+  );
 
   it("reuses a single update in a concurrent batch and stops notifying after the page closes", async () => {
     const document = new FakeDocument();
@@ -2201,7 +2467,7 @@ describe("Renderer Connections page", () => {
     refresh.dispatch("click");
     expect(refresh.disabled).toBe(true);
     expect(visibleNotesText(refresh)).toContain("正在扫描...");
-    expect(diagnostics.refresh).toHaveBeenCalledWith();
+    expect(diagnostics.refresh).toHaveBeenCalledWith(undefined, "retry");
     refreshRequest.resolve(undefined);
     await vi.waitFor(() => expect(refresh.disabled).toBe(false));
     expect(visibleNotesText(refresh)).toContain("扫描环境");
@@ -2996,6 +3262,7 @@ describe("Agents page diagnostics and updates", () => {
     await vi.waitFor(() => expect(visibleText(ompRow)).toContain("正常"));
     expect(visibleText(versionPanel)).toContain("当前版本: 0.85.2");
     expect(visibleText(versionPanel)).toContain("已确认更新成功");
+    expect(visibleText(versionPanel)).toContain("可能要等该进程重启后才能使用新版本");
     expect(visibleText(secondContent)).toContain("已更新 2 项，0 项失败。");
 
     secondCleanup?.();
@@ -3757,7 +4024,11 @@ describe("Renderer Updates page", () => {
       });
 
       const panel = elementWithClass(content, "settings-update-panel");
-      await vi.waitFor(() => expect(visibleText(panel)).toContain("有新版本可用"));
+      await vi.waitFor(() =>
+        expect(visibleText(panel)).toContain(
+          automatic ? "有新版本可用" : "新版本已发布，你使用的 npm 源还没有同步",
+        ),
+      );
       const update = descendants(panel).find(({ tagName }) => tagName === "button");
       expect(Boolean(update)).toBe(automatic);
       if (installation === "npm") {
@@ -3781,6 +4052,34 @@ describe("Renderer Updates page", () => {
       scope.dispose();
     },
   );
+
+  it("offers no update until the npm registry has synced the release", async () => {
+    const client = {
+      checkUpdate: vi.fn(async () => ({ ...updateCheck(), installationAvailable: false })),
+      startUpdate: vi.fn(),
+      readUpdateStatus: vi.fn(async () => ({ status: null })),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("zh-CN"),
+      () => client,
+    ).find(({ id }) => id === "updates");
+    if (!page) throw new Error("Updates page is not registered");
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+
+    const panel = elementWithClass(content, "settings-update-panel");
+    await vi.waitFor(() => expect(visibleText(panel)).toContain("npm 源还没有同步"));
+    expect(descendants(panel).some(({ tagName }) => tagName === "button")).toBe(false);
+
+    cleanup?.();
+    scope.dispose();
+  });
 
   it("renders the open-source project introduction on the About page", () => {
     const page = createDefaultRendererSettingsPages(rendererSettingsMessages("zh-CN")).find(

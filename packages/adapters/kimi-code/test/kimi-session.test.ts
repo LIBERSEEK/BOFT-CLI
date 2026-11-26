@@ -33,7 +33,7 @@ import {
   type ActivePromptHandler,
   type SessionEventHandler,
 } from "../src/acp-transport.js";
-import { encodeKimiModelRef } from "../src/models.js";
+import { kimiModelRef as encodeKimiModelRef } from "../src/models.js";
 import { KIMI_DEFAULT_COMMAND_CATALOG } from "../src/slash-commands.js";
 
 class MockKimiTransport implements KimiAcpTransportLike {
@@ -1821,6 +1821,41 @@ describe("KimiSession", () => {
       if (!res.ok) {
         expect(res.error.code).toBe("invalidState");
       }
+    });
+
+    it("propagates transport close failures while ending outputs and allowing retry", async () => {
+      const transport = new MockKimiTransport();
+      const closeSpy = vi
+        .spyOn(transport, "close")
+        .mockRejectedValueOnce(new Error("Kimi process did not exit after SIGKILL"))
+        .mockImplementationOnce(async () => {
+          transport.isClosed = true;
+        });
+      const session = new KimiSession({
+        transport,
+        sessionId: "s-close-fail",
+        cwd: "D:/project",
+        initialState: {},
+      });
+      const outputsEnded = (async () => {
+        for await (const output of session.outputs) {
+          void output;
+        }
+      })();
+
+      await expect(session.close()).rejects.toThrow("Kimi process did not exit after SIGKILL");
+      await expect(outputsEnded).resolves.toBeUndefined();
+      expect(
+        await session.execute({
+          type: "turn.start",
+          turnId: hostTurnIdSchema.parse("t-after-failed-close"),
+          input: [{ type: "text", text: "test" }],
+        }),
+      ).toMatchObject({ ok: false, error: { code: "invalidState" } });
+
+      await expect(session.close()).resolves.toBeUndefined();
+      expect(closeSpy).toHaveBeenCalledTimes(2);
+      expect(transport.isClosed).toBe(true);
     });
   });
 });

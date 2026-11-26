@@ -2,6 +2,19 @@
 import { randomUUID } from "@deepseek-ai/dsh-util-crypto";
 import {
   harnessSessionImportResultSchema,
+  RELEASE_ANNOUNCEMENT_ACKNOWLEDGE_METHOD,
+  RELEASE_ANNOUNCEMENT_GET_METHOD,
+  REMOTE_PEERS_METHODS,
+  releaseAnnouncementAcknowledgeParamsSchema,
+  releaseAnnouncementGetParamsSchema,
+  releaseAnnouncementGetResultSchema,
+  remotePeerCreateDirResultSchema,
+  remotePeerListDirsResultSchema,
+  remotePeerListResultSchema,
+  remotePeerRemoveResultSchema,
+  remotePeerSummarySchema,
+  remotePeerTestResultSchema,
+  remotePeerWorkspaceMutationResultSchema,
   updateCheckResultSchema,
   voiceStatusResultSchema,
   voiceTranscribeResultSchema,
@@ -14,12 +27,22 @@ import {
   webTurnDiffsResultSchema,
   skillsListResultSchema,
   type HarnessCommandCatalog,
+  type ReleaseAnnouncementGetParams,
+  type RemotePeerAddParams,
+  type RemotePeerCreateWorkspaceParams,
+  type RemotePeerDeleteWorkspaceParams,
+  type RemotePeerRenameWorkspaceParams,
+  type RemotePeerSummary,
+  type RemotePeerTestParams,
+  type RemotePeerUpdateParams,
   type ThreadCommandExecuteResult,
+  type ThreadHandoffMetadata,
   type HarnessSessionImportCandidate,
   type HarnessSessionImportSourcesResult,
   type HarnessSessionListParams,
 } from "@codexhost/shared-contracts";
 
+import type { RestoredQueuedMessage } from "@deepseek-ai/dsh-client-ui-conversation/client";
 import type { DesktopScreenshotProgress } from "./desktop-screenshot.ts";
 import {
   DESKTOP_SCREENSHOT_PATH,
@@ -81,6 +104,47 @@ export async function checkHostUpdate(signal: AbortSignal) {
   };
   if (reply.error) throw new Error(reply.error.message ?? "Update check failed");
   return updateCheckResultSchema.parse(reply.result);
+}
+
+export async function getReleaseAnnouncement(
+  signal: AbortSignal,
+  params: ReleaseAnnouncementGetParams = {},
+) {
+  const response = await fetch("api/ch/v1/rpc", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      method: RELEASE_ANNOUNCEMENT_GET_METHOD,
+      params: releaseAnnouncementGetParamsSchema.parse(params),
+    }),
+    signal,
+  });
+  if (!response.ok) throw new Error(`HTTP ${String(response.status)}`);
+  const reply = (await response.json()) as {
+    result?: unknown;
+    error?: { message?: string };
+  };
+  if (reply.error) throw new Error(reply.error.message ?? "Release announcement check failed");
+  return releaseAnnouncementGetResultSchema.parse(reply.result);
+}
+
+export async function acknowledgeReleaseAnnouncement(version: string) {
+  const response = await fetch("api/ch/v1/rpc", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      method: RELEASE_ANNOUNCEMENT_ACKNOWLEDGE_METHOD,
+      params: releaseAnnouncementAcknowledgeParamsSchema.parse({ version }),
+    }),
+  });
+  if (!response.ok) throw new Error(`HTTP ${String(response.status)}`);
+  const reply = (await response.json()) as {
+    error?: { message?: string };
+  };
+  if (reply.error)
+    throw new Error(reply.error.message ?? "Release announcement acknowledge failed");
 }
 
 export const voiceApi = {
@@ -290,7 +354,7 @@ export const pushApi = {
     }),
   unsubscribe: (endpoint: string) =>
     call<{ subscribed: boolean }>("codexhost/pushUnsubscribe", { endpoint }),
-  test: () => call<{ sent: number }>("codexhost/pushTest", {}),
+  test: (endpoint: string) => call<{ sent: number }>("codexhost/pushTest", { endpoint }),
 };
 
 export const importApi = {
@@ -329,6 +393,28 @@ export const sentMessageEditApi = {
     ),
 };
 
+/** Cross-Harness context handoff: creates a new target Thread with packaged context. */
+export const handoffApi = {
+  handoff: (request: {
+    sessionId: string;
+    atSeq?: number;
+    targetHarnessId: string;
+    targetModel?: string;
+    targetThinkingOptionId?: string;
+  }) =>
+    call<{ sessionId: string; handoff: ThreadHandoffMetadata }>("session/handoff", {
+      request,
+    }),
+};
+
+/** Takes a pending queued entry off the Shared Host and restores its text and Web-owned attachments. */
+export const queueMessageEditApi = {
+  takeForEdit: (sessionId: string, itemId: string, revision: string) =>
+    call<RestoredQueuedMessage>("codexhost/editQueueItem", {
+      request: { sessionId, itemId, revision },
+    }),
+};
+
 export const skillLibraryApi = {
   list: async (sessionId: string) =>
     skillsListResultSchema.parse(await call<unknown>("codexhost/skills/list", { sessionId })),
@@ -344,4 +430,52 @@ export const harnessCommandApi = {
     call<ThreadCommandExecuteResult>("codexhost/executeThreadCommand", {
       request: { sessionId, commandId },
     }),
+};
+
+function parseRemotePeerResult(value: unknown): { peer: RemotePeerSummary } {
+  const candidate =
+    value !== null && typeof value === "object" && "peer" in value
+      ? (value as { peer: unknown }).peer
+      : value;
+  return { peer: remotePeerSummarySchema.parse(candidate) };
+}
+
+export const remotePeersApi = {
+  list: async () =>
+    remotePeerListResultSchema.parse(await call<unknown>(REMOTE_PEERS_METHODS.list, {})),
+  add: async (input: RemotePeerAddParams) =>
+    parseRemotePeerResult(await call<unknown>(REMOTE_PEERS_METHODS.add, input)),
+  update: async (input: RemotePeerUpdateParams) =>
+    parseRemotePeerResult(await call<unknown>(REMOTE_PEERS_METHODS.update, input)),
+  remove: async (peerId: string) =>
+    remotePeerRemoveResultSchema.parse(
+      await call<unknown>(REMOTE_PEERS_METHODS.remove, { peerId }),
+    ),
+  reconnect: async (peerId: string) =>
+    parseRemotePeerResult(await call<unknown>(REMOTE_PEERS_METHODS.reconnect, { peerId })),
+  test: async (input: RemotePeerTestParams) =>
+    remotePeerTestResultSchema.parse(await call<unknown>(REMOTE_PEERS_METHODS.test, input)),
+  listDirs: async (peerId: string, path?: string) =>
+    remotePeerListDirsResultSchema.parse(
+      await call<unknown>(
+        REMOTE_PEERS_METHODS.listDirs,
+        path === undefined ? { peerId } : { peerId, path },
+      ),
+    ),
+  createDir: async (peerId: string, parentPath: string, name: string) =>
+    remotePeerCreateDirResultSchema.parse(
+      await call<unknown>(REMOTE_PEERS_METHODS.createDir, { peerId, parentPath, name }),
+    ),
+  createWorkspace: async (input: RemotePeerCreateWorkspaceParams) =>
+    remotePeerWorkspaceMutationResultSchema.parse(
+      await call<unknown>(REMOTE_PEERS_METHODS.createWorkspace, input),
+    ),
+  renameWorkspace: async (input: RemotePeerRenameWorkspaceParams) =>
+    remotePeerWorkspaceMutationResultSchema.parse(
+      await call<unknown>(REMOTE_PEERS_METHODS.renameWorkspace, input),
+    ),
+  deleteWorkspace: async (input: RemotePeerDeleteWorkspaceParams) =>
+    remotePeerWorkspaceMutationResultSchema.parse(
+      await call<unknown>(REMOTE_PEERS_METHODS.deleteWorkspace, input),
+    ),
 };

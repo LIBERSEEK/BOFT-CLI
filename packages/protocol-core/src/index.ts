@@ -16,13 +16,20 @@ export {
   projectCodexRateLimitsToCredits,
 } from "./codex-native-usage.js";
 export type { CodexRateLimitResetCredits } from "./codex-native-usage.js";
-export { CodexTurnProjector, projectHistoricalTurn } from "./codex-ui-projector.js";
+export {
+  CodexTurnProjector,
+  historicalPlanUpdate,
+  projectHistoricalTurn,
+  reasoningPreviewItemId,
+} from "./codex-ui-projector.js";
+export { reasoningSummaryParts } from "./reasoning-summary-parts.js";
 export type {
   CodexApprovalProjection,
   CodexQuestionProjection,
   CodexTurnProjection,
   HistoricalTurnProjectionInput,
   ProjectableHostEvent,
+  TodoPlan,
 } from "./codex-ui-projector.js";
 export {
   decodeThreadForkRequest,
@@ -92,14 +99,7 @@ export {
   decodeOpenCodeTransportSelection,
   decodePiTransportModel,
   decodePiTransportSelection,
-  encodeClaudeTransportModel,
-  encodeAntigravityTransportModel,
-  encodeDeepSeekHarnessTransportModel,
   encodeExternalTransportSelection,
-  encodeGrokTransportModel,
-  encodeOmpTransportModel,
-  encodeOpenCodeTransportModel,
-  encodePiTransportModel,
   transportModelIdForHarness,
 } from "./model-routing.js";
 export type {

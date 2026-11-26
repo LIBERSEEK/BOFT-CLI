@@ -25,7 +25,7 @@ pub fn finish_launch(print: bool) {
         return;
     };
     if let Ok(Some(owner)) = web_service::owner(&data)
-        && owner.web_running()
+        && owner.web_running().unwrap_or(false)
         && let Ok(mut announced) = WEB_ANNOUNCED.lock()
         && !*announced
     {
@@ -34,16 +34,21 @@ pub fn finish_launch(print: bool) {
     }
 }
 
-use crate::installation_layout::InstalledResources;
-use crate::startup_record::data_directory;
-use crate::{
-    LaunchOptions, NPM_NODE_PATH_ENV, console, desktop_attachment, host_service, web_service,
+use crate::installation_layout::{
+    InstalledResources, inherited_npm_node, resolve_executable_on_path,
 };
+use crate::startup_record::data_directory;
+use crate::{LaunchOptions, console, desktop_attachment, desktop_shell, host_service, web_service};
 use codexhost_platform::node_entrypoint_path;
 use web_service::Options;
 
 pub fn web_enabled() -> bool {
     env::var_os("CODEXHOST_WEB_SERVICE").as_deref() != Some(std::ffi::OsStr::new("0"))
+}
+
+fn source_web_node(node: &Path) -> Result<PathBuf, Box<dyn Error>> {
+    const MISSING_NODE: &str = "Source Web requires Node on PATH or an absolute --node path";
+    resolve_executable_on_path(node).ok_or_else(|| MISSING_NODE.into())
 }
 
 fn resolve_options(
@@ -54,10 +59,19 @@ fn resolve_options(
     host_node: Option<PathBuf>,
 ) -> Result<Options, Box<dyn Error>> {
     let installed = InstalledResources::from_current_executable()?;
-    let node = node
-        .or_else(|| env::var_os(NPM_NODE_PATH_ENV).map(PathBuf::from))
-        .unwrap_or(installed.node);
-    let host_node = crate::select_host_node(host_node, desktop_root, node.clone());
+    let explicit_node = node;
+    let node = match explicit_node.clone() {
+        Some(node) => node,
+        None if installed.node.is_relative() => source_web_node(&installed.node)?,
+        None => inherited_npm_node()
+            .map(PathBuf::from)
+            .unwrap_or(installed.node),
+    };
+    let host_node = match host_node {
+        Some(host_node) => host_node,
+        None if !cfg!(target_os = "macos") && explicit_node.is_some() => node.clone(),
+        None => crate::select_host_node(None, desktop_root, node.clone()),
+    };
     Ok(Options {
         node,
         host_node,
@@ -69,7 +83,11 @@ fn resolve_options(
 }
 
 // Called with the Web lifecycle lock held, before GUI clients can connect.
-fn replace_outdated(options: &Options, changed: bool) -> Result<(), Box<dyn Error>> {
+fn replace_outdated(
+    options: &Options,
+    changed: bool,
+    expected_runtime: Option<&Path>,
+) -> Result<(), Box<dyn Error>> {
     let host = host_service::current_runtime(&options.data);
     let web = web_service::owner(&options.data)?;
     let host_mismatched = host.as_ref().is_some_and(|(runtime, version)| {
@@ -79,7 +97,7 @@ fn replace_outdated(options: &Options, changed: bool) -> Result<(), Box<dyn Erro
         owner.runtime != options.runtime || owner.version != env!("CARGO_PKG_VERSION")
     });
     if changed || host_mismatched || web_mismatched {
-        web_service::stop(options)?;
+        web_service::stop(options, expected_runtime)?;
     }
     if host_mismatched {
         println!("codexhost: switching Host to this version and installation");
@@ -117,8 +135,12 @@ fn ensure_current(
     } else {
         false
     };
-    replace_outdated(options, changed)?;
-    web_service::ensure(options)
+    // Update recovery acts on behalf of the Updater: its orphan handling must
+    // be scoped to this installation's runtime, or it could stop an orphan
+    // from another installation that stop-for-update deliberately left alone.
+    let expected_runtime = update_recovery.then_some(options.runtime.as_path());
+    replace_outdated(options, changed, expected_runtime)?;
+    web_service::ensure(options, expected_runtime)
 }
 
 fn web_browser_url(login_url: &str, connect_devices: bool) -> String {
@@ -132,19 +154,38 @@ fn web_browser_url(login_url: &str, connect_devices: bool) -> String {
 fn open_web(
     options: &Options,
     settings: &[String],
+    update_recovery: bool,
     connect_devices: bool,
 ) -> Result<(), Box<dyn Error>> {
-    ensure_current(options, settings, false)?;
+    // Update recovery threads through so orphan cleanup is scoped to this
+    // installation's runtime; device connection stays closed on this entry.
+    open_web_with(
+        options,
+        settings,
+        update_recovery,
+        connect_devices,
+        &ensure_current,
+    )
+}
+
+type EnsureFn<'a> = dyn Fn(&Options, &[String], bool) -> Result<(), Box<dyn Error>> + 'a;
+
+fn open_web_with(
+    options: &Options,
+    settings: &[String],
+    update_recovery: bool,
+    connect_devices: bool,
+    ensure: &EnsureFn<'_>,
+) -> Result<(), Box<dyn Error>> {
+    ensure(options, settings, update_recovery)?;
     let ready =
         web_service::owner(&options.data)?.ok_or("Web exited before its address could be read")?;
     println!("boft web: {}", ready.access.login_url);
+    if let Ok(mut announced) = WEB_ANNOUNCED.lock() {
+        *announced = true;
+    }
     println!("Web is running in the background; use `boft stop` to stop it");
-    let graphical = env::var_os("SSH_CONNECTION").is_none()
-        && env::var_os("SSH_TTY").is_none()
-        && (!cfg!(target_os = "linux")
-            || env::var_os("DISPLAY").is_some()
-            || env::var_os("WAYLAND_DISPLAY").is_some());
-    if graphical {
+    if graphical_session() {
         codexhost_platform::open_external_url(&web_browser_url(
             &ready.access.login_url,
             connect_devices,
@@ -153,7 +194,15 @@ fn open_web(
     Ok(())
 }
 
-pub fn open_for_launch(options: &LaunchOptions) -> Result<(), Box<dyn Error>> {
+pub fn graphical_session() -> bool {
+    env::var_os("SSH_CONNECTION").is_none()
+        && env::var_os("SSH_TTY").is_none()
+        && (!cfg!(target_os = "linux")
+            || env::var_os("DISPLAY").is_some_and(|value| !value.is_empty())
+            || env::var_os("WAYLAND_DISPLAY").is_some_and(|value| !value.is_empty()))
+}
+
+pub fn open_for_launch(options: &LaunchOptions, open_browser: bool) -> Result<(), Box<dyn Error>> {
     let resolved = resolve_options(
         options.node.clone(),
         options.host_runtime.clone(),
@@ -161,11 +210,41 @@ pub fn open_for_launch(options: &LaunchOptions) -> Result<(), Box<dyn Error>> {
         None,
         options.node.clone(),
     )?;
-    if console::presentation() == Some(console::Presentation::Print) {
-        ensure_current(&resolved, &[], false)
+    if open_browser {
+        open_web(&resolved, &[], options.update_recovery, false)
     } else {
-        open_web(&resolved, &[], false)
+        ensure_current(&resolved, &[], options.update_recovery)
     }
+}
+
+fn select_app_shell(
+    shell: Option<&Path>,
+    onboarding: bool,
+    graphical: bool,
+) -> Result<Option<&Path>, &'static str> {
+    if !graphical {
+        if onboarding {
+            return Err("Desktop shell onboarding requires a graphical session");
+        }
+        return Ok(None);
+    }
+    if onboarding && shell.is_none() {
+        return Err("The BOFT CLI desktop shell is required for onboarding");
+    }
+    Ok(shell)
+}
+
+pub fn open_app(shell: Option<&Path>, onboarding: bool) -> Result<(), Box<dyn Error>> {
+    let Some(shell) = select_app_shell(shell, onboarding, graphical_session())? else {
+        return open_for_launch(&crate::default_launch_options(), true);
+    };
+    let data = data_directory().ok_or("User data directory is unavailable")?;
+    if onboarding {
+        crate::service_update::ensure_start_allowed(&data)?;
+    } else {
+        open_for_launch(&crate::default_launch_options(), false)?;
+    }
+    desktop_shell::spawn(shell, &data, onboarding)
 }
 
 // LaunchServices may reparent Desktop, so its bridge cannot rely on Updater ancestry.
@@ -203,7 +282,14 @@ pub fn start_for_launch(options: &LaunchOptions, desktop_root: Option<&Path>) {
         )?;
         let _guard = host_service::lifecycle_lock(&resolved.data, "web-service-lifecycle.lock")?;
         crate::service_update::ensure_start_allowed(&resolved.data)?;
-        replace_outdated(&resolved, false)?;
+        // Update recovery acts on behalf of the Updater: its orphan handling
+        // must be scoped to this installation's runtime on every branch that
+        // may stop a Web, or it could terminate an orphan that stop-for-update
+        // deliberately left alone.
+        let expected_runtime = options
+            .update_recovery
+            .then_some(resolved.runtime.as_path());
+        replace_outdated(&resolved, false, expected_runtime)?;
         Ok(resolved)
     };
     let resolved = match prepare() {
@@ -213,11 +299,14 @@ pub fn start_for_launch(options: &LaunchOptions, desktop_root: Option<&Path>) {
             return;
         }
     };
+    let update_recovery = options.update_recovery;
     let startup = thread::spawn(move || {
         let start = || -> Result<(), Box<dyn Error>> {
             let _guard =
                 host_service::lifecycle_lock(&resolved.data, "web-service-lifecycle.lock")?;
-            web_service::ensure(&resolved)
+            crate::service_update::ensure_start_allowed(&resolved.data)?;
+            let expected_runtime = update_recovery.then_some(resolved.runtime.as_path());
+            web_service::ensure(&resolved, expected_runtime)
         };
         if let Err(error) = start() {
             record_failure(&error);
@@ -228,7 +317,7 @@ pub fn start_for_launch(options: &LaunchOptions, desktop_root: Option<&Path>) {
     }
 }
 
-fn validate_installation(options: &Options) -> Result<(), Box<dyn Error>> {
+fn validate_web_and_host_installation(options: &Options) -> Result<(), Box<dyn Error>> {
     if let Some((runtime, _)) = host_service::current_runtime(&options.data) {
         let runtime = runtime
             .canonicalize()
@@ -253,20 +342,32 @@ fn validate_installation(options: &Options) -> Result<(), Box<dyn Error>> {
             return Err("The running Web belongs to a different installation".into());
         }
     }
-    if let Some((launcher, _)) = desktop_attachment::managed_processes(&options.data)?
-        && launcher.executable.canonicalize()? != env::current_exe()?.canonicalize()?
-    {
-        return Err("The running Desktop belongs to a different installation".into());
-    }
+    Ok(())
+}
+
+fn validate_installation(options: &Options) -> Result<(), Box<dyn Error>> {
+    validate_web_and_host_installation(options)?;
+    desktop_attachment::running_for_update(&options.data)
+        .map_err(|error| format!("Desktop ownership check failed: {error}"))?;
     Ok(())
 }
 
 fn stop_for_update(options: &Options) -> Result<(), Box<dyn Error>> {
-    let _guard = host_service::lifecycle_lock(&options.data, "web-service-lifecycle.lock")?;
     validate_installation(options)?;
+    desktop_shell::stop(&options.data)
+        .map_err(|error| format!("stopping desktop shell failed: {error}"))?;
+    // Stop Desktop before taking web-service-lifecycle.lock: the Launcher joins its
+    // background Web startup thread before exiting, and that thread waits on the same lock.
     desktop_attachment::stop_managed(&options.data)
         .map_err(|error| format!("stopping Desktop failed: {error}"))?;
-    web_service::stop(options).map_err(|error| format!("stopping Web failed: {error}"))?;
+    let _guard = host_service::lifecycle_lock(&options.data, "web-service-lifecycle.lock")?;
+    validate_web_and_host_installation(options)?;
+    // The orphan cleanup must apply the installation check to the record it
+    // actually cleans: validate_installation only inspects the live owner
+    // record, so a Web from another installation sharing this data directory
+    // would otherwise be terminated here.
+    web_service::stop(options, Some(&options.runtime))
+        .map_err(|error| format!("stopping Web failed: {error}"))?;
     if host_service::current_runtime(&options.data).is_some() {
         host_service::run(&options.host_arguments("stop"))
             .map_err(|error| format!("stopping Host failed: {error}"))?;
@@ -279,13 +380,17 @@ fn stop_all(options: &Options) -> Result<(), Box<dyn Error>> {
     let home = PathBuf::from(env::var_os("HOME").ok_or("HOME is unavailable")?);
     let mut failures = Vec::new();
     let mut running = false;
+    match desktop_shell::stop(&options.data) {
+        Ok(stopped) => running |= stopped,
+        Err(error) => failures.push(format!("Desktop shell: {error}")),
+    }
     match desktop_attachment::stop_managed(&options.data) {
         Ok(stopped) => running |= stopped,
         Err(error) => failures.push(format!("GUI: {error}")),
     }
     let web_lock = host_service::lifecycle_lock(&options.data, "web-service-lifecycle.lock");
     let web = match &web_lock {
-        Ok(_) => web_service::stop(options),
+        Ok(_) => web_service::stop(options, None),
         Err(error) => Err(error.to_string().into()),
     };
     match web {
@@ -377,16 +482,19 @@ pub fn run(action: &str, arguments: &[String]) -> Result<(), Box<dyn Error>> {
             None => println!("Host: stopped"),
         }
         match web_service::owner(&data)? {
-            Some(owner) => println!(
-                "Web: {}; version {}; {}",
-                if owner.web_running() {
-                    "running"
-                } else {
-                    "stopped"
-                },
-                owner.version,
-                owner.access.address
-            ),
+            Some(owner) => {
+                // A failed presence query is not an exit: report the status as
+                // unknown instead of showing a live Web as stopped.
+                let state = match owner.web_running() {
+                    Ok(true) => "running".to_string(),
+                    Ok(false) => "stopped".to_string(),
+                    Err(error) => format!("status unknown ({error})"),
+                };
+                println!(
+                    "Web: {state}; version {}; {}",
+                    owner.version, owner.access.address
+                );
+            }
             None => println!("Web: stopped"),
         }
         match fs::read_to_string(data.join(web_service::FAILURE)) {
@@ -468,7 +576,7 @@ pub fn run(action: &str, arguments: &[String]) -> Result<(), Box<dyn Error>> {
             }
             result
         } else {
-            open_web(&options, &settings, connect_devices)
+            open_web(&options, &settings, update_recovery, connect_devices)
         }
     } else if action == "stop-for-update" {
         stop_for_update(&options)
@@ -480,6 +588,7 @@ pub fn run(action: &str, arguments: &[String]) -> Result<(), Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::NPM_NODE_PATH_ENV;
     #[cfg(target_os = "windows")]
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -502,6 +611,55 @@ mod tests {
     }
 
     #[test]
+    fn open_web_recovery_forwards_update_recovery_without_device_connection() {
+        let root = env::temp_dir().join(format!("codexhost-open-web-flags-{}", std::process::id()));
+        let options = Options {
+            node: root.clone(),
+            host_node: root.clone(),
+            runtime: root.clone(),
+            host_runtime: root.clone(),
+            data: root.clone(),
+            ready: None,
+        };
+        let captured = Mutex::new(None);
+        let ensure = |_: &Options, settings: &[String], update_recovery: bool| {
+            *captured.lock().unwrap() = Some((settings.to_vec(), update_recovery));
+            Ok(())
+        };
+        // Recovery launch: ensure must see update_recovery=true, and the
+        // device-connection page must stay closed (connect_devices=false).
+        let result = open_web_with(&options, &[], true, false, &ensure);
+        assert_eq!(
+            captured
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|(s, r)| (s.as_slice(), *r)),
+            Some((&[][..], true)),
+            "ensure_current must receive update_recovery=true on the recovery path"
+        );
+        assert!(result.is_err());
+        // Plain interactive launch keeps device connection opt-in.
+        let ensure = |_: &Options, _: &[String], update_recovery: bool| {
+            assert!(!update_recovery, "plain launch is not update recovery");
+            Ok(())
+        };
+        assert!(open_web_with(&options, &[], false, true, &ensure).is_err());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn headless_app_uses_web_even_with_a_shell_and_rejects_onboarding() {
+        let shell = Some(Path::new("codexhost-shell"));
+        assert_eq!(select_app_shell(shell, false, false), Ok(None));
+        assert_eq!(
+            select_app_shell(shell, true, false),
+            Err("Desktop shell onboarding requires a graphical session")
+        );
+        assert_eq!(select_app_shell(shell, false, true), Ok(shell));
+    }
+
+    #[test]
     fn web_browser_url_only_appends_the_requested_section() {
         let login = "http://127.0.0.1:4478/?token=fixture-secret";
         assert_eq!(web_browser_url(login, false), login);
@@ -509,6 +667,71 @@ mod tests {
             web_browser_url(login, true),
             "http://127.0.0.1:4478/?token=fixture-secret#connect-devices"
         );
+    }
+
+    #[test]
+    fn source_web_ignores_inherited_npm_node_but_accepts_explicit_paths() {
+        const CHILD: &str = "CODEXHOST_TEST_SOURCE_WEB_PATHS";
+        let executable = env::current_exe().unwrap();
+        if let Some(root) = env::var_os(CHILD).map(PathBuf::from) {
+            let options = resolve_options(None, None, None, None, None).unwrap();
+            let node = root.join(format!("node{}", env::consts::EXE_SUFFIX));
+            assert!(
+                options.node == node,
+                "Web must not use the inherited npm Node"
+            );
+            assert!(
+                options.host_node == node,
+                "Host must not use the inherited npm Node"
+            );
+
+            let node = root.join("explicit-node");
+            let host = root.join("explicit-host.mjs");
+            let web = root.join("explicit-web.mjs");
+            let options = resolve_options(
+                Some(node.clone()),
+                Some(host.clone()),
+                Some(web.clone()),
+                None,
+                None,
+            )
+            .unwrap();
+            assert_eq!(options.node, node);
+            assert!(
+                options.host_node == node,
+                "explicit Node must not be replaced by npm Node"
+            );
+            assert_eq!(options.host_runtime, host);
+            assert_eq!(options.runtime, web);
+            return;
+        }
+
+        let root = env::temp_dir().join(format!("codexhost-source-web-{}", std::process::id()));
+        let child = root
+            .join("target/debug")
+            .join(executable.file_name().unwrap());
+        fs::create_dir_all(child.parent().unwrap()).unwrap();
+        fs::copy(&executable, &child).unwrap();
+        let node = root.join(format!("node{}", env::consts::EXE_SUFFIX));
+        fs::write(&node, "fixture").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&node, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let mut command = Command::new(&child);
+        command
+            .args([
+                "--exact",
+                "services::tests::source_web_ignores_inherited_npm_node_but_accepts_explicit_paths",
+            ])
+            .env(CHILD, &root)
+            .env(crate::DATA_DIRECTORY_ENV, &root)
+            .env(NPM_NODE_PATH_ENV, root.join("inherited-npm-node"))
+            .env("PATH", &root);
+        let status = crate::tests::status_retrying_busy(&mut command);
+        fs::remove_dir_all(root).unwrap();
+        assert!(status.unwrap().success());
     }
 
     #[cfg(target_os = "windows")]

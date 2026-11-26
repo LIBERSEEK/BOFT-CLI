@@ -4,6 +4,11 @@ import {
   type CredentialImportMessages,
 } from "./credential-import-messages.js";
 import {
+  delegationEnglish,
+  delegationChinese,
+  type DelegationMessages,
+} from "./delegation-messages.js";
+import {
   desktopExtensionsEnglish,
   desktopExtensionsChinese,
   type DesktopExtensionsMessages,
@@ -34,6 +39,7 @@ export interface RendererSettingsLanguageControl {
 
 export interface RendererSettingsMessages {
   readonly credentialImports: CredentialImportMessages;
+  readonly delegation: DelegationMessages;
   readonly desktopExtensions: DesktopExtensionsMessages;
   readonly locale: RendererSettingsLocale;
   readonly title: string;
@@ -237,6 +243,13 @@ export interface RendererSettingsMessages {
   readonly harnessUpdateAllProgress: string;
   readonly harnessUpdateAllDescription: string;
   readonly harnessUpdateAllResult: string;
+  readonly harnessUpdateAllSkipped: string;
+  readonly harnessUpdateUnverifiedTitle: string;
+  readonly harnessUpdateUnverifiedDetail: string;
+  readonly harnessUpdateTargetChangedTitle: string;
+  readonly harnessUpdateTargetChangedDetail: string;
+  readonly harnessUpdateSkip: string;
+  readonly harnessUpdateAnyway: string;
   readonly harnessVersionUpdating: string;
   readonly harnessVersionUpToDate: string;
   readonly harnessVersionUpdated: string;
@@ -260,6 +273,8 @@ export interface RendererSettingsMessages {
   readonly connectionGroupLoading: string;
   readonly connectionGroupSaving: string;
   readonly connectionGroupSyncFailed: string;
+  readonly connectionGroupUnavailable: string;
+  readonly connectionLocalHarnessUnsupported: string;
   readonly pickerMoreAgentsLabel: string;
   readonly pickerManageLink: string;
   readonly pickerHideUnusedAgentsCta: string;
@@ -273,6 +288,7 @@ export interface RendererSettingsMessages {
   readonly updateInstallationNpm: string;
   readonly updateInstallationWindowsInstaller: string;
   readonly updateInstallationMacOsDmg: string;
+  readonly updateInstallationLinuxArchive: string;
   readonly updateInstallationUnknown: string;
   readonly updateLatestVersion: string;
   readonly updateUpToDate: string;
@@ -291,6 +307,9 @@ export interface RendererSettingsMessages {
   readonly updateRestarting: string;
   readonly updateSucceeded: string;
   readonly updateFailed: string;
+  readonly updateRecoverySucceeded: string;
+  readonly updateRecoveryFailed: string;
+  readonly updateWaitingForRegistry: string;
   readonly updateRetry: string;
   readonly updateManualNpmDescription: string;
   readonly updateWindowsInstallerDescription: string;
@@ -301,6 +320,12 @@ export interface RendererSettingsMessages {
   readonly updateCopyFailed: string;
   readonly updateDownloadFromReleases: string;
   readonly updateDownloadWindowsInstaller: string;
+  readonly updateViewAnnouncement: string;
+  readonly releaseAnnouncement: {
+    readonly title: string;
+    readonly acknowledge: string;
+    readonly fullNotes: string;
+  };
   readonly updateStarCallout: string;
   readonly updateStarLink: string;
   readonly aboutTagline: string;
@@ -321,6 +346,7 @@ export interface RendererSettingsMessages {
 
 const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   credentialImports: credentialImportEnglish,
+  delegation: delegationEnglish,
   desktopExtensions: desktopExtensionsEnglish,
   locale: "en",
   title: "Settings",
@@ -557,9 +583,18 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   harnessUpdateAllProgress: "Updating",
   harnessUpdateAllDescription: "Update all eligible Harnesses on the selected Host.",
   harnessUpdateAllResult: "Updated {succeeded}; failed {failed}.",
+  harnessUpdateAllSkipped: "Skipped {skipped}.",
+  harnessUpdateUnverifiedTitle: "Update to an unverified version?",
+  harnessUpdateUnverifiedDetail:
+    "{name} {target} has not been verified with this adapter. The latest verified version is {verified}.",
+  harnessUpdateTargetChangedTitle: "Confirm the new update target",
+  harnessUpdateTargetChangedDetail: "The update target changed to {name} {target}.",
+  harnessUpdateSkip: "Skip this update",
+  harnessUpdateAnyway: "Update anyway",
   harnessVersionUpdating: "Updating…",
   harnessVersionUpToDate: "Up to date",
-  harnessVersionUpdated: "Update verified. New sessions will use the new version.",
+  harnessVersionUpdated:
+    "Update verified. New sessions that reuse a running Harness process may still use the old version until that process restarts.",
   harnessVersionFailed:
     "Could not complete the operation. Check the network connection or native installation.",
   harnessVersionUnsupported: "This Host or plugin does not support CLI version management.",
@@ -585,6 +620,10 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionGroupSaving: "Saving shared Harness order…",
   connectionGroupSyncFailed:
     "Could not sync Harness order. The last confirmed order is shown; check codexhost and retry your change.",
+  connectionGroupUnavailable:
+    "Harness order is read-only because the local connection does not support it. The last confirmed order is kept.",
+  connectionLocalHarnessUnsupported:
+    "This local connection does not support external Agents. You can still use Codex. On Windows, if Agent environment is set to WSL, switch it to Windows in Codex Settings → General, then restart Desktop through BOFT CLI. To use Agents installed in WSL, connect to WSL through Remote SSH instead.",
   pickerMoreAgentsLabel: "More agents",
   pickerManageLink: "Settings",
   pickerHideUnusedAgentsCta: "Customize agents",
@@ -598,6 +637,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateInstallationNpm: "npm",
   updateInstallationWindowsInstaller: "Windows installer",
   updateInstallationMacOsDmg: "macOS DMG",
+  updateInstallationLinuxArchive: "Linux archive (.tar.gz)",
   updateInstallationUnknown: "Unknown",
   updateLatestVersion: "Latest version",
   updateUpToDate: "You are up to date.",
@@ -619,6 +659,11 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateRestarting: "Restarting to finish the update...",
   updateSucceeded: "Update installed successfully.",
   updateFailed: "Update failed.",
+  updateRecoverySucceeded: "The previous version was restarted and is still available.",
+  updateRecoveryFailed:
+    "The previous version could not be restarted either; update manually as described below.",
+  updateWaitingForRegistry:
+    "This version is released, but your npm registry does not have it yet. Try again later.",
   updateRetry: "Retry",
   updateManualNpmDescription: "To update manually, quit BOFT CLI and run this command:",
   updateWindowsInstallerDescription:
@@ -631,6 +676,12 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateCopyFailed: "Copy failed",
   updateDownloadFromReleases: "Download from GitHub Releases",
   updateDownloadWindowsInstaller: "Download Windows installer",
+  updateViewAnnouncement: "View release announcement",
+  releaseAnnouncement: Object.freeze({
+    title: "Release announcement",
+    acknowledge: "Got it",
+    fullNotes: "View full release notes",
+  }),
   updateStarCallout:
     "If BOFT CLI has helped you, please Star it on GitHub. It means a lot to us 👉",
   updateStarLink: "GitHub",
@@ -668,6 +719,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
     "desktop-extensions": "Extension Marketplace",
     accounts: "Accounts",
     "session-import": "Sessions",
+    delegation: "Multi-Agent",
     "usage-statistics": "Usage statistics",
     updates: "Updates",
     about: "About",
@@ -676,6 +728,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
 
 const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   credentialImports: credentialImportChinese,
+  delegation: delegationChinese,
   desktopExtensions: desktopExtensionsChinese,
   locale: "zh-CN",
   title: "设置",
@@ -900,9 +953,18 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   harnessUpdateAllProgress: "更新中",
   harnessUpdateAllDescription: "更新当前 Host 上支持自动更新且有新版本的 Harness。",
   harnessUpdateAllResult: "已更新 {succeeded} 项，{failed} 项失败。",
+  harnessUpdateAllSkipped: "已跳过 {skipped} 项。",
+  harnessUpdateUnverifiedTitle: "更新到未经验证的版本？",
+  harnessUpdateUnverifiedDetail:
+    "当前适配器尚未验证 {name} {target}，最新已验证版本为 {verified}。",
+  harnessUpdateTargetChangedTitle: "确认新的更新目标",
+  harnessUpdateTargetChangedDetail: "更新目标已变更为 {name} {target}。",
+  harnessUpdateSkip: "跳过此项",
+  harnessUpdateAnyway: "继续更新",
   harnessVersionUpdating: "正在更新…",
   harnessVersionUpToDate: "已是最新",
-  harnessVersionUpdated: "已确认更新成功，新会话将使用新版本。",
+  harnessVersionUpdated:
+    "已确认更新成功。若新会话复用运行中的 Harness 进程，可能要等该进程重启后才能使用新版本。",
   harnessVersionFailed: "操作未完成，请检查网络连接或原生安装。",
   harnessVersionUnsupported: "当前 Host 或插件不支持 CLI 版本管理。",
   harnessVersionManual: "请使用原安装方式更新此 Harness。",
@@ -925,6 +987,9 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionGroupSaving: "正在保存共享 Harness 排序…",
   connectionGroupSyncFailed:
     "Harness 排序同步失败，当前显示上次确认的顺序。请确认 codexhost 正常运行后重试修改。",
+  connectionGroupUnavailable: "本地连接不支持修改 Harness 排序，已保留上次确认的顺序。",
+  connectionLocalHarnessUnsupported:
+    "此本地连接不支持外部 Agent，仍可使用原生 Codex。在 Windows 上，如果 Agent environment 设为 WSL，请在 Codex「设置 → 常规」中切换到 Windows，再通过 BOFT CLI 重启 Desktop。若要使用安装在 WSL 内的 Agent，请改用 Remote SSH 连接 WSL。",
   pickerMoreAgentsLabel: "更多 Agent",
   pickerManageLink: "设置",
   pickerHideUnusedAgentsCta: "设置 Agent 显示",
@@ -938,6 +1003,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateInstallationNpm: "npm",
   updateInstallationWindowsInstaller: "Windows 安装程序",
   updateInstallationMacOsDmg: "macOS DMG",
+  updateInstallationLinuxArchive: "Linux 压缩包（.tar.gz）",
   updateInstallationUnknown: "未知",
   updateLatestVersion: "最新版本",
   updateUpToDate: "当前已是最新版本。",
@@ -956,6 +1022,9 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateRestarting: "正在重启以完成更新...",
   updateSucceeded: "更新安装成功。",
   updateFailed: "更新失败。",
+  updateRecoverySucceeded: "已恢复为更新前的版本，可继续使用。",
+  updateRecoveryFailed: "更新前的版本也未能重新启动，请按下方说明手动更新。",
+  updateWaitingForRegistry: "新版本已发布，你使用的 npm 源还没有同步，同步后即可更新，请稍后再试。",
   updateRetry: "重试",
   updateManualNpmDescription:
     "如需手动更新，请在终端运行以下命令。更新完成后，请退出 Codex 并通过 boft 重新启动。",
@@ -968,6 +1037,12 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateCopyFailed: "复制失败",
   updateDownloadFromReleases: "前往 GitHub Releases 下载",
   updateDownloadWindowsInstaller: "下载 Windows 安装包",
+  updateViewAnnouncement: "查看本版公告",
+  releaseAnnouncement: Object.freeze({
+    title: "更新公告",
+    acknowledge: "我知道了",
+    fullNotes: "查看完整更新说明",
+  }),
   updateStarCallout: "如果 BOFT CLI 帮到了你，请在 GitHub 点个 Star，这对我们意义重大 👉",
   updateStarLink: "GitHub",
   aboutTagline: "在 Codex 中运行第三方 Agent Harness 的 Extension。",
@@ -1003,6 +1078,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
     "desktop-extensions": "扩展市场",
     accounts: "账号",
     "session-import": "会话",
+    delegation: "多 Agent 协作",
     "usage-statistics": "用量统计",
     updates: "更新",
     about: "关于",

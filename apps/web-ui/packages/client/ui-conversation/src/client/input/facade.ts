@@ -24,6 +24,7 @@ import type {
   DraftInitializationOptions,
   DraftInitializationResult,
   DraftResponseAnnotation,
+  DraftResponseAnnotationInput,
   InputActions,
   InputEffect,
   InputNotice,
@@ -54,7 +55,7 @@ import { SubmitMachine } from "./machine.ts";
 import { resolveDraftInput, snapshotDraft } from "../draft.ts";
 import { DraftEditorRuntime } from "./editor/runtime.ts";
 import type { EditorProjection } from "./editor/projection.ts";
-import { composeAnnotatedMessage, type ResponseAnnotation } from "@codexhost/shared-contracts";
+import { composeAnnotatedMessage } from "@codexhost/shared-contracts";
 
 /** Popup face the shell needs (dismissal only; typed structurally to avoid a value import). */
 export interface PopupDismissFace {
@@ -155,6 +156,10 @@ export class SessionInputShell implements SessionInput {
   get editor(): LexicalEditor {
     return this.draftEditor.editor;
   }
+  /** Whether this shell has been disposed; used by async restoration guards after release. */
+  get isDisposed(): boolean {
+    return this.disposed;
+  }
   /** The public provide-channel action face (one stable identity per session). */
   readonly actions: InputActions = {
     captureInsertion: (placement) => {
@@ -200,18 +205,21 @@ export class SessionInputShell implements SessionInput {
       if (options?.focus === "end" && !this.canInsertReferences()) return undefined;
       const id = this.addResponseAnnotation(annotation);
       if (id !== undefined && options?.focus === "end" && this.canInsertReferences()) {
-        this.editor.update(
-          () => {
-            $getRoot().selectEnd();
-          },
-          { discrete: true },
-        );
-        this.focus();
+        this.focus("end");
       }
       return id;
     },
+    updateResponseAnnotation: (id, annotation) => {
+      this.updateResponseAnnotation(id, annotation);
+    },
     removeResponseAnnotation: (id) => {
       this.removeResponseAnnotation(id);
+    },
+    clearResponseAnnotations: () => {
+      this.clearResponseAnnotations();
+    },
+    hoverResponseAnnotation: (id) => {
+      this.hoverResponseAnnotation(id);
     },
     submit: () => {
       this.submit("queue");
@@ -232,6 +240,7 @@ export class SessionInputShell implements SessionInput {
   private attachmentIds: readonly DraftAttachmentId[] = [];
   /** Selected passages attached to the next message, in attachment order. */
   private responseAnnotations: readonly DraftResponseAnnotation[] = [];
+  private hoveredResponseAnnotationId: DraftAttachmentId | undefined;
   private annotationSeq = 0;
   /** Failure restoration must not mutate the draft captured by an async adjudication. */
   private adjudication: Promise<PickOutcome> | undefined;
@@ -392,9 +401,13 @@ export class SessionInputShell implements SessionInput {
     return this.draftEditor.insertFileReferences(references, span);
   }
 
-  /** Append ordered attachment ids unless an admission transaction is locked. */
+  /** Append ordered attachment ids unless the shell is disposed or an admission transaction is locked. */
   addAttachments(ids: readonly DraftAttachmentId[]): boolean {
-    if (this.snapshot.phase === "adjudicating" || this.snapshot.phase === "submitting")
+    if (
+      this.disposed ||
+      this.snapshot.phase === "adjudicating" ||
+      this.snapshot.phase === "submitting"
+    )
       return false;
     if (ids.length === 0) return true;
     this.attachmentIds = [...this.attachmentIds, ...ids];
@@ -449,7 +462,7 @@ export class SessionInputShell implements SessionInput {
    * @param annotation - selected text and its optional comment.
    * @returns the draft identity, or undefined when the draft is locked.
    */
-  addResponseAnnotation(annotation: ResponseAnnotation): DraftAttachmentId | undefined {
+  addResponseAnnotation(annotation: DraftResponseAnnotationInput): DraftAttachmentId | undefined {
     if (this.snapshot.phase === "adjudicating" || this.snapshot.phase === "submitting")
       return undefined;
     this.annotationSeq += 1;
@@ -460,10 +473,47 @@ export class SessionInputShell implements SessionInput {
         id,
         text: annotation.text.trim(),
         ...(annotation.annotation === undefined ? {} : { annotation: annotation.annotation }),
+        ...(annotation.anchor === undefined ? {} : { anchor: annotation.anchor }),
       },
     ];
     this.publish();
     return id;
+  }
+
+  /**
+   * Update the optional comment on one attached annotation in place.
+   * @param id - draft identity from {@link addResponseAnnotation}.
+   * @param annotation - trimmed replacement comment, or undefined/empty to keep quote-only.
+   * @returns whether a matching annotation was updated.
+   */
+  updateResponseAnnotation(id: DraftAttachmentId, annotation: string | undefined): boolean {
+    if (
+      this.disposed ||
+      this.snapshot.phase === "adjudicating" ||
+      this.snapshot.phase === "submitting"
+    )
+      return false;
+    const trimmed = annotation?.trim() ?? "";
+    let updated: DraftResponseAnnotation | undefined;
+    const next = this.responseAnnotations.map((entry) => {
+      if (entry.id !== id) return entry;
+      const nextNote = trimmed === "" ? undefined : trimmed;
+      if (entry.annotation === nextNote) return entry;
+      updated = {
+        id: entry.id,
+        text: entry.text,
+        ...(nextNote === undefined ? {} : { annotation: nextNote }),
+        ...(entry.anchor === undefined ? {} : { anchor: entry.anchor }),
+      };
+      return updated;
+    });
+    if (updated === undefined) return false;
+    this.responseAnnotations = next;
+    // Keep failed-send restore records aligned so a later concurrent failure
+    // cannot revert an annotation the user already edited in place.
+    this.syncFailedAnnotation(updated);
+    this.publish();
+    return true;
   }
 
   /**
@@ -472,17 +522,74 @@ export class SessionInputShell implements SessionInput {
    * @returns whether an annotation was removed.
    */
   removeResponseAnnotation(id: DraftAttachmentId): boolean {
-    if (this.snapshot.phase === "adjudicating" || this.snapshot.phase === "submitting")
+    if (
+      this.disposed ||
+      this.snapshot.phase === "adjudicating" ||
+      this.snapshot.phase === "submitting"
+    )
       return false;
     const next = this.responseAnnotations.filter((annotation) => annotation.id !== id);
     if (next.length === this.responseAnnotations.length) return false;
     this.responseAnnotations = next;
+    if (this.hoveredResponseAnnotationId === id) this.hoveredResponseAnnotationId = undefined;
     // A failed send's record still holds what it tried to send: dropping the
     // annotation from the draft drops it from that record too, so a later
     // failure cannot put back what the user just removed.
     this.forgetFailedAnnotation(id);
     this.publish();
     return true;
+  }
+
+  /** Remove every attached annotation from the draft. */
+  clearResponseAnnotations(): boolean {
+    if (
+      this.disposed ||
+      this.snapshot.phase === "adjudicating" ||
+      this.snapshot.phase === "submitting"
+    )
+      return false;
+    if (this.responseAnnotations.length === 0) return false;
+    const cleared = this.responseAnnotations;
+    this.responseAnnotations = [];
+    this.hoveredResponseAnnotationId = undefined;
+    for (const annotation of cleared) this.forgetFailedAnnotation(annotation.id);
+    this.publish();
+    return true;
+  }
+
+  /** Track the currently hovered attached annotation for tray/transcript highlight linkage. */
+  hoverResponseAnnotation(id: DraftAttachmentId | null): void {
+    if (this.disposed) return;
+    const next =
+      id !== null && this.responseAnnotations.some((annotation) => annotation.id === id)
+        ? id
+        : undefined;
+    if (this.hoveredResponseAnnotationId === next) return;
+    this.hoveredResponseAnnotationId = next;
+    this.state.set(this.compose());
+  }
+
+  /** Sync an edited annotation into every failed-send record that still carries it. */
+  private syncFailedAnnotation(updated: DraftResponseAnnotation): void {
+    const replace = (list: readonly DraftResponseAnnotation[]) => {
+      let changed = false;
+      const mapped = list.map((annotation) => {
+        if (annotation.id !== updated.id) return annotation;
+        changed = true;
+        return updated;
+      });
+      return changed ? mapped : null;
+    };
+    if (this.failedRestorePrefix !== undefined) {
+      const next = replace(this.failedRestorePrefix.responseAnnotations);
+      if (next !== null)
+        this.failedRestorePrefix = { ...this.failedRestorePrefix, responseAnnotations: next };
+    }
+    for (const [seq, record] of this.failedDetached) {
+      const next = replace(record.responseAnnotations);
+      if (next === null) continue;
+      this.failedDetached.set(seq, { ...record, responseAnnotations: next });
+    }
   }
 
   /** Remove one annotation from every failed-send record that still mentions it. */
@@ -757,13 +864,22 @@ export class SessionInputShell implements SessionInput {
   }
 
   /**
-   * Return the keyboard to the composer with the caret it last held. Lexical's
-   * own focus restores its stored selection; a bare DOM focus on the
-   * contenteditable would land the caret at the start instead.
+   * Return the keyboard to the composer, restoring its selection by default.
+   * @param placement - force the caret to the end instead.
    */
-  focus(): void {
+  focus(placement?: "end"): void {
     this.editor.getRootElement()?.focus({ preventScroll: true });
-    this.editor.focus();
+    if (placement === "end") {
+      // Native focus can put the DOM caret at the start of a replaced draft.
+      this.editor.update(
+        () => {
+          $getRoot().selectEnd();
+        },
+        { discrete: true },
+      );
+    } else {
+      this.editor.focus();
+    }
   }
 
   // ---- wiring-layer extras (not on the frozen SessionInput face) ----
@@ -790,6 +906,7 @@ export class SessionInputShell implements SessionInput {
     this.detachedDrafts.clear();
     this.failedDetached.clear();
     this.failedRestorePrefix = undefined;
+    this.hoveredResponseAnnotationId = undefined;
     this.attachmentFlights.clear();
     return [...retained];
   }
@@ -917,6 +1034,7 @@ export class SessionInputShell implements SessionInput {
     this.attachmentIds = [];
     const responseAnnotations = [...this.responseAnnotations];
     this.responseAnnotations = [];
+    this.hoveredResponseAnnotationId = undefined;
     const occurrences = this.projection.occurrences;
     const record = { draft, occurrences, attachmentIds, responseAnnotations };
     this.detachedDrafts.set(attempt.seq, record);
@@ -1178,6 +1296,9 @@ export class SessionInputShell implements SessionInput {
       draft: this.projection.clipboardText,
       attachmentIds: this.attachmentIds,
       responseAnnotations: this.responseAnnotations,
+      ...(this.hoveredResponseAnnotationId === undefined
+        ? {}
+        : { hoveredResponseAnnotationId: this.hoveredResponseAnnotationId }),
       draftRev: this.rev,
       ...(this.primaryAction !== undefined ? { primaryAction: this.primaryAction } : {}),
       phase: core.phase,

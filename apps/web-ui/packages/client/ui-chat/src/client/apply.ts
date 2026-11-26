@@ -28,6 +28,7 @@ import type {} from "@deepseek-ai/dsh-client-ui-session/client";
 import type {} from "@deepseek-ai/dsh-client-ui-settings/client";
 import type {} from "@deepseek-ai/dsh-client-ui-workspace/client";
 import type {
+  ChatHandoffModalRequest,
   ChatNodeInjected,
   ChatScrollPosition,
   ChatViewInjected,
@@ -92,6 +93,20 @@ export const inject = [
 export function apply(ctx: Context): void {
   const quotaNotice = createSnapshotStore<QuotaNoticeState | null>(null);
   let quotaNoticeSeq = 0;
+  const handoffRequest = createSnapshotStore<ChatHandoffModalRequest | null>(null);
+  let handoffRequestSeq = 0;
+  ctx.provide("chatHandoffLauncher", {
+    open(sessionId, options) {
+      handoffRequest.set({
+        seq: ++handoffRequestSeq,
+        sessionId,
+        ...(options?.targetHarnessId === undefined
+          ? {}
+          : { targetHarnessId: options.targetHarnessId }),
+        ...(options?.atSeq === undefined ? {} : { atSeq: options.atSeq }),
+      });
+    },
+  });
   // Each hold is its own token, so a release can only drop the hold it was
   // issued for: one arriving after a dismissal or a later acquisition leaves
   // that newer hold alone.
@@ -238,9 +253,27 @@ export function apply(ctx: Context): void {
           const conversation = ctx.uiConversation.binding(binding);
           const messageEditing = ctx.get("chatMessageEditing");
           const turnDiffs = ctx.get("chatTurnDiffs");
+          const chatHandoff = ctx.get("chatHandoff");
+          const canHandoff =
+            chatHandoff !== undefined &&
+            !String(sessionId).startsWith("web-remote:") &&
+            ctx.sessions.subagentAddress(sessionId) === undefined;
+          const openSessionById = (targetSessionId: string): void => {
+            const id = targetSessionId as SessionId;
+            if (ctx.sessions.list.getSnapshot().byId[id] !== undefined) {
+              ctx.uiWorkspace.openSession(id);
+              return;
+            }
+            void ctx.sessions
+              .loadSummary(id)
+              .catch(() => undefined)
+              .finally(() => {
+                ctx.uiWorkspace.openSession(id);
+              });
+          };
           return {
             connection: ctx.get("connection") as ConnectionHandle,
-            hooks: { presentation, browserAvailable },
+            hooks: { presentation, browserAvailable, handoffRequest },
             keyedHooks: {
               chatNode: (key) => chat.getSnapshot().nodes.source(key),
               chatNodeProcess: (key) => chat.getSnapshot().nodes.processSource(key),
@@ -274,6 +307,7 @@ export function apply(ctx: Context): void {
                   absolutePath = meta.value.absolutePath;
                 }
                 const result = await ctx.remote.session.openWorkspacePath({
+                  sessionId,
                   path: absolutePath,
                   ...(options.reveal ? { action: "reveal" } : {}),
                 });
@@ -347,6 +381,33 @@ export function apply(ctx: Context): void {
                   ctx.uiWorkspace.openSession(childId);
                 });
             },
+            openSession: openSessionById,
+            clearHandoffRequest: (seq) => {
+              if (handoffRequest.getSnapshot()?.seq === seq) handoffRequest.set(null);
+            },
+            loadModelCatalog: canHandoff
+              ? async () => {
+                  const response = await ctx.remote.session.modelCatalog(undefined);
+                  if (!response.ok) throw new Error(response.error.message);
+                  return response.value;
+                }
+              : undefined,
+            handoff: canHandoff
+              ? async ({ atSeq, targetHarnessId, targetModel, targetThinkingOptionId }) => {
+                  const result = await chatHandoff.handoff({
+                    sessionId,
+                    ...(atSeq === undefined ? {} : { atSeq }),
+                    targetHarnessId,
+                    ...(targetModel === undefined ? {} : { targetModel }),
+                    ...(targetThinkingOptionId === undefined ? {} : { targetThinkingOptionId }),
+                  });
+                  const targetId = result.sessionId as SessionId;
+                  if (ctx.sessions.list.getSnapshot().byId[targetId] === undefined) {
+                    await ctx.sessions.loadSummary(targetId).catch(() => undefined);
+                  }
+                  ctx.uiWorkspace.openSession(targetId);
+                }
+              : undefined,
           };
         },
       },

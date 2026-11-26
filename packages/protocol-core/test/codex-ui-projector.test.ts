@@ -1,6 +1,7 @@
 import { configureSubagentEvent } from "@codexhost/harness-adapter";
 import { describe, expect, it } from "vitest";
 import type {
+  HostApprovalInteraction,
   HostCommandExecutionItem,
   HostFileChangeItem,
   HostMcpToolCallItem,
@@ -14,11 +15,17 @@ import {
   hostInteractionIdSchema,
   hostItemIdSchema,
   hostTurnIdSchema,
+  type JsonValue,
   nativeCheckpointRefSchema,
   nativeTurnRefSchema,
 } from "@codexhost/shared-contracts";
 
-import { CodexTurnProjector, projectHistoricalTurn } from "../src/index.js";
+import {
+  CodexTurnProjector,
+  historicalPlanUpdate,
+  projectHistoricalTurn,
+  type TodoPlan,
+} from "../src/index.js";
 
 const turnId = hostTurnIdSchema.parse("turn-1");
 const itemId = (value: string) => hostItemIdSchema.parse(value);
@@ -38,6 +45,7 @@ describe("Codex UI projector", () => {
     const reasoningId = itemId("line-break-reasoning");
     const rawText = "First\n\n\r\nSecond\r\n\n";
     const visibleText = "First\n\n\r\nSecond";
+    const summary = ["**First**", "**Second**"];
     value.project({ type: "turn.started", turnId });
     expect(
       value.project({
@@ -82,7 +90,12 @@ describe("Codex UI projector", () => {
         },
       }).messages,
     ).toMatchObject([
-      { params: { item: { type: "reasoning", summary: [visibleText] } } },
+      { method: "item/reasoning/summaryPartAdded", params: { summaryIndex: 1 } },
+      {
+        method: "item/reasoning/summaryTextDelta",
+        params: { summaryIndex: 1, delta: "**Second**" },
+      },
+      { params: { item: { type: "reasoning", summary } } },
       { params: { item: { type: "commandExecution", aggregatedOutput: visibleText } } },
     ]);
     expect(
@@ -90,7 +103,7 @@ describe("Codex UI projector", () => {
         .completedTurn,
     ).toMatchObject({
       items: [
-        { type: "reasoning", summary: [visibleText] },
+        { type: "reasoning", summary },
         { type: "commandExecution", aggregatedOutput: visibleText },
       ],
     });
@@ -113,8 +126,7 @@ describe("Codex UI projector", () => {
     };
     expect(projectHistoricalTurn({ turnId, cwd: "/workspace", snapshot })).toMatchObject({
       items: [
-        { type: "userMessage" },
-        { type: "reasoning", summary: [visibleText] },
+        { type: "reasoning", summary },
         { type: "commandExecution", aggregatedOutput: visibleText },
       ],
     });
@@ -132,7 +144,7 @@ describe("Codex UI projector", () => {
           ],
         },
       }).items,
-    ).toMatchObject([{ type: "userMessage" }]);
+    ).toEqual([]);
   });
 
   it("keeps steered input inside its Turn, tagged for Desktop only while live", () => {
@@ -279,10 +291,27 @@ describe("Codex UI projector", () => {
       completedAtMs: 1_000,
     };
     expect(projectHistoricalTurn({ turnId, cwd: "/workspace", snapshot })).toMatchObject({
+      items: [],
       startedAt: null,
       completedAt: null,
       durationMs: null,
     });
+    const wake = projectHistoricalTurn({
+      turnId,
+      cwd: "/workspace",
+      snapshot: {
+        ...snapshot,
+        items: [
+          {
+            item: { type: "agentMessage", itemId: itemId("wake"), text: "Timer expired" },
+            outcome: { status: "succeeded" },
+          },
+        ],
+      },
+    });
+    expect(wake.items).toMatchObject([
+      { id: "wake", type: "agentMessage", text: "Timer expired", phase: "final_answer" },
+    ]);
   });
 
   it("projects a complete historical Snapshot without replaying notifications", () => {
@@ -358,7 +387,7 @@ describe("Codex UI projector", () => {
         {
           id: "historical-reasoning-summary",
           type: "reasoning",
-          summary: ["visible analysis"],
+          summary: ["**visible analysis**"],
           content: [],
           durationMs: null,
         },
@@ -741,6 +770,8 @@ describe("Codex UI projector", () => {
       13_000,
     );
     expect(reasoningCompleted.messages).toMatchObject([
+      { method: "item/reasoning/summaryPartAdded" },
+      { method: "item/reasoning/summaryTextDelta", params: { delta: "**thinking**" } },
       {
         method: "item/completed",
         params: {
@@ -792,11 +823,24 @@ describe("Codex UI projector", () => {
     );
     expect(reasoningCompleted.messages).toMatchObject([
       {
+        method: "item/reasoning/summaryPartAdded",
+        params: { itemId: `${reasoningId}-summary`, summaryIndex: 0 },
+      },
+      {
+        method: "item/reasoning/summaryTextDelta",
+        params: { itemId: `${reasoningId}-summary`, summaryIndex: 0, delta: "**deep thought**" },
+      },
+      {
         method: "item/completed",
         params: {
           startedAtMs: 2_000,
           completedAtMs: 9_000,
-          item: { id: `${reasoningId}-summary`, type: "reasoning", durationMs: 120 },
+          item: {
+            id: `${reasoningId}-summary`,
+            type: "reasoning",
+            summary: ["**deep thought**"],
+            durationMs: 120,
+          },
         },
       },
       {
@@ -1228,7 +1272,7 @@ describe("Codex UI projector", () => {
         type: "item.updated",
         turnId,
         itemId: reasoningId,
-        update: { type: "text.append", text: "visible " },
+        update: { type: "text.append", text: "Visible step. Then" },
       }).messages,
     ).toMatchObject([
       {
@@ -1245,7 +1289,7 @@ describe("Codex UI projector", () => {
       },
       {
         method: "item/commandExecution/outputDelta",
-        params: { itemId: reasoningId, delta: "visible " },
+        params: { itemId: reasoningId, delta: "Visible step. Then" },
       },
       {
         method: "item/reasoning/summaryPartAdded",
@@ -1253,7 +1297,11 @@ describe("Codex UI projector", () => {
       },
       {
         method: "item/reasoning/summaryTextDelta",
-        params: { itemId: `${reasoningId}-summary`, summaryIndex: 0, delta: "visible " },
+        params: {
+          itemId: `${reasoningId}-summary`,
+          summaryIndex: 0,
+          delta: "**Visible step**\n\nThen",
+        },
       },
     ]);
     expect(
@@ -1261,23 +1309,23 @@ describe("Codex UI projector", () => {
         type: "item.updated",
         turnId,
         itemId: reasoningId,
-        update: { type: "text.append", text: "analysis" },
+        update: { type: "text.append", text: " more." },
       }).messages,
     ).toMatchObject([
       {
         method: "item/commandExecution/outputDelta",
-        params: { itemId: reasoningId, delta: "analysis" },
+        params: { itemId: reasoningId, delta: " more." },
       },
       {
         method: "item/reasoning/summaryTextDelta",
-        params: { itemId: `${reasoningId}-summary`, summaryIndex: 0, delta: "analysis" },
+        params: { itemId: `${reasoningId}-summary`, summaryIndex: 0, delta: " more." },
       },
     ]);
     const reasoningCompleted = value.project({
       type: "item.completed",
       turnId,
       snapshot: {
-        item: { type: "reasoning", itemId: reasoningId, text: "visible analysis" },
+        item: { type: "reasoning", itemId: reasoningId, text: "Visible step. Then more." },
         outcome: { status: "succeeded" },
       },
     });
@@ -1288,7 +1336,7 @@ describe("Codex UI projector", () => {
           item: {
             id: `${reasoningId}-summary`,
             type: "reasoning",
-            summary: ["visible analysis"],
+            summary: ["**Visible step**\n\nThen more."],
             content: [],
           },
         },
@@ -1300,7 +1348,7 @@ describe("Codex UI projector", () => {
             id: reasoningId,
             type: "commandExecution",
             command: "thinking",
-            aggregatedOutput: "visible analysis",
+            aggregatedOutput: "Visible step. Then more.",
           },
         },
       },
@@ -1336,14 +1384,14 @@ describe("Codex UI projector", () => {
         {
           id: `${reasoningId}-summary`,
           type: "reasoning",
-          summary: ["visible analysis"],
+          summary: ["**Visible step**\n\nThen more."],
           content: [],
         },
         {
           id: reasoningId,
           type: "commandExecution",
           command: "thinking",
-          aggregatedOutput: "visible analysis",
+          aggregatedOutput: "Visible step. Then more.",
         },
         { id: agentId, type: "agentMessage", text: "answer" },
       ],
@@ -1638,7 +1686,6 @@ describe("Codex UI projector", () => {
       outcome: { status: "succeeded" },
     };
     expect(projectHistoricalTurn({ turnId, cwd: "/workspace", snapshot }).items).toEqual([
-      expect.objectContaining({ type: "userMessage" }),
       mcpCompleted,
       expect.objectContaining({ id: failedMcpId, ...failedMcpCompleted }),
       searchItem,
@@ -1924,6 +1971,96 @@ describe("Codex UI projector", () => {
         }).messages,
       ).toMatchObject([{ params: { item: { type: "commandExecution", cwd } } }]);
     }
+  });
+
+  it("clears the plan from an empty Todo list, live and in replayed history", () => {
+    const todo = (
+      id: string,
+      todos: JsonValue[],
+    ): HostThreadSnapshot["turns"][number]["items"][number] => ({
+      item: { type: "toolExecution", itemId: itemId(id), toolName: "Todo", arguments: { todos } },
+      outcome: { status: "succeeded" },
+    });
+    const value = projector();
+    value.project({ type: "turn.started", turnId });
+    const empty = todo("todo-empty", []);
+    expect(value.project({ type: "item.started", turnId, item: empty.item }).messages).toEqual([]);
+    expect(
+      value.project({ type: "item.completed", turnId, snapshot: empty }).messages,
+    ).toMatchObject([{ method: "turn/plan/updated", params: { plan: [] } }]);
+
+    const plansByTurnId = new Map<string, TodoPlan>();
+    const historicalTurn = (
+      id: string,
+      todos: JsonValue[],
+      status: "succeeded" | "failed" = "succeeded",
+    ) =>
+      projectHistoricalTurn(
+        {
+          turnId: hostTurnIdSchema.parse(id),
+          cwd: "/workspace",
+          snapshot: {
+            nativeTurnRef: nativeTurnRefSchema.parse({
+              harnessId: "claude-code",
+              nativeSessionId: "session-1",
+              nativeTurnKey: id,
+              formatVersion: 1,
+            }),
+            input: [],
+            items: [
+              {
+                ...todo(`${id}-todo`, todos),
+                outcome:
+                  status === "failed"
+                    ? {
+                        status,
+                        error: { code: "nativeFailure", message: "todo failed", retryable: false },
+                      }
+                    : { status },
+              },
+            ],
+            outcome: { status: "succeeded" },
+          },
+        },
+        plansByTurnId,
+      );
+    const planned = historicalTurn("turn-1", [{ content: "Ship", status: "pending" }]);
+    const cleared = historicalTurn("turn-2", []);
+    const failed = historicalTurn("turn-3", [], "failed");
+    expect(JSON.stringify(planned)).not.toContain("Ship");
+    expect(historicalPlanUpdate("thread-1", [planned, failed], plansByTurnId)).toMatchObject({
+      params: { turnId: "turn-1", plan: [{ step: "Ship", status: "pending" }] },
+    });
+    expect(
+      historicalPlanUpdate("thread-1", [planned, { ...cleared }, failed], plansByTurnId),
+    ).toEqual({
+      method: "turn/plan/updated",
+      params: { threadId: "thread-1", turnId: "turn-2", explanation: null, plan: [] },
+    });
+  });
+
+  it("does not clear the plan for a failed generic todo_write", () => {
+    const value = projector();
+    value.project({ type: "turn.started", turnId });
+    const item = {
+      type: "toolExecution" as const,
+      itemId: itemId("empty-write"),
+      toolName: "todo_write",
+      arguments: { todos: [] },
+    };
+    const started = value.project({ type: "item.started", turnId, item });
+    const failed = value.project({
+      type: "item.completed",
+      turnId,
+      snapshot: {
+        item,
+        outcome: {
+          status: "failed",
+          error: { code: "nativeFailure", message: "todo failed", retryable: false },
+        },
+      },
+    });
+    expect([...started.messages, ...failed.messages]).toEqual([]);
   });
 
   it("docks Todo tools on turn/plan/updated and hides the name-only card", () => {
@@ -2328,6 +2465,301 @@ describe("Codex UI projector", () => {
     });
   });
 
+  it("rejects a synthetic Question after its Turn completed", () => {
+    const value = projector();
+    const question: HostQuestionInteraction = {
+      type: "question",
+      interactionId: hostInteractionIdSchema.parse("interaction-completed"),
+      turnId,
+      title: "Question",
+      questions: [
+        {
+          id: "decision",
+          type: "choice",
+          prompt: "Continue?",
+          options: [{ value: "yes", label: "Yes" }],
+          multiple: false,
+          allowOther: false,
+          optional: false,
+        },
+      ],
+    };
+    value.project({ type: "turn.started", turnId });
+    const owner: HostCommandExecutionItem = {
+      type: "commandExecution",
+      itemId: itemId("synthetic-owner"),
+      command: "await-user",
+    };
+    value.project({ type: "item.started", turnId, item: owner });
+    value.project({ type: "item.detached", turnId, itemId: owner.itemId });
+    value.project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } });
+    expect(() => value.projectQuestion(question, itemId("completed-question"), 2_000)).toThrow(
+      "follows the Turn terminal",
+    );
+  });
+
+  it.each([
+    { status: "succeeded" as const },
+    {
+      status: "failed" as const,
+      error: { code: "nativeFailure" as const, message: "failed", retryable: false },
+    },
+    { status: "cancelled" as const, reason: "cancelled" },
+  ])("rejects a post-terminal Question without a detached owner (%s)", (outcome) => {
+    const value = projector();
+    const question: HostQuestionInteraction = {
+      type: "question",
+      interactionId: hostInteractionIdSchema.parse(`interaction-${outcome.status}`),
+      turnId,
+      questions: [
+        {
+          id: "decision",
+          type: "choice",
+          prompt: "Continue?",
+          options: [{ value: "yes", label: "Yes" }],
+          multiple: false,
+          allowOther: false,
+          optional: false,
+        },
+      ],
+    };
+    value.project({ type: "turn.started", turnId });
+    value.project({ type: "turn.completed", turnId, outcome });
+    expect(() => value.projectQuestion(question, itemId(`unowned-${outcome.status}`))).toThrow(
+      /follows (a non-successful Turn terminal|the Turn terminal)/u,
+    );
+    const approval: HostApprovalInteraction = {
+      type: "approval",
+      interactionId: hostInteractionIdSchema.parse(`approval-${outcome.status}`),
+      turnId,
+      title: "Approve",
+      subject: { type: "nativeAction" },
+      actions: [
+        { id: "allow", label: "Allow", effect: "allowOnce" },
+        { id: "deny", label: "Deny", effect: "deny" },
+      ],
+    };
+    expect(() => value.projectApproval(approval, "test-server")).toThrow(
+      /follows (a non-successful Turn terminal|the Turn terminal)/u,
+    );
+    expect(value.hasOpenDetachedItems).toBe(false);
+  });
+
+  it("allows terminal interaction only for a successful detached tool owner", () => {
+    const value = projector();
+    const toolId = itemId("detached-question-tool");
+    const tool: HostToolExecutionItem = {
+      type: "toolExecution",
+      itemId: toolId,
+      toolName: "user_question_tool",
+      arguments: {},
+    };
+    const question: HostQuestionInteraction = {
+      type: "question",
+      interactionId: hostInteractionIdSchema.parse("interaction-detached-tool"),
+      turnId,
+      itemId: toolId,
+      questions: [
+        {
+          id: "answer",
+          type: "text",
+          prompt: "Answer",
+          multiline: false,
+          secret: false,
+          optional: false,
+        },
+      ],
+    };
+    value.project({ type: "turn.started", turnId });
+    value.project({ type: "item.started", turnId, item: tool });
+    value.project({ type: "item.detached", turnId, itemId: toolId });
+    value.project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } });
+    expect(value.hasOpenDetachedTool()).toBe(true);
+    expect(value.hasOpenDetachedTool(toolId)).toBe(true);
+    expect(value.hasOpenDetachedTool(itemId("other-owner"))).toBe(false);
+
+    expect(value.projectQuestion(question, itemId("unused"))).toMatchObject({
+      itemId: toolId,
+    });
+    expect(value.hasOpenDetachedItems).toBe(true);
+    value.project({
+      type: "interaction.closed",
+      interactionId: question.interactionId,
+      turnId,
+      reason: "cancelled",
+    });
+    expect(value.hasOpenDetachedItems).toBe(true);
+    value.project({
+      type: "item.completed",
+      turnId,
+      snapshot: { item: tool, outcome: { status: "cancelled" } },
+    });
+    expect(value.hasOpenDetachedItems).toBe(false);
+  });
+
+  it("rejects terminal approval without an explicit detached owner", () => {
+    const value = projector();
+    const command: HostCommandExecutionItem = {
+      type: "commandExecution",
+      itemId: itemId("detached-approval-command"),
+      command: "await-user",
+    };
+    const approval: HostApprovalInteraction = {
+      type: "approval",
+      interactionId: hostInteractionIdSchema.parse("interaction-detached-approval"),
+      turnId,
+      title: "Approve",
+      subject: { type: "nativeAction" },
+      actions: [
+        { id: "allow", label: "Allow", effect: "allowOnce" },
+        { id: "deny", label: "Deny", effect: "deny" },
+      ],
+    };
+    value.project({ type: "turn.started", turnId });
+    value.project({ type: "item.started", turnId, item: command });
+    value.project({ type: "item.detached", turnId, itemId: command.itemId });
+    value.project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } });
+    expect(() => value.projectApproval(approval, "test-server")).toThrow(
+      "follows the Turn terminal",
+    );
+    expect(value.hasOpenDetachedItems).toBe(true);
+  });
+
+  it.each(["succeeded", "failed", "cancelled"] as const)(
+    "rejects pending approvals without an explicit owner: %s",
+    (status) => {
+      const value = projector();
+      const owner = {
+        type: "toolExecution" as const,
+        itemId: itemId("pending-approval-owner"),
+        namespace: "test",
+        toolName: "edit_file",
+        arguments: {},
+      };
+      value.project({ type: "turn.started", turnId });
+      value.project({ type: "item.started", turnId, item: owner });
+      value.project({ type: "item.detached", turnId, itemId: owner.itemId });
+      value.projectApproval(
+        {
+          type: "approval",
+          interactionId: hostInteractionIdSchema.parse("pending-owned-approval"),
+          turnId,
+          title: "Approve edit",
+          subject: { type: "nativeAction" },
+          actions: [
+            { id: "allow", label: "Allow", effect: "allowOnce" },
+            { id: "deny", label: "Deny", effect: "deny" },
+          ],
+        },
+        "test-server",
+      );
+      const complete = () =>
+        value.project({
+          type: "turn.completed",
+          turnId,
+          outcome:
+            status === "succeeded"
+              ? { status }
+              : status === "failed"
+                ? { status, error: { code: "nativeFailure", message: "failed", retryable: false } }
+                : { status, reason: "cancelled" },
+        });
+      expect(complete).toThrow("pending Interactions");
+    },
+  );
+
+  it("does not treat background text as a terminal interaction owner", () => {
+    const value = projector();
+    value.project({ type: "turn.started", turnId });
+    value.project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } });
+    value.project({
+      type: "item.background.started",
+      turnId,
+      item: { type: "agentMessage", itemId: itemId("background-text"), text: "late output" },
+    });
+    expect(value.hasOpenDetachedItems).toBe(true);
+    expect(value.hasOpenDetachedTool()).toBe(false);
+
+    const question: HostQuestionInteraction = {
+      type: "question",
+      interactionId: hostInteractionIdSchema.parse("interaction-background-text"),
+      turnId,
+      questions: [
+        {
+          id: "answer",
+          type: "text",
+          prompt: "Answer",
+          multiline: false,
+          secret: false,
+          optional: false,
+        },
+      ],
+    };
+    expect(() => value.projectQuestion(question, itemId("unowned-background-text"))).toThrow(
+      "follows the Turn terminal",
+    );
+    const approval: HostApprovalInteraction = {
+      type: "approval",
+      interactionId: hostInteractionIdSchema.parse("approval-background-text"),
+      turnId,
+      title: "Approve",
+      subject: { type: "nativeAction" },
+      actions: [
+        { id: "allow", label: "Allow", effect: "allowOnce" },
+        { id: "deny", label: "Deny", effect: "deny" },
+      ],
+    };
+    expect(() => value.projectApproval(approval, "test-server")).toThrow(
+      "follows the Turn terminal",
+    );
+  });
+
+  it("does not reuse a settled owner or synthetic Question as a new owner", () => {
+    const value = projector();
+    const owner: HostCommandExecutionItem = {
+      type: "commandExecution",
+      itemId: itemId("settled-owner"),
+      command: "await-user",
+    };
+    const firstQuestion: HostQuestionInteraction = {
+      type: "question",
+      interactionId: hostInteractionIdSchema.parse("interaction-synthetic-pending"),
+      turnId,
+      questions: [
+        {
+          id: "answer",
+          type: "text",
+          prompt: "Answer",
+          multiline: false,
+          secret: false,
+          optional: false,
+        },
+      ],
+    };
+    value.project({ type: "turn.started", turnId });
+    value.project({ type: "item.started", turnId, item: owner });
+    value.project({ type: "item.detached", turnId, itemId: owner.itemId });
+    value.project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } });
+    expect(() => value.projectQuestion(firstQuestion, itemId("synthetic-pending"))).toThrow(
+      "follows the Turn terminal",
+    );
+    value.project({
+      type: "item.completed",
+      turnId,
+      snapshot: { item: owner, outcome: { status: "succeeded" } },
+    });
+    expect(value.hasOpenDetachedTool()).toBe(false);
+
+    const secondQuestion = {
+      ...firstQuestion,
+      interactionId: hostInteractionIdSchema.parse("interaction-after-settle"),
+    };
+    expect(() => value.projectQuestion(secondQuestion, itemId("synthetic-second"))).toThrow(
+      "follows the Turn terminal",
+    );
+    expect(value.hasOpenDetachedItems).toBe(false);
+  });
+
   it("fails a secret Question without mutating synthetic Item state", () => {
     const value = projector();
     value.project({ type: "turn.started", turnId });
@@ -2471,3 +2903,20 @@ it.each([false, true])(
     ]);
   },
 );
+
+it("preserves startedAt on in-progress snapshotTurn() while keeping explicit base compatible", () => {
+  const turnId = hostTurnIdSchema.parse("turn-started-at");
+  const startedAtMs = 1_750_000_123_456;
+  const projector = new CodexTurnProjector({
+    threadId: "thread-started-at",
+    turnId,
+    cwd: "/workspace",
+    startedAtMs,
+  });
+  projector.project({ type: "turn.started", turnId });
+  expect(projector.snapshotTurn().startedAt).toBe(Math.floor(startedAtMs / 1000));
+  expect(projector.snapshotTurn({ ...projector.pendingTurn(null), custom: true })).toMatchObject({
+    startedAt: null,
+    custom: true,
+  });
+});

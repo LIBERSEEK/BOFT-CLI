@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import clsx from "clsx";
 import type { WorkspaceId } from "@deepseek-ai/dsh-workspace/types";
 import { workspaceDisplayTitle } from "@deepseek-ai/dsh-api-workspace-controller/default-workspace";
@@ -13,6 +13,18 @@ import css from "./ConversationRoot.module.css";
 
 function ConversationSessionView({ renderSlot }: ConversationViewsProps) {
   return renderSlot("conversation.session", {});
+}
+
+function ConversationInputDock({
+  session,
+  useInput,
+  renderSlot,
+}: Pick<ConversationContentProps, "useInput" | "renderSlot"> & {
+  session: InputZone["session"] | undefined;
+}) {
+  const input = useInput((snapshot) => snapshot);
+  if (session === undefined || input === undefined) return null;
+  return renderSlot("conversation.input.dock", { session, input });
 }
 
 function NoConversationWidthControls() {
@@ -35,9 +47,11 @@ export function ConversationContent(props: ConversationContentProps) {
     useWorkspaces,
     useInput,
     useComposerBlock,
+    useSessionCreation,
     renderSlot,
     renderSlotChain,
     selectWorkspace,
+    retrySessionCreation,
     referenceEditor,
     t,
     useFactorySlot,
@@ -49,15 +63,19 @@ export function ConversationContent(props: ConversationContentProps) {
   const pendingInteraction = useSessionStatus((snapshot) =>
     sessionId === undefined ? undefined : snapshot.get(sessionId)?.pendingInteraction,
   );
-  const inputState = useInput((s) => s);
   const cwd = useSessions((s) => (sessionId === undefined ? undefined : s.byId[sessionId]?.cwd));
   const workspaces = useWorkspaces((s) => s);
   // A plugin this package cannot import (ui-model-selection) says this session cannot
   // send; its reason is already localized by whoever raised it.
   const composerBlock = useComposerBlock((block) => block);
+  const sessionCreation = useSessionCreation((state) => state);
+  const creatingWorkspaceId =
+    sessionId === undefined && sessionCreation.state !== "idle"
+      ? sessionCreation.workspaceId
+      : undefined;
 
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [pendingWorkspaceId, setPendingWorkspaceId] = useState<WorkspaceId | null | undefined>();
+  const [workspacePick, setWorkspacePick] = useState<{ id: WorkspaceId | null }>();
   const pickerAnchor = useRef<HTMLButtonElement>(null);
 
   // Publishes the two live measurements floating View chrome reads off the
@@ -88,31 +106,13 @@ export function ConversationContent(props: ConversationContentProps) {
     sessionId === undefined
       ? undefined
       : workspaces.items.find((workspace) => workspace.sessionIds.includes(sessionId));
-  const pendingWorkspace = workspaces.items.find(
-    (workspace) => workspace.workspaceId === pendingWorkspaceId,
+  const targetWorkspaceId = workspacePick ? workspacePick.id : creatingWorkspaceId;
+  const targetWorkspace = workspaces.items.find(
+    (workspace) => workspace.workspaceId === targetWorkspaceId,
   );
 
-  // Clear the pending pick once the session lands in it, or when the picked
-  // workspace disappears from a ready list (deleted from the sidebar).
-  useEffect(() => {
-    if (pendingWorkspaceId === undefined) return;
-    if (
-      (pendingWorkspaceId === null
-        ? sessionWorkspace === undefined
-        : sessionWorkspace?.workspaceId === pendingWorkspaceId) ||
-      (pendingWorkspaceId !== null &&
-        workspaces.phase === "ready" &&
-        pendingWorkspace === undefined)
-    ) {
-      setPendingWorkspaceId(undefined);
-    }
-  }, [pendingWorkspaceId, sessionWorkspace?.workspaceId, workspaces.phase, pendingWorkspace]);
-
-  const zone: InputZone | undefined =
-    session === undefined || inputState === undefined ? undefined : { session, input: inputState };
-
   // The chip is a selector; label resolution walks the flow top-down:
-  //   1. a just-picked workspace (pending) → its title;
+  //   1. a just-picked or creating workspace → its title;
   //   2. cold start, no session yet → placeholder ("Choose workspace");
   //   3. the blank session's workspace is in the list → its title;
   //   4. list still loading → cwd folder name bridges so the title does not
@@ -122,8 +122,8 @@ export function ConversationContent(props: ConversationContentProps) {
   // A title still automatic reads in the reader's language, matching the
   // sidebar row the same Workspace has there.
   const storedChipTitle =
-    (pendingWorkspaceId === null ? undefined : pendingWorkspace?.title) ??
-    (pendingWorkspaceId === null || sessionId === undefined
+    (targetWorkspaceId === null ? undefined : targetWorkspace?.title) ??
+    (targetWorkspaceId === null || sessionId === undefined
       ? undefined
       : (sessionWorkspace?.title ??
         (workspaces.phase === "ready" || cwd === undefined || cwd === ""
@@ -134,37 +134,51 @@ export function ConversationContent(props: ConversationContentProps) {
       ? undefined
       : workspaceDisplayTitle(storedChipTitle, t("workspace.defaultName"));
 
-  const heroWorkspaceRow = (
-    <div className={css.heroWorkspaceRow}>
-      <WorkspaceChip
-        buttonRef={pickerAnchor}
-        label={chipTitle ?? (workspaces.canStartProjectless ? t("hero.noWorkspace") : undefined)}
-        projectless={workspaces.canStartProjectless === true && chipTitle === undefined}
-        menuOpen={pickerOpen}
-        onClick={() => {
-          setPickerOpen((open) => !open);
-        }}
-        t={t}
-      />
-      {renderSlot("conversation.hero.workspace", {
-        open: pickerOpen,
-        anchorRef: pickerAnchor,
-        selectedId:
-          pendingWorkspaceId === null
-            ? undefined
-            : (pendingWorkspaceId ?? sessionWorkspace?.workspaceId),
-        onPick: (workspaceId) => {
-          setPickerOpen(false);
-          setPendingWorkspaceId(workspaceId);
-          void selectWorkspace(workspaceId).catch(() => {
-            setPendingWorkspaceId((current) => (current === workspaceId ? undefined : current));
-          });
+  const heroTopBar = (
+    <div className={css.heroTopBarInner}>
+      {renderSlot(
+        "conversation.hero.workspace",
+        {
+          open: pickerOpen,
+          anchorRef: pickerAnchor,
+          selectedId:
+            targetWorkspaceId === null
+              ? undefined
+              : (targetWorkspaceId ?? sessionWorkspace?.workspaceId),
+          fallbackLabel: chipTitle,
+          onOpenChange: setPickerOpen,
+          onPick: (workspaceId) => {
+            setPickerOpen(false);
+            const pick = { id: workspaceId };
+            setWorkspacePick(pick);
+            const finish = () =>
+              setWorkspacePick((current) => (current === pick ? undefined : current));
+            void selectWorkspace(workspaceId).then(finish, finish);
+          },
+          onClose: () => {
+            setPickerOpen(false);
+          },
         },
-        onClose: () => {
-          setPickerOpen(false);
+        {
+          fallback: (
+            <WorkspaceChip
+              buttonRef={pickerAnchor}
+              label={
+                chipTitle ?? (workspaces.canStartProjectless ? t("hero.noWorkspace") : undefined)
+              }
+              projectless={workspaces.canStartProjectless === true && chipTitle === undefined}
+              menuOpen={pickerOpen}
+              onClick={() => {
+                setPickerOpen((open) => !open);
+              }}
+              t={t}
+            />
+          ),
         },
-      })}
-      {renderSlot("conversation.hero.agentPreset", {})}
+      )}
+      <div className={css.heroAgentPresetSeat}>
+        {renderSlot("conversation.hero.agentPreset", {})}
+      </div>
     </div>
   );
 
@@ -173,44 +187,66 @@ export function ConversationContent(props: ConversationContentProps) {
   // Keep the resident textarea mounted across both states.
   const workspaceRequired =
     workspaces.phase === "ready" && !workspaces.canStartProjectless && chipTitle === undefined;
+  const pendingCreation = sessionId === undefined && sessionCreation.state !== "idle";
+  const preparingBlankSession =
+    sessionId !== undefined && hero && session?.openState === "loading" && !workspaceRequired;
+  // The workspace chip already shows the pending location while the old Session
+  // still owns the composer and its draft.
+  const switchingWorkspace = hero && workspacePick !== undefined;
   const preparingSession =
-    (sessionId === undefined || session?.openState !== "open") && !workspaceRequired;
+    switchingWorkspace ||
+    ((sessionId === undefined || session?.openState !== "open") && !workspaceRequired);
   const inert =
-    sessionId === undefined || session?.openState !== "open" || (hero && workspaceRequired);
+    switchingWorkspace ||
+    sessionId === undefined ||
+    session?.openState !== "open" ||
+    (hero && workspaceRequired);
   // A raised block is the same inert posture with the blocker's own reason:
   // one disabled textarea, never a second tree. The no-workspace state wins
   // when both hold — picking a workspace is the earlier prerequisite.
   const blocked = !inert && composerBlock !== undefined;
   const inputBar = renderSlot("conversation.composer.bar", {
     variant: hero ? "hero" : "composer",
-    ...(inert
+    ...(hero ? { topBar: heroTopBar } : {}),
+    ...(pendingCreation
       ? {
-          disabled: true,
-          placeholder: t(preparingSession ? "placeholder.preparing" : "placeholder.workspace"),
-          ...(!preparingSession
-            ? {
-                workspacePickerOpen: pickerOpen,
-                onRequestWorkspace: () => {
-                  setPickerOpen(true);
-                },
-              }
-            : {}),
+          sessionCreation,
+          onRetrySessionCreation: retrySessionCreation,
+          placeholder: t("placeholder.hero"),
         }
-      : blocked
-        ? // `blocked`, not `disabled`: the bar refuses input either way, but a
-          // block keeps the model seat live because choosing a model is how the
-          // user clears it.
-          { blocked: composerBlock, placeholder: composerBlock.reason }
-        : hero
-          ? { placeholder: t("placeholder.hero") }
-          : {}),
+      : preparingBlankSession
+        ? {
+            disabled: true,
+            preparingDraft: true,
+            placeholder: t("placeholder.hero"),
+          }
+        : inert
+          ? {
+              disabled: true,
+              placeholder: t(preparingSession ? "placeholder.preparing" : "placeholder.workspace"),
+              ...(!preparingSession
+                ? {
+                    workspacePickerOpen: pickerOpen,
+                    onRequestWorkspace: () => {
+                      setPickerOpen(true);
+                    },
+                  }
+                : {}),
+            }
+          : blocked
+            ? // `blocked`, not `disabled`: the bar refuses input either way, but a
+              // block keeps the model seat live because choosing a model is how the
+              // user clears it.
+              { blocked: composerBlock, placeholder: composerBlock.reason }
+            : hero
+              ? { placeholder: t("placeholder.hero") }
+              : {}),
   });
 
   const composerBar = (
     <div className={clsx(css.composerStack, hero && css.composerHero)}>
       {hero && <HeroShell t={t} renderSlot={renderSlot} />}
-      {hero && heroWorkspaceRow}
-      {zone !== undefined && renderSlot("conversation.input.dock", zone)}
+      <ConversationInputDock session={session} useInput={useInput} renderSlot={renderSlot} />
       {inputBar}
     </div>
   );

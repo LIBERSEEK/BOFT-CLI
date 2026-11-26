@@ -1,6 +1,12 @@
-import { catalogModelForRef } from "@codexhost/shared-contracts";
+import {
+  catalogModelForRef,
+  harnessModelRefFromKey,
+  harnessModelRefKey,
+  sameHarnessModelRef,
+} from "@codexhost/shared-contracts";
 import createElement from "lucide/dist/esm/createElement.mjs";
 import CircleAlert from "lucide/dist/esm/icons/circle-alert.mjs";
+import RefreshCw from "lucide/dist/esm/icons/refresh-cw.mjs";
 import {
   mountRendererModelFastControl,
   type RendererModelFastControl,
@@ -62,6 +68,7 @@ const MODEL_SCROLLBAR_STYLE_ATTRIBUTE = "data-codexhost-model-picker-scrollbar";
 
 export interface RendererModelControlView {
   status: "idle" | "waitingForAdapter" | "loading" | "ready" | "selecting" | "empty" | "error";
+  refreshing?: boolean;
   catalog?: HarnessModelCatalog;
   selected?: HarnessModelRef;
   selectedThinkingOptionId?: HarnessThinkingOptionId;
@@ -113,8 +120,9 @@ export interface RendererModelPickerControl {
   menu: HTMLElement;
   modelMenu: HTMLElement;
   modelButton: HTMLButtonElement;
+  modelHeading: HTMLElement;
+  refreshButton?: HTMLButtonElement;
   searchInput: HTMLInputElement;
-  searchHeader: HTMLElement;
   searchEmpty: HTMLElement;
   harnessId: string;
   favorites: Set<string>;
@@ -164,6 +172,39 @@ function ensureModelScrollbarStyle(ownerDocument: Document): void {
       width: 0;
       height: 0;
     }
+    [data-codexhost-refresh-models] {
+      display: inline-grid;
+      place-items: center;
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: inherit;
+      cursor: pointer;
+    }
+    [data-codexhost-refresh-models]:hover:not([aria-disabled="true"]) {
+      background: var(--color-list-hover-background, color-mix(in srgb, currentColor 10%, transparent));
+    }
+    [data-codexhost-refresh-models]:focus-visible {
+      outline: 2px solid currentColor;
+      outline-offset: -2px;
+    }
+    [data-codexhost-refresh-models][aria-disabled="true"] {
+      cursor: default;
+      opacity: 0.65;
+    }
+    [data-codexhost-refresh-models][data-refreshing] > span {
+      display: inline-flex;
+      animation: codexhost-model-refresh-spin 0.9s linear infinite;
+    }
+    @keyframes codexhost-model-refresh-spin {
+      to { transform: rotate(360deg); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      [data-codexhost-refresh-models][data-refreshing] > span { animation: none; }
+    }
   `;
   (ownerDocument.head ?? ownerDocument.documentElement).append(style);
 }
@@ -185,6 +226,14 @@ export function isRendererModelPickerDisabled(view: RendererModelControlView): b
     view.status === "empty" ||
     view.catalog === undefined
   );
+}
+
+/**
+ * A first load that failed has no catalog to open. The trigger stays pressable
+ * and retries that load instead, so the Composer is not left without a Model.
+ */
+export function canRetryRendererModelCatalog(view: RendererModelControlView): boolean {
+  return view.status === "error" && view.catalog === undefined && view.refreshing !== true;
 }
 
 export function shouldCloseRendererModelPicker(view: RendererModelControlView): boolean {
@@ -373,6 +422,7 @@ export function mountRendererModelPicker(
   composerId: string,
   onSelectModel: (modelId: string) => void,
   onSelectThinking: (thinkingOptionId: string) => void,
+  onRefreshModels?: () => void,
 ): RendererModelPickerControl {
   ensureRendererTriggerChipStyle(document);
   ensureModelOptionStyle(document);
@@ -464,7 +514,6 @@ export function mountRendererModelPicker(
   const modelMenu = document.createElement("div");
   modelMenu.id = `${composerId}-model-submenu`;
   modelMenu.setAttribute("role", "menu");
-  modelMenu.setAttribute("aria-label", "Model");
   modelMenu.setAttribute("popover", "manual");
   modelMenu.className = MENU_CLASSES;
   modelMenu.dataset.codexhostModelScrollable = "true";
@@ -487,13 +536,30 @@ export function mountRendererModelPicker(
   searchInput.autocomplete = "off";
   searchInput.spellcheck = false;
   searchInput.className = SEARCH_INPUT_CLASSES;
-  const searchHeader = document.createElement("div");
-  searchHeader.style.position = "sticky";
-  searchHeader.style.top = "0";
-  searchHeader.style.zIndex = "2";
-  searchHeader.style.margin = "-4px";
-  searchHeader.style.padding = "4px";
-  searchHeader.style.backgroundColor = PICKER_POPOVER_BACKGROUND;
+  const header = document.createElement("div");
+  header.style.position = "sticky";
+  header.style.top = "0";
+  header.style.zIndex = "2";
+  header.style.margin = "-4px";
+  header.style.padding = "4px";
+  header.style.backgroundColor = PICKER_POPOVER_BACKGROUND;
+  const headerRow = document.createElement("div");
+  headerRow.style.display = "flex";
+  headerRow.style.alignItems = "center";
+  headerRow.style.justifyContent = "space-between";
+  const modelHeading = createHeading("");
+  headerRow.append(modelHeading);
+  const refreshButton = onRefreshModels ? document.createElement("button") : undefined;
+  if (refreshButton) {
+    refreshButton.type = "button";
+    refreshButton.dataset.codexhostRefreshModels = "";
+    const icon = document.createElement("span");
+    icon.style.display = "inline-flex";
+    icon.append(createElement(RefreshCw, { width: 14, height: 14, "aria-hidden": "true" }));
+    headerRow.append(refreshButton);
+    refreshButton.append(icon);
+  }
+  header.append(headerRow, searchInput);
   const searchEmpty = document.createElement("div");
   searchEmpty.dataset.codexhostModelSearchEmpty = "true";
   searchEmpty.textContent = "No matching models";
@@ -526,8 +592,12 @@ export function mountRendererModelPicker(
   // (e.g. via an earlier capture-phase listener), pull the cursor back into the
   // search box as long as the submenu remains open.
   let searchRefocusFrame: number | undefined;
-  const onSearchBlur = (): void => {
-    if (!popoverOpen(modelMenu)) return;
+  const onSearchBlur = (event: FocusEvent): void => {
+    if (
+      !popoverOpen(modelMenu) ||
+      (event.relatedTarget instanceof Node && modelMenu.contains(event.relatedTarget))
+    )
+      return;
     const active = document.activeElement;
     const movedToComposer =
       active === document.body ||
@@ -543,6 +613,7 @@ export function mountRendererModelPicker(
       if (
         popoverOpen(modelMenu) &&
         searchInput.isConnected &&
+        !searchInput.hidden &&
         !modelMenu.contains(document.activeElement)
       )
         searchInput.focus();
@@ -582,6 +653,10 @@ export function mountRendererModelPicker(
     positionAdvancedMenus(control);
   };
   const onTriggerClick = (): void => {
+    if (trigger.hasAttribute("data-codexhost-retry-models")) {
+      onRefreshModels?.();
+      return;
+    }
     if (pickerOpen()) close();
     else open();
   };
@@ -602,7 +677,8 @@ export function mountRendererModelPicker(
       event.target instanceof Element ? event.target.closest<HTMLButtonElement>("button") : null;
     if (target?.dataset.openModelMenu) {
       openModelMenu();
-      control.searchInput.focus();
+      if (!searchInput.hidden) searchInput.focus();
+      else (refreshButton ?? control.options.values().next().value?.button)?.focus();
       return;
     }
     if (target?.dataset.thinkingOptionId) {
@@ -615,6 +691,11 @@ export function mountRendererModelPicker(
     if (searchRefocusFrame !== undefined) {
       cancelAnimationFrame(searchRefocusFrame);
       searchRefocusFrame = undefined;
+    }
+    if (refreshButton && event.target instanceof Node && refreshButton.contains(event.target)) {
+      event.stopPropagation();
+      if (refreshButton.getAttribute("aria-disabled") !== "true") onRefreshModels?.();
+      return;
     }
     const favoriteButton =
       event.target instanceof Element
@@ -695,8 +776,7 @@ export function mountRendererModelPicker(
   // in that local coordinate space.
   root.append(trigger);
   document.body.append(menu, modelMenu);
-  searchHeader.append(searchInput);
-  modelMenu.append(searchHeader, searchEmpty);
+  modelMenu.append(header, searchEmpty);
 
   const control: RendererModelPickerControl = {
     root,
@@ -710,8 +790,9 @@ export function mountRendererModelPicker(
     menu,
     modelMenu,
     modelButton,
+    modelHeading,
+    ...(refreshButton ? { refreshButton } : {}),
     searchInput,
-    searchHeader,
     searchEmpty,
     harnessId: "",
     favorites: new Set(),
@@ -755,14 +836,14 @@ export function mountRendererModelPicker(
 
 function rebuildOptions(control: RendererModelPickerControl, view: RendererModelControlView): void {
   const presentation = rendererModelPickerPresentation(view);
+  const focused = document.activeElement;
+  const submenuHadFocus = control.modelMenu.contains(focused);
+  for (const option of control.options.values()) option.row.remove();
   control.options.clear();
   control.thinkingOptions.clear();
   control.menu.replaceChildren();
-  control.modelMenu.replaceChildren(
-    createHeading("Model"),
-    control.searchHeader,
-    control.searchEmpty,
-  );
+  control.searchInput.hidden = (view.catalog?.models.length ?? 0) <= 4;
+  if (control.searchInput.hidden) control.searchInput.value = "";
 
   if (presentation.showThinkingSection) {
     control.menu.append(createHeading("Thinking"));
@@ -801,7 +882,7 @@ function rebuildOptions(control: RendererModelPickerControl, view: RendererModel
   for (const model of view.catalog?.models ?? []) {
     const button = document.createElement("button");
     button.type = "button";
-    button.dataset.modelId = model.ref.id;
+    button.dataset.modelId = harnessModelRefKey(model.ref);
     button.setAttribute("role", "menuitemradio");
     button.className = OPTION_CLASSES;
 
@@ -821,7 +902,7 @@ function rebuildOptions(control: RendererModelPickerControl, view: RendererModel
     favorite.dataset.favoriteModelId = model.ref.id;
     favorite.append(createModelFavoriteIcon(document));
     row.append(button, favorite);
-    control.options.set(model.ref.id, {
+    control.options.set(harnessModelRefKey(model.ref), {
       row,
       favorite,
       label: model.label,
@@ -833,10 +914,16 @@ function rebuildOptions(control: RendererModelPickerControl, view: RendererModel
   }
   orderModelFavorites(control);
   applyModelSearchFilter(control);
-  // rebuildOptions replaced the submenu children above, which moves the focused
-  // search input out and back in and therefore drops focus; restore it while
-  // the submenu stays open.
-  if (popoverOpen(control.modelMenu)) control.searchInput.focus();
+  if (
+    popoverOpen(control.modelMenu) &&
+    submenuHadFocus &&
+    (!focused?.isConnected || (focused === control.searchInput && control.searchInput.hidden))
+  ) {
+    (control.searchInput.hidden
+      ? (control.refreshButton ?? control.options.values().next().value?.button)
+      : control.searchInput
+    )?.focus({ preventScroll: true });
+  }
 }
 
 function syncModelSelectionNotice(
@@ -890,6 +977,18 @@ export function renderRendererModelPicker(
     control.selectionNotice.hide();
     return;
   }
+  const messages = rendererHarnessMessages(locale);
+  syncRendererLabelText(control.modelHeading, messages.modelMenuTitle);
+  control.modelMenu.setAttribute("aria-label", messages.modelMenuTitle);
+  if (control.refreshButton) {
+    control.refreshButton.setAttribute("aria-label", messages.refreshModels);
+    control.refreshButton.title = messages.refreshModels;
+    control.refreshButton.setAttribute(
+      "aria-disabled",
+      String(view.refreshing === true || isRendererModelPickerDisabled(view)),
+    );
+    control.refreshButton.toggleAttribute("data-refreshing", view.refreshing === true);
+  }
   const presentation = rendererModelPickerPresentation(view);
   const catalogSignature = JSON.stringify({
     models: view.catalog?.models,
@@ -915,7 +1014,10 @@ export function renderRendererModelPicker(
   const accessibleLabel = secondaryLabel
     ? `${presentation.modelLabel}, ${secondaryLabel}`
     : presentation.modelLabel;
-  control.trigger.title = view.error ?? accessibleLabel;
+  const retryCatalog = control.refreshButton !== undefined && canRetryRendererModelCatalog(view);
+  control.trigger.title = retryCatalog
+    ? `${view.error ?? accessibleLabel}\n${messages.refreshModels}`
+    : (view.error ?? accessibleLabel);
   const selectionFailed = rendererModelSelectionFailed(view);
   control.errorMark.hidden = !selectionFailed;
   control.errorMark.style.display = selectionFailed ? "inline-flex" : "none";
@@ -927,30 +1029,35 @@ export function renderRendererModelPicker(
     "aria-busy",
     String(view.status === "loading" || view.status === "selecting"),
   );
-  control.trigger.disabled = isRendererModelPickerDisabled(view);
-  control.fast.render(view.catalog, view.selected, control.trigger.disabled, locale === "zh-CN");
+  const pickerDisabled = isRendererModelPickerDisabled(view);
+  control.trigger.disabled = pickerDisabled && !retryCatalog;
+  control.trigger.toggleAttribute("data-codexhost-retry-models", retryCatalog);
+  control.fast.render(view.catalog, view.selected, pickerDisabled, locale === "zh-CN");
   control.trigger.style.paddingLeft = control.fast.button.hidden ? "8px" : "2px";
   if (control.fast.button.hidden) control.fast.button.remove();
   else if (control.fast.button.parentElement !== control.root)
     control.root.prepend(control.fast.button);
   if (shouldCloseRendererModelPicker(view) && !keepOpenMenu) control.close();
-  control.modelButton.disabled = control.trigger.disabled;
+  control.modelButton.disabled = pickerDisabled;
   // The search input must not mirror the trigger's disabled state: disabling a
   // focused element blurs it, which would drop the cursor out of the box during
   // transient states (e.g. "selecting"). Filtering is client-side and safe.
 
   for (const [modelId, option] of control.options) {
-    const selected = modelId === catalogModelForRef(view.catalog, view.selected)?.ref.id;
+    const selected = sameHarnessModelRef(
+      harnessModelRefFromKey(modelId),
+      catalogModelForRef(view.catalog, view.selected)?.ref,
+    );
     option.button.setAttribute("aria-checked", String(selected));
     option.button.classList.toggle("bg-token-list-hover-background", selected);
-    option.button.disabled = control.trigger.disabled;
+    option.button.disabled = pickerDisabled;
     option.check.style.visibility = selected ? "visible" : "hidden";
   }
   for (const [thinkingOptionId, option] of control.thinkingOptions) {
     const selected = thinkingOptionId === view.selectedThinkingOptionId;
     option.button.setAttribute("aria-checked", String(selected));
     option.button.classList.toggle("bg-token-list-hover-background", selected);
-    option.button.disabled = control.trigger.disabled || !presentation.thinkingSelectionEnabled;
+    option.button.disabled = pickerDisabled || !presentation.thinkingSelectionEnabled;
     option.check.style.visibility = selected ? "visible" : "hidden";
   }
   // Last, so the notice anchors to the trigger's final layout for this render.

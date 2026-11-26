@@ -10,16 +10,14 @@ describe("Grok invocation", () => {
     });
   });
 
-  it.each([
-    "grok-4.5",
-    "magpie/group/codex-grok",
-    "magpie/openrouter/anthropic/claude-sonnet-4:thinking",
-    "magpie/relay/Opus 5.5",
-    " magpie/relay/Opus 5.5 ",
-  ])("passes startup Model %j as one exact native CLI argument", (modelId) => {
-    expect(grokInvocation("/opt/grok", "darwin", modelId)).toMatchObject({
+  it("passes the exact startup Model as one native argument", () => {
+    const id = " xai/模型 [1m] & (test) ";
+    expect(grokInvocation("/opt/grok", "darwin", id)).toMatchObject({
       command: "/opt/grok",
-      arguments: ["agent", "--no-leader", "--model", modelId, "stdio"],
+      arguments: ["agent", "--no-leader", "--model", id, "stdio"],
     });
+    expect(grokInvocation("C:\\bin\\grok.cmd", "win32", id).arguments.at(-1)).toBe(
+      `""C:\\bin\\grok.cmd" "agent" "--no-leader" "--model" "${id}" "stdio""`,
+    );
   });
 });

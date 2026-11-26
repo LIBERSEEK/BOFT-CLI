@@ -6,7 +6,11 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { HostUsageRequest } from "@codexhost/harness-adapter";
 import { readAntigravityRequestMetadata } from "../src/native-request-timing.js";
-import { bytes, integer, writeNativeTimingDatabase } from "./support/native-timing-fixture.js";
+import {
+  bytes,
+  integer,
+  writeNativeTimingDatabase,
+} from "../../../../tests/fixtures/antigravity/native-timing-fixture.js";
 
 let home: string;
 const request: HostUsageRequest = {
@@ -34,7 +38,17 @@ async function readAntigravityRequestTimings(
     ? null
     : new Map(
         [...metadata].flatMap(([step, facts]) =>
-          facts.timing ? [[step, facts.timing] as const] : [],
+          facts.timing
+            ? [
+                [
+                  step,
+                  {
+                    startedAtMs: facts.timing.startedAtMs,
+                    completedAtMs: facts.timing.completedAtMs,
+                  },
+                ] as const,
+              ]
+            : [],
         ),
       );
 }
@@ -83,6 +97,8 @@ describe("Antigravity native request timings", () => {
       const facts = (await readAntigravityRequestMetadata("session", home, all))?.get(1);
       expect(facts?.reasoningOutputTokens).toBe(thought);
       expect(facts?.timing).toEqual({
+        requestStartedAtMs: 1794763967637,
+        timeToFirstOutputMs: 12882,
         startedAtMs: 1794763980519,
         completedAtMs: 1794763991282,
       });
@@ -123,7 +139,12 @@ describe("Antigravity native request timings", () => {
     expect(await read()).toEqual(new Map([[1, { startedAtMs: 3000, completedAtMs: 5000 }]]));
     expect((await readAntigravityRequestMetadata("session", home, requests))?.get(1)).toEqual({
       reasoningOutputTokens: 0,
-      timing: { startedAtMs: 3000, completedAtMs: 5000 },
+      timing: {
+        requestStartedAtMs: 1000,
+        timeToFirstOutputMs: 2000,
+        startedAtMs: 3000,
+        completedAtMs: 5000,
+      },
     });
   });
 
@@ -234,5 +255,38 @@ describe("Antigravity native request timings", () => {
       db.close();
     }
     expect(await read()).toEqual(new Map());
+  });
+
+  it("extracts native max_context_tokens even when timing is omitted and ignores zero or mismatched records", async () => {
+    await writeNativeTimingDatabase(home, [
+      { step: 1, maxContextTokens: 512_000 },
+      { step: 3, maxContextTokens: 256_000, retries: 1 },
+      { step: 5, maxContextTokens: 840_000, streamDuration: 1990 },
+      { step: 7, maxContextTokens: 0 },
+      { step: 9, maxContextTokens: 512_000, generatorThought: 1 },
+    ]);
+    const all = new Map<number, HostUsageRequest>([
+      [1, request],
+      [3, { ...request, requestId: "step:3" }],
+      [5, { ...request, requestId: "step:5" }],
+      [7, { ...request, requestId: "step:7" }],
+      [9, { ...request, requestId: "step:9", reasoningOutputTokens: 0 }],
+    ]);
+    const metadata = await readAntigravityRequestMetadata("session", home, all);
+    expect(metadata?.get(1)).toMatchObject({
+      reasoningOutputTokens: 0,
+      contextWindowTokens: 512_000,
+      timing: { startedAtMs: 3000, completedAtMs: 5000 },
+    });
+    expect(metadata?.get(3)).toEqual({
+      reasoningOutputTokens: 0,
+      contextWindowTokens: 256_000,
+    });
+    expect(metadata?.get(5)).toEqual({
+      reasoningOutputTokens: 0,
+      contextWindowTokens: 840_000,
+    });
+    expect(metadata?.get(7)).not.toHaveProperty("contextWindowTokens");
+    expect(metadata?.has(9)).toBe(false);
   });
 });

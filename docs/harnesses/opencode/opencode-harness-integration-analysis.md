@@ -19,6 +19,8 @@ OpenCode 保留一个 Harness ID 和一个预装插件。`versioned-adapter.ts` 
 
 默认使用已有发现规则选择 `opencode`。两版同时安装时可通过 `CODEXHOST_OPENCODE_COMMAND` 指向所需可执行文件；它是执行环境的选择，不是在同一个 Thread 中切换协议。Host 需要重新建立连接才能应用其环境变化。
 
+`--version` 输出带前缀时同样识别：协议选择（`openCodeMajor`）将 `opencode v2.4.1`、`CLI 2.4.1` 归入对应主版本（1/2），其他主版本或多余行仍拒绝；安装状态检测（`openCodeVersion`）保留任意合法 SemVer 以便旧版提示升级。安装来源跟随官方包名：一键安装与清单使用 `@opencode/cli` 并放行其 `postinstall` 脚本（负责放置平台二进制）；旧包 `opencode-ai` 停在 1.19.6，其安装仍能读到 `@opencode/cli` 的最新版，更新时在同一个全局 prefix 先卸载旧包、再安装新包（避免同名 `opencode` 命令冲突及卸载旧包误删新命令）。最新版本取 npm registry 的 `@opencode/cli` latest，不读 GitHub `releases/latest`（该指针停在 1.19.6）。从 1.x 升到 2.x 后旧会话不能跨大版本恢复，安装面板给出提示。
+
 v1 的已有 Native Ref 不变。v2 的 Session locator 额外记录 `protocol: 2`，公共 `formatVersion` 仍为 `1`。Resume/Fork/Rollback 必须匹配 CLI 主版本；匹配失败保留原记录并提示选择对应安装。codexhost 不迁移 OpenCode 数据库，也不承诺 v1/v2 会话可互换。
 
 ### v2 的原生语义与限制
@@ -26,6 +28,7 @@ v1 的已有 Native Ref 不变。v2 的 Session locator 额外记录 `protocol: 
 - 每个会话管理独立的 loopback 前台 `serve` 进程，随机密码、原生固定用户名 `opencode`；不连接用户共享后台服务。关闭/启动失败回收进程。配置与认证继续由原生 OpenCode 读取。
 - Server listener 就绪不代表配置插件已激活。读取 Model Catalog 前有界等待原生 `opencode.config.provider`、`opencode.config.agent` 和 `opencode.config.policy` 激活；避免缓存启动期间的空模型列表。该探测与客户端版本一起维护。
 - Prompt 使用原生 inbox 接纳；`session.execution.*`、消息列表中的 durable `idle` 决定执行结果。HTTP 返回、文本结束或 interrupt 确认均不是 Turn 终态。已有活动原生执行会被拒绝接管。
+- 未命名的 Thread 会采用 OpenCode v2 提供的首个有效标题。原生时间戳占位标题继续使用首条消息预览，用户可随时重命名 Thread。
 - 流式文本/Reasoning 由原生 transient delta 投影，Tool、历史和终态从原生持久消息校验。v2 的 `ordinal` 在正文和推理内分别从零计数，不是 `content` 数组下标；实时和历史统一使用 `messageID:type:ordinal` 作为文本 Item ID，Tool 使用 `messageID:tool:toolID`，避免推理与正文复用 ID 导致完成投影失败。Native Turn/Checkpoint 身份不变。取消可能使没有 `text.ended` 的 transient 文本未落盘，完成快照以原生历史为准，部分流式文本可能消失；不制造持久历史。
 - 历史读取遍历原生游标分页；一次执行中的追加用户输入归入同一个 Turn。Fork 使用原生 `before` 边界，新消息 ID 以派生结果为准；校验语义前缀、源未变、当前 Model/Thinking/权限和目录。Rollback 通过 Fork 移除末轮，保留当前文件。
 - 支持原生审批的允许一次/拒绝、原生 Question、平面的字符串/数字/布尔/多选 Form；答案校验后交给原生端点。External、hidden 或 conditional Form 当前无法映射，明确报错并停止执行，不自动作答。

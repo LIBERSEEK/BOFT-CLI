@@ -53,6 +53,7 @@ export interface RendererConnectionHostSnapshot {
   readonly active: boolean;
   readonly agents: readonly RendererConnectionAgentSnapshot[];
   readonly directoryError?: string;
+  readonly directoryUnsupported?: boolean;
 }
 
 export interface RendererConnectionSnapshot {
@@ -63,12 +64,13 @@ export interface RendererConnectionSnapshot {
 export interface RendererConnectionDiagnostics {
   snapshot(): RendererConnectionSnapshot;
   /** With a Host, wait for existing diagnostics and start a fresh post-mutation inspection. */
-  refresh(hostId?: string): Promise<void>;
+  refresh(hostId?: string, credentialAccess?: "retry"): Promise<void>;
   openWebUi?(hostId: string, agent: ExternalRendererAgent): Promise<void>;
   installation?(
     hostId: string,
     agent: ExternalRendererAgent,
     action: "check" | "update" | "install",
+    confirmedVersion?: string,
   ): Promise<HarnessInstallationState>;
   getLaunchSettings?(hostId: string, agent: ExternalRendererAgent): Promise<HarnessLaunchSettings>;
   setLaunchSettings?(
@@ -499,7 +501,11 @@ function connectionItems(
             key: "plugin-directory",
             name: "Harness plugins",
             availability: "error" as const,
-            error: { code: "unavailable" as const, message: host.directoryError, retryable: true },
+            error: {
+              code: "unavailable" as const,
+              message: host.directoryError,
+              retryable: !host.directoryUnsupported,
+            },
           },
         ]
       : []),
@@ -669,7 +675,7 @@ export function createConnectionsSettingsPage(
         return element;
       };
       const versions = createConnectionVersions(
-        document,
+        context.content,
         messages,
         context.signal,
         diagnostics,
@@ -747,9 +753,13 @@ export function createConnectionsSettingsPage(
       const moreZone = document.createElement("div");
       moreZone.className = "settings-connection-group-more";
       moreZone.setAttribute("role", "presentation");
-      const resetButton = createGroupResetButton(document, messages, () => {
-        groupPreference.resetToDefault();
-      });
+      // The shared order is written to the local connection even when viewing a remote Host.
+      let groupDisabled = false;
+      const resetButton = createGroupResetButton(
+        document,
+        messages,
+        groupPreference.resetToDefault,
+      );
 
       let draggingAgent: ExternalRendererAgent | null = null;
       let currentCatalog: { id: string; name: string }[] = [];
@@ -775,7 +785,7 @@ export function createConnectionsSettingsPage(
       moreZone.addEventListener("drop", (event) => {
         event.preventDefault();
         moreZone.dataset.connectionDragOver = "false";
-        if (!draggingAgent) return;
+        if (groupDisabled || !draggingAgent) return;
         groupPreference.moveAgent(draggingAgent, "more", null, currentCatalog);
         draggingAgent = null;
         clearDropIndicators();
@@ -789,7 +799,7 @@ export function createConnectionsSettingsPage(
           createRendererSettingsIcon("diagnose", 16),
           messages.connectionRefreshing,
         );
-        void context.runLatest(() => diagnostics.refresh(), {
+        void context.runLatest(() => diagnostics.refresh(undefined, "retry"), {
           success() {
             installs?.clearErrors();
             pending = false;
@@ -862,15 +872,6 @@ export function createConnectionsSettingsPage(
 
       const render = (snapshot: RendererConnectionSnapshot | null): void => {
         adapterStatus.update(snapshot?.adapter);
-        const syncStatus = groupPreference.syncStatus();
-        const groupDisabled = syncStatus === "loading" || syncStatus === "saving";
-        syncMessage.hidden = syncStatus === "ready";
-        syncMessage.textContent =
-          syncStatus === "error"
-            ? messages.connectionGroupSyncFailed
-            : syncStatus === "saving"
-              ? messages.connectionGroupSaving
-              : messages.connectionGroupLoading;
         latestSnapshot = snapshot;
         if (!snapshot) {
           renderedHostId = null;
@@ -887,6 +888,25 @@ export function createConnectionsSettingsPage(
           snapshot.hosts[0];
         if (!selectedHost) return;
         selectedHostId = selectedHost.hostId;
+        const syncStatus = groupPreference.syncStatus();
+        const localUnsupported = snapshot.hosts.some(
+          ({ hostId, directoryUnsupported }) => hostId === "local" && directoryUnsupported,
+        );
+        groupDisabled = localUnsupported || syncStatus === "loading" || syncStatus === "saving";
+        if (groupDisabled && draggingAgent) {
+          draggingAgent = null;
+          clearDropIndicators();
+        }
+        syncMessage.hidden = !localUnsupported && syncStatus === "ready";
+        syncMessage.textContent = localUnsupported
+          ? selectedHost.hostId === "local"
+            ? messages.connectionLocalHarnessUnsupported
+            : messages.connectionGroupUnavailable
+          : syncStatus === "error"
+            ? messages.connectionGroupSyncFailed
+            : syncStatus === "saving"
+              ? messages.connectionGroupSaving
+              : messages.connectionGroupLoading;
 
         const layoutFirstMount = content.children[0] !== layout;
         reconcileElementChildren(content, [layout]);
@@ -965,7 +985,7 @@ export function createConnectionsSettingsPage(
               (item.agentSnapshot?.availability !== "notInstalled" &&
                 availability !== "installing" &&
                 availability !== "checking")
-                ? versions.get(selectedHost.hostId, agent)
+                ? versions.get(selectedHost.hostId, agent, item.name)
                 : undefined;
             const accessory = longContextControlFor(selectedHost.hostId, item);
             return {
@@ -1100,65 +1120,62 @@ export function createConnectionsSettingsPage(
         const createGroupController = (
           agent: ExternalRendererAgent,
           section: AgentGroupSection,
-        ): ConnectionRowGroupController => {
-          const disabled = groupDisabled;
-          return {
-            disabled,
-            section,
-            moveLabel:
-              section === "main"
-                ? messages.connectionGroupMoveToMore
-                : messages.connectionGroupMoveToMain,
-            dragHandleTitle: messages.connectionGroupDragHandle,
-            toggleSection() {
-              groupPreference.moveAgent(
-                agent,
-                section === "main" ? "more" : "main",
-                null,
-                currentCatalog,
-              );
-            },
-            onDragStart(event) {
-              if (disabled) {
-                event.preventDefault();
-                return;
-              }
-              draggingAgent = agent;
-              event.dataTransfer?.setData("text/plain", agent);
-              if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
-              const row = currentHostRows.get(agent)?.element;
-              if (row) row.dataset.connectionDragging = "true";
-            },
-            onDragOver(event) {
-              if (!draggingAgent || draggingAgent === agent) return;
+        ): ConnectionRowGroupController => ({
+          disabled: groupDisabled,
+          section,
+          moveLabel:
+            section === "main"
+              ? messages.connectionGroupMoveToMore
+              : messages.connectionGroupMoveToMain,
+          dragHandleTitle: messages.connectionGroupDragHandle,
+          toggleSection() {
+            groupPreference.moveAgent(
+              agent,
+              section === "main" ? "more" : "main",
+              null,
+              currentCatalog,
+            );
+          },
+          onDragStart(event) {
+            if (groupDisabled) {
               event.preventDefault();
-              const row = currentHostRows.get(agent)?.element;
-              if (!row) return;
-              const { before } = dropTargetSection(agent, event);
-              clearDropIndicators();
-              row.dataset.connectionDropIndicator = before ? "before" : "after";
-            },
-            onDragLeave() {
-              const row = currentHostRows.get(agent)?.element;
-              if (row) row.dataset.connectionDropIndicator = "";
-            },
-            onDrop(event) {
-              event.preventDefault();
-              if (!draggingAgent) return;
-              const { beforeAgent } = dropTargetSection(agent, event);
-              groupPreference.moveAgent(draggingAgent, section, beforeAgent, currentCatalog);
-              draggingAgent = null;
-              clearDropIndicators();
-            },
-            onDragEnd() {
-              draggingAgent = null;
-              const row = currentHostRows.get(agent)?.element;
-              if (row) row.dataset.connectionDragging = "false";
-              clearDropIndicators();
-              scheduleRender();
-            },
-          };
-        };
+              return;
+            }
+            draggingAgent = agent;
+            event.dataTransfer?.setData("text/plain", agent);
+            if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+            const row = currentHostRows.get(agent)?.element;
+            if (row) row.dataset.connectionDragging = "true";
+          },
+          onDragOver(event) {
+            if (!draggingAgent || draggingAgent === agent) return;
+            event.preventDefault();
+            const row = currentHostRows.get(agent)?.element;
+            if (!row) return;
+            const { before } = dropTargetSection(agent, event);
+            clearDropIndicators();
+            row.dataset.connectionDropIndicator = before ? "before" : "after";
+          },
+          onDragLeave() {
+            const row = currentHostRows.get(agent)?.element;
+            if (row) row.dataset.connectionDropIndicator = "";
+          },
+          onDrop(event) {
+            event.preventDefault();
+            if (groupDisabled || !draggingAgent) return;
+            const { beforeAgent } = dropTargetSection(agent, event);
+            groupPreference.moveAgent(draggingAgent, section, beforeAgent, currentCatalog);
+            draggingAgent = null;
+            clearDropIndicators();
+          },
+          onDragEnd() {
+            draggingAgent = null;
+            const row = currentHostRows.get(agent)?.element;
+            if (row) row.dataset.connectionDragging = "false";
+            clearDropIndicators();
+            scheduleRender();
+          },
+        });
 
         for (const entry of currentMainEntries) {
           const item = agentByKey.get(entry.agent);

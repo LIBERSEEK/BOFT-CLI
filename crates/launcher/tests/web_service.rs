@@ -5,7 +5,7 @@ mod windows_service;
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -45,7 +45,11 @@ const value = key => args[args.indexOf(key) + 1];
 const remote = args.includes('--codexhost-remote');
 const data = remote ? process.env.HOME : value('--data');
 const log = text => fs.appendFileSync(path.join(data, 'events'), text + '\n');
-if (!remote && !args.includes('--stop')) fs.writeFileSync(path.join(data, 'update-environment.json'), JSON.stringify(Object.fromEntries(['CODEXHOST_LAUNCHER_PID', 'CODEXHOST_LAUNCHER_EXECUTABLE', 'CODEXHOST_RUNTIME_DESCRIPTOR_PATH', 'CODEXHOST_UPDATE_SERVICE', 'CODEXHOST_NPM_NODE_PATH'].map(key => [key, process.env[key]]))));
+if (!remote && !args.includes('--stop')) {
+  const updateEnvironment = Object.fromEntries(['CODEXHOST_LAUNCHER_PID', 'CODEXHOST_LAUNCHER_EXECUTABLE', 'CODEXHOST_RUNTIME_DESCRIPTOR_PATH', 'CODEXHOST_UPDATE_SERVICE', 'CODEXHOST_NPM_NODE_PATH', 'CODEXHOST_INSTALL_ROOT'].map(key => [key, process.env[key]]));
+  if (args.includes('--stock-codex')) updateEnvironment.stockCodex = value('--stock-codex');
+  fs.writeFileSync(path.join(data, 'update-environment.json'), JSON.stringify(updateEnvironment));
+}
 if (remote) {
   log('remote-stop');
   if (fs.existsSync(path.join(data, 'remote-fail'))) process.exit(1);
@@ -95,7 +99,7 @@ log('web-start');
 fs.writeFileSync(path.join(data, 'npm-entrypoint.json'), JSON.stringify({node: process.env.CODEXHOST_NPM_NODE_PATH, wrapper: process.env.CODEXHOST_NPM_LAUNCHER_PATH}));
 fs.appendFileSync(path.join(data, 'starts'), 'start\n');
 if (fs.existsSync(path.join(data, 'fail'))) {
-  console.error('first diagnostic' + 'x'.repeat(16384) + 'fixture port is occupied; use --port');
+  fs.writeSync(2, 'first diagnostic' + 'x'.repeat(16384) + 'fixture port is occupied; use --port\n');
   process.exit(1);
 }
 const ready = value('--ready-file');
@@ -185,7 +189,19 @@ server.listen(0, '127.0.0.1', () => console.log(server.address().port));
     }
 
     fn public_command(&self, action: &str) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_boft"));
+        self.public_command_at(Path::new(env!("CARGO_BIN_EXE_boft")), action)
+    }
+
+    #[cfg(unix)]
+    fn installed_launcher(&self) -> PathBuf {
+        let launcher = self.root.join("bin/boft");
+        fs::create_dir_all(launcher.parent().unwrap()).unwrap();
+        fs::copy(env!("CARGO_BIN_EXE_boft"), &launcher).unwrap();
+        launcher
+    }
+
+    fn launcher_command(&self, launcher: &Path) -> Command {
+        let mut command = Command::new(launcher);
         command
             .env_clear()
             .env("PATH", env::var_os("PATH").unwrap())
@@ -199,10 +215,15 @@ server.listen(0, '127.0.0.1', () => console.log(server.address().port));
             .env("CODEXHOST_CONSOLE_PORT", &self.console_port)
             .env("CODEXHOST_CONSOLE", "0")
             .env("CODEXHOST_WEB_SERVICE", "0")
-            .env("SSH_CONNECTION", "fixture")
-            .arg(action);
+            .env("SSH_CONNECTION", "fixture");
         #[cfg(windows)]
         command.env("SystemRoot", env::var_os("SystemRoot").unwrap());
+        command
+    }
+
+    fn public_command_at(&self, launcher: &Path, action: &str) -> Command {
+        let mut command = self.launcher_command(launcher);
+        command.arg(action);
         if !["status", "host", "web-service", "autostart"].contains(&action) {
             command
                 .arg("--node")
@@ -257,6 +278,46 @@ impl Drop for Fixture {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn ssh_default_and_start_menu_launch_web_without_reading_desktop_preferences() {
+    let fixture = Fixture::new();
+    let bin = fixture.root.join("bin");
+    let app = fixture.root.join("app");
+    fs::create_dir(&bin).unwrap();
+    fs::create_dir(&app).unwrap();
+    let launcher = bin.join("boft");
+    fs::copy(env!("CARGO_BIN_EXE_boft"), &launcher).unwrap();
+    fs::copy(
+        fixture.root.join("host-runtime.mjs"),
+        app.join("host-runtime.mjs"),
+    )
+    .unwrap();
+    fs::copy(fixture.root.join("web.mjs"), app.join("web-server.mjs")).unwrap();
+    let prefs = fixture.root.join("launch-preferences-v1.json");
+    fs::write(&prefs, "fixture invalid preferences").unwrap();
+    for args in [&[][..], &["--start-menu"]] {
+        let output = fixture
+            .launcher_command(&launcher)
+            .env("CODEXHOST_NPM_NODE_PATH", &fixture.node)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(stdout.contains("boft web: http://127.0.0.1:4501/?token=fixture-secret"));
+    }
+    assert_eq!(
+        fs::read_to_string(prefs).unwrap(),
+        "fixture invalid preferences"
+    );
+    assert_eq!(fixture.starts(), 1);
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn background_web_records_ensure_failure_but_interactive_web_does_not() {
@@ -292,6 +353,7 @@ fn background_web_records_ensure_failure_but_interactive_web_does_not() {
 #[test]
 fn background_web_refreshes_only_enabled_autostart_without_printing_login_link() {
     let fixture = Fixture::new();
+    let installed = fixture.installed_launcher();
     let path = fixture
         .root
         .join("Library/LaunchAgents/ai.bytepioneer.codexhost.autostart.plist");
@@ -322,7 +384,7 @@ fn background_web_refreshes_only_enabled_autostart_without_printing_login_link()
     fs::write(&wrapper, "fixture").unwrap();
     assert!(fixture.run("stop").status.success());
     let output = fixture
-        .public_command("web")
+        .public_command_at(&installed, "web")
         .arg("--background")
         .env("CODEXHOST_NPM_NODE_PATH", &fixture.node)
         .env("CODEXHOST_NPM_LAUNCHER_PATH", &wrapper)
@@ -345,6 +407,8 @@ fn background_web_refreshes_only_enabled_autostart_without_printing_login_link()
         fixture
             .public_command("web")
             .arg("--background")
+            .env("CODEXHOST_NPM_NODE_PATH", &fixture.node)
+            .env("CODEXHOST_NPM_LAUNCHER_PATH", &wrapper)
             .output()
             .unwrap()
             .status
@@ -357,7 +421,7 @@ fn background_web_refreshes_only_enabled_autostart_without_printing_login_link()
     assert_eq!(fs::read_to_string(&path).unwrap(), refreshed);
     // Missing npm entrypoint makes refresh fail, but must not prevent Web reuse.
     let output = fixture
-        .public_command("web")
+        .public_command_at(&installed, "web")
         .arg("--background")
         .env("CODEXHOST_NPM_NODE_PATH", &fixture.node)
         .env("CODEXHOST_NPM_LAUNCHER_PATH", &wrapper)
@@ -757,8 +821,22 @@ fn missing_host_entry_reports_failure_but_still_stops_web_and_console() {
             .status
             .success()
     );
+    // The missing Host path has no sibling Console entrypoint. Supply the installed
+    // fallback within this fixture rather than relying on a built console in the checkout.
+    let launcher = fixture
+        .root
+        .join("bin")
+        .join(format!("boft{}", std::env::consts::EXE_SUFFIX));
+    fs::create_dir_all(launcher.parent().unwrap()).unwrap();
+    fs::copy(env!("CARGO_BIN_EXE_boft"), &launcher).unwrap();
+    fs::create_dir_all(fixture.root.join("app")).unwrap();
+    fs::copy(
+        fixture.root.join("console-server.mjs"),
+        fixture.root.join("app/console-server.mjs"),
+    )
+    .unwrap();
     let result = fixture
-        .public_command("stop")
+        .public_command_at(&launcher, "stop")
         .arg("--host-runtime")
         .arg(fixture.root.join("missing-host.mjs"))
         .output()
@@ -839,7 +917,7 @@ fn missing_desktop_and_failed_web_use_the_existing_console_error_path() {
         .unwrap();
     assert!(!result.status.success());
     assert!(String::from_utf8_lossy(&result.stderr).contains("Web startup failed:"));
-    assert!(!String::from_utf8_lossy(&result.stderr).contains("codexhost web: "));
+    assert!(!String::from_utf8_lossy(&result.stderr).contains("boft web: "));
     assert!(
         fs::read_to_string(fixture.root.join("console-calls"))
             .unwrap()
@@ -954,6 +1032,64 @@ fn owned_gui_activation(refuse_stop: bool) {
     }
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_service_start_explains_missing_home() {
+    let fixture = Fixture::new();
+    for service in ["host", "web-service"] {
+        let started = fixture
+            .command(service, "ensure")
+            .env_remove("HOME")
+            .output()
+            .unwrap();
+        assert!(!started.status.success());
+        let stderr = String::from_utf8_lossy(&started.stderr);
+        assert!(
+            stderr.contains("HOME must be set to an absolute path"),
+            "{service}: {stderr}"
+        );
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn shared_host_supervisor_keeps_portable_desktop_discoverable() {
+    if windows_service::run_in_service_job() {
+        return;
+    }
+
+    let fixture = Fixture::new();
+    let desktop = fixture.root.join("Portable Codex");
+    let app = desktop.join("app");
+    let resources = app.join("resources");
+    let codex = resources.join("codex.exe");
+    fs::create_dir_all(&resources).unwrap();
+    for file in [
+        app.join("ChatGPT.exe"),
+        resources.join("app.asar"),
+        codex.clone(),
+    ] {
+        fs::write(file, []).unwrap();
+    }
+
+    let started = fixture
+        .command("host", "ensure")
+        .env("CODEXHOST_INSTALL_ROOT", &desktop)
+        .output()
+        .unwrap();
+    assert!(
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    let environment = fixture.record("update-environment.json");
+    assert_eq!(
+        environment["stockCodex"],
+        serde_json::to_value(codex.canonicalize().unwrap()).unwrap()
+    );
+    assert!(environment["CODEXHOST_INSTALL_ROOT"].is_null());
+}
+
 #[cfg(unix)]
 #[test]
 fn service_supervisor_hands_off_once_and_can_retry_without_desktop() {
@@ -965,11 +1101,30 @@ fn service_supervisor_hands_off_once_and_can_retry_without_desktop() {
         }
     }
     let fixture = Fixture::new();
-    let started = fixture
-        .command("host", "ensure")
-        .env("CODEXHOST_NPM_NODE_PATH", &fixture.node)
-        .output()
-        .unwrap();
+    let installed = fixture.installed_launcher();
+    let started = {
+        let mut attempt = 0;
+        loop {
+            match fixture
+                .launcher_command(&installed)
+                .args(["host", "ensure", "--node", &fixture.node, "--host-runtime"])
+                .arg(fixture.root.join("host-runtime.mjs"))
+                .arg("--data")
+                .arg(&fixture.root)
+                .env("CODEXHOST_NPM_NODE_PATH", &fixture.node)
+                .output()
+            {
+                Ok(output) => break output,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::ExecutableFileBusy && attempt < 10 =>
+                {
+                    attempt += 1;
+                    thread::sleep(Duration::from_millis(20));
+                }
+                Err(error) => panic!("failed to start installed launcher: {error}"),
+            }
+        }
+    };
     assert!(
         started.status.success(),
         "{}",
@@ -983,14 +1138,14 @@ fn service_supervisor_hands_off_once_and_can_retry_without_desktop() {
         .unwrap()
         .parse()
         .unwrap();
-    let state = PathBuf::from(
-        environment["CODEXHOST_RUNTIME_DESCRIPTOR_PATH"]
-            .as_str()
-            .unwrap(),
-    )
-    .parent()
-    .unwrap()
-    .join("updates");
+    // Stage the operation where the Host Runtime writes it, even when the
+    // Launcher stores the Desktop runtime descriptor in a different directory.
+    #[cfg(target_os = "linux")]
+    let state = fixture.root.join(".codexhost").join("updates");
+    #[cfg(target_os = "macos")]
+    let state = fixture
+        .root
+        .join("Library/Application Support/codexhost/updates");
     fs::create_dir_all(&state).unwrap();
     let deadline = || Instant::now() + Duration::from_secs(15);
     for attempt in 1..=2 {
@@ -1066,13 +1221,12 @@ setInterval(() => {{
         // A service handoff leaves Host online until the Updater stops it.
         assert!(fixture.root.join("shared-host-ready.json").exists());
         if attempt == 2 {
+            let stopped = fixture.command("host", "stop").output().unwrap();
             assert!(
-                fixture
-                    .command("host", "stop")
-                    .output()
-                    .unwrap()
-                    .status
-                    .success()
+                stopped.status.success(),
+                "host stop exited with {}: {}",
+                stopped.status,
+                String::from_utf8_lossy(&stopped.stderr)
             );
             assert!(
                 codexhost_platform::process_snapshot(updater).is_ok(),

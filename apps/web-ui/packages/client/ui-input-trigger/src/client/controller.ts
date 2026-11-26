@@ -51,6 +51,22 @@ function dismissedHit(dismissed: DismissedHit, hit: TriggerHit): boolean {
   );
 }
 
+/** Structural equality over aggregated trigger lexicons so unchanged rolls skip notifications. */
+function lexiconEqual(
+  left: ReadonlyMap<TriggerChar, readonly string[]>,
+  right: ReadonlyMap<TriggerChar, readonly string[]>,
+): boolean {
+  if (left.size !== right.size) return false;
+  for (const [trigger, names] of left) {
+    const other = right.get(trigger);
+    if (other === undefined || other.length !== names.length) return false;
+    for (let i = 0; i < names.length; i += 1) {
+      if (other[i] !== names[i]) return false;
+    }
+  }
+  return true;
+}
+
 /** Roster access the controller borrows from the root service (registration order preserved). */
 export interface SourceRoster {
   sources(trigger: string): readonly InputTriggerSource[];
@@ -428,8 +444,10 @@ export class InputTriggerController {
           ? signal.reason
           : new Error("slash adjudication aborted");
       }
-      if (src.matchEnter === undefined || !line.startsWith(src.trigger)) continue;
-      const outcome = await src.matchEnter(projection, line, signal, envelope);
+      const normalizedLine =
+        src.trigger === "#" && line.startsWith("\uFF03") ? `#${line.slice(1)}` : line;
+      if (src.matchEnter === undefined || !normalizedLine.startsWith(src.trigger)) continue;
+      const outcome = await src.matchEnter(projection, normalizedLine, signal, envelope);
       if (outcome !== undefined) return outcome;
     }
     return undefined;
@@ -451,7 +469,7 @@ export class InputTriggerController {
     }
     this.lexiconOffs.get(source)?.();
     this.lexiconOffs.delete(source);
-    this.refreshLexicon();
+    if (source.lexicon !== undefined) this.refreshLexicon();
   }
 
   /**
@@ -465,7 +483,7 @@ export class InputTriggerController {
     const projection = this.project();
     source.warm?.(projection);
     this.watchLexicon(source, projection);
-    this.refreshLexicon();
+    if (source.lexicon !== undefined) this.refreshLexicon();
   }
 
   /** External dismiss (e.g. pointer outside the composer area). */
@@ -563,10 +581,11 @@ export class InputTriggerController {
       const prev = rolls.get(src.trigger);
       rolls.set(src.trigger, prev === undefined ? names : [...prev, ...names]);
     }
+    if (lexiconEqual(this.lexicon.getSnapshot(), rolls)) return;
     this.lexicon.set(rolls);
   }
 
-  /** Wire one source's lexicon invalidation channel into refresh (hookless or roll-less sources never notify). */
+  /** Wire one source's invalidation channel into lexicon refresh (when lexicon-bearing) and open-menu refetch. */
   private watchLexicon(source: InputTriggerSource, projection: ClientSessionContext): void {
     const subscribe =
       source.subscribeCandidates ??
@@ -575,7 +594,7 @@ export class InputTriggerController {
     this.lexiconOffs.set(
       source,
       subscribe(projection, () => {
-        this.refreshLexicon();
+        if (source.lexicon !== undefined) this.refreshLexicon();
         const hit = this.hit;
         if (
           hit === null ||

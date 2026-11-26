@@ -26,7 +26,7 @@ pub(crate) fn stop(request: &UpdateRequest) -> Result<Option<String>, Box<dyn Er
     let output = stop_command(request).output()?;
     if !output.status.success() {
         return Err(format!(
-            "stopping Web and Host failed ({}): {}{}",
+            "pre-update service shutdown failed ({}): {}{}",
             output.status,
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
@@ -62,6 +62,11 @@ mod tests {
                 json!({"kind":"macos-dmg", "app_path":root.join("installed.app"), "dmg_path":root.join("setup.dmg"), "artifact_sha256":"a".repeat(64)}),
                 root.join("installed.app/Contents/MacOS").join(&executable),
                 root.join("installed.app/Contents/Resources/runtime/node"),
+            ),
+            (
+                json!({"kind":"linux-archive", "install_root":root.join("linux-installed"), "archive_path":root.join("update.tar.gz"), "artifact_sha256":"a".repeat(64)}),
+                root.join("linux-installed/bin").join(&executable),
+                root.join("linux-installed/runtime/node"),
             ),
         ] {
             let request: UpdateRequest = serde_json::from_value(json!({

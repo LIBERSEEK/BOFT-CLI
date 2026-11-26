@@ -21,7 +21,9 @@ Desktop 原生 Browser IPC 要求调用进程位于当前 Desktop 的进程树�
 
 ## Desktop 工具配置的生命周期
 
-共享 Host 使用最近接入且仍在线的 Desktop 提供的 Browser 授权、临时 MCP 覆盖与 app tools 管道。这些配置在连接断开时失效。共享 app-server 完成正在执行的官方任务，空闲后在下一次原生请求前按仍有效的配置重建。没有在线 Desktop 时，后端沿用原生启动参数，浏览器授权由官方工具按当前环境判定。Windows Remote Control 在内存中保留其原生启动配置，Desktop 工具授权仍随连接失效，不写入启动配置。
+共享 Host 使用最近接入且仍在线的 Desktop 提供的 Browser 授权、临时 MCP 覆盖与 app tools 管道。接入端点发生变化时，Host 会退役空闲的 app-server；若有正在执行的官方任务，则等任务完成后，在下一次原生请求前按仍有效的配置重建。连接断开时，其工具配置失效。没有在线 Desktop 时，后端沿用原生启动参数，浏览器授权由官方工具按当前环境判定。Windows Remote Control 在内存中保留其原生启动配置，Desktop 工具授权仍随连接失效，不写入启动配置。
+
+Windows 共享 Host 同时提供 Remote Control 监听时，原生进程沿用首次确认的可执行文件与启动参数。每个本地 Desktop 连接单独提供当前工具端点。断开最近的 Desktop 后，下一次空闲请求使用上一个仍在线的 Desktop 的端点。Remote Control 观察者可以在此过程中继续使用原有 Thread。
 
 ## 原生 Codex Fork 的模型继承
 
@@ -51,7 +53,9 @@ RPC 布局下的 Windows Remote Control 复用已加载模块中的原生 Manage
 
 普通草稿的 transport Model 同时按本地 Host 连接和 `client-new-thread` 身份登记。原生 `startConversation` 进入时读取本次创建的 `clientThreadId`，在异步准备前捕获对应的路由，只替换这次创建的 Model，保留权限、工作区、输入、Thinking 和原生回调。后台发送派生新客户端身份时，通过同一草稿的原生 collaboration-mode 对象关联来源；该关联使用不进入 JSON 协议的 Symbol，并随原生浅复制保留。Codex 的备用额度模式不能改变外部 Thread 的 Harness。官方创建、其他草稿与显式定时任务没有该草稿关联时，保持传入配置；切回 Codex、Adapter 卸载和连接释放会清理路由。
 
-Desktop 26.1021 的原生预热池按工作目录匹配。每次创建使用独立的消费检查：官方创建不能消费外部预热，外部创建只能消费与本次 transport Model 一致的预热。检查读取本次创建参数，异步准备期间不依赖全局选择。错配的外部预热通过既有未提交预热释放接口清理；普通草稿的配置失效和预热接管规则保持不变。官方任务弹窗沿用原生创建链路，预热消费同样检查本次显式 Model，不额外提供独立任务创建操作。
+Desktop 的原生预热池按工作目录匹配。每次创建使用独立的消费检查：官方创建不能消费外部预热，外部创建只消费与本次 transport Model 和项目归属一致的预热。检查读取本次创建参数，异步准备期间不依赖全局选择。错配的外部预热通过既有未提交预热释放接口清理；普通草稿的配置失效和预热接管规则保持不变。官方任务弹窗沿用原生创建链路。
+
+外部 `thread/start` 接受原生请求显式传入的 `projectId`。Host 经所属 Codex app-server 校验该项目，并在分配 Harness Session 前保存项目归属和执行目录。两者可以指向不同位置，例如项目在独立 worktree 中运行。项目不可用时返回创建失败；未传项目时沿用当前工作目录或无项目工作区的创建流程。
 
 官方定时任务新建弹窗默认保留原生 Codex Model 和创建路径，不继承普通聊天偏好。用户在该弹窗显式选择外部 Harness 时，将 transport Model 写入当前任务草稿，并传给本次原生会话创建；不设置 Host 全局选择或官方默认 Model。显式指定工作区时调用原生项目创建接口，将确认后的目标 Thread 回填当前任务；不改变其他创建入口或共享预热策略。外部选择只开放本地固定聊天，选择未确认或绑定失效时阻止提交，不回落 Codex。官方列表中已有外部任务仍按原 Thread 的持久化 Harness 归属执行。固定聊天任务的接入限制见[外部 Harness 定时任务](../product/harness-schedules.md)。
 

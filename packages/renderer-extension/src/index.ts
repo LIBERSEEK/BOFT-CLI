@@ -25,6 +25,7 @@ export type {
 export {
   HARNESS_INSPECT_METHOD,
   THREAD_FORK_METHOD,
+  THREAD_HANDOFF_METHOD,
   THREAD_INSPECT_METHOD,
   HARNESS_COMMANDS_INSPECT_METHOD,
   THREAD_COMMANDS_INSPECT_METHOD,
@@ -55,6 +56,7 @@ export {
 } from "./renderer-composer-dom.js";
 export type { RendererComposerContractInspection } from "./renderer-composer-dom.js";
 export {
+  formatRendererHandoffTurnsSummary,
   rendererHarnessCommandPresentation,
   rendererHarnessMessages,
   rendererPermissionModePresentation,
@@ -85,6 +87,21 @@ export type {
   RendererForkTarget,
 } from "./renderer-fork-control.js";
 export {
+  HANDOFF_CONTROL_ATTRIBUTE,
+  HANDOFF_DIVIDER_ATTRIBUTE,
+  HANDOFF_POPOVER_ATTRIBUTE,
+  createHandoffDividerElement,
+  ensureRendererHandoffStyle,
+  installRendererHandoffControl,
+  renderHandoffPopoverContent,
+} from "./renderer-handoff-control.js";
+export type {
+  HandoffDividerRenderOptions,
+  HandoffPopoverViewOptions,
+  RendererHandoffControl,
+  RendererHandoffControlOptions,
+} from "./renderer-handoff-control.js";
+export {
   draftPermissionMode,
   installRendererBindingProbe,
   isOwnershipSubmissionBlocked,
@@ -109,13 +126,10 @@ export {
   GROK_TRANSPORT_MODEL_PREFIX,
   OPENCODE_TRANSPORT_MODEL_ID,
   OPENCODE_TRANSPORT_MODEL_PREFIX,
-  antigravityTransportModelId,
   hermesTransportModelId,
-  claudeTransportModelId,
   decodeAntigravityTransportModelId,
   decodeClaudeTransportModelId,
   decodeDeepSeekHarnessTransportModelId,
-  deepSeekHarnessTransportModelId,
   decodeGrokTransportModelId,
   decodeOpenCodeTransportModelId,
   decodePiTransportModelId,
@@ -132,9 +146,6 @@ export {
   isOpenCodeTransportModelId,
   isPiTransportModelId,
   modelSelectionForAgent,
-  grokTransportModelId,
-  openCodeTransportModelId,
-  piTransportModelId,
   PI_TRANSPORT_MODEL_ID,
   PI_TRANSPORT_MODEL_PREFIX,
   DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID,
@@ -211,6 +222,7 @@ export type {
   RendererConnectionHostSnapshot,
   RendererConnectionSnapshot,
   RendererCodexAccountClient,
+  RendererDelegationClient,
   RendererDesktopExtensionsClient,
   RendererUpdateClient,
 } from "./settings/pages.js";
@@ -230,6 +242,18 @@ export type {
   RendererSettingsMessages,
   RendererSettingsWritableLanguageSelection,
 } from "./settings/localization.js";
+export {
+  RELEASE_ANNOUNCEMENT_DIALOG_ATTRIBUTE,
+  formatReleaseAnnouncementContributors,
+  formatReleaseAnnouncementDate,
+  openReleaseAnnouncementDialog,
+  selectReleaseAnnouncementContent,
+} from "./settings/release-announcement-dialog.js";
+export type {
+  ReleaseAnnouncementDialogHandle,
+  ReleaseAnnouncementDialogOptions,
+  SelectedReleaseAnnouncementContent,
+} from "./settings/release-announcement-dialog.js";
 export {
   SETTINGS_SHELL_ATTRIBUTE,
   installRendererSettingsShell,

@@ -15,8 +15,9 @@ import {
   type ClientChannelResponse,
   type ClientSnapshotOptions,
   type ClientThreadSnapshot,
+  type ThreadHandoffMetadata,
 } from "@codexhost/shared-contracts";
-import { NativeThreadTitles } from "./native-thread-title.js";
+import { NativeThreadTitles, type NativeTitleDiagnostic } from "./native-thread-title.js";
 
 import type { ConsoleHostReply } from "./app-server-host.js";
 import { transcribeVoice, voiceStatus } from "./voice-transcription.js";
@@ -24,17 +25,19 @@ import type { ClientChannelEvents } from "./client-channel-events.js";
 import { ClientChannelRequestError } from "./client-channel-error.js";
 import { ClientCommandReceipts } from "./client-command-receipts.js";
 import { compactClientSnapshot } from "./client-snapshot-compaction.js";
+import { copyAsJson } from "./client-snapshot-copy.js";
 import { listExternalTurns } from "./external-thread-history.js";
 import type { ExternalThreadQueueSnapshot } from "./external-thread-queue.js";
 import type { ExternalThread, ExternalThreadLocation } from "./external-thread-runtime.js";
 import { readExternalWorkspaceSnapshot } from "./native-workspace-snapshot.js";
+import { listNativeProjects } from "./native-project-list.js";
 import {
   NativeClientChannel,
   type NativeClientChannelDependencies,
 } from "./native-client-channel.js";
 import { classifyCreateRequestRoute } from "./route-observation.js";
 import { allocateProjectlessWorkspace } from "./projectless-workspace.js";
-import { decodeOfficialCodexModelSelection } from "./official-codex-model-ref.js";
+import { officialCodexModelSelection } from "./official-codex-model-ref.js";
 import { nativeThreadSkillInput } from "./codex-runtime/native-thread-controls.js";
 
 const OFFICIAL_METHODS: Readonly<Record<string, "native" | "host">> = {
@@ -44,6 +47,7 @@ const OFFICIAL_METHODS: Readonly<Record<string, "native" | "host">> = {
   "thread/turns/list": "native",
   "thread/items/list": "native",
   "thread/name/set": "native",
+  "thread/metadata/update": "native",
   "thread/archive": "native",
   "thread/unarchive": "native",
   "turn/start": "native",
@@ -62,6 +66,7 @@ const OFFICIAL_METHODS: Readonly<Record<string, "native" | "host">> = {
   "codexhost/thread/commands/inspect": "host",
   "codexhost/thread/command/execute": "host",
   "codexhost/thread/pins/set": "host",
+  "codexhost/thread/sections/move": "host",
   "codexhost/thread/usage/inspect": "host",
   "codexhost/thread/inspect": "native",
 };
@@ -99,8 +104,11 @@ export interface ClientChannelHostDependencies {
   /** History served to clients, including the live snapshot of a non-ephemeral active Turn. */
   clientHistoryTurns(thread: ExternalThread): JsonObject[];
   queueSnapshot(threadId: string): ExternalThreadQueueSnapshot;
+  /** Reads persisted handoff provenance without waking a cold Thread. */
+  readThreadHandoff?(threadId: string): Promise<ThreadHandoffMetadata | null>;
   /** Native Codex calls use the shared service's already-attached official client. */
   readonly native?: NativeClientChannelDependencies;
+  diagnoseNativeTitle?(event: NativeTitleDiagnostic): void;
   /** Runs one client request through the shared Desktop request handling. */
   submit(
     method: string,
@@ -124,7 +132,9 @@ export class ClientChannelHost {
   constructor(host: ClientChannelHostDependencies) {
     this.#host = host;
     this.#native = host.native ? new NativeClientChannel(host.native) : undefined;
-    this.#titles = host.native ? new NativeThreadTitles(host.native) : undefined;
+    this.#titles = host.native
+      ? new NativeThreadTitles(host.native, undefined, host.diagnoseNativeTitle)
+      : undefined;
     this.clientEvents = host.events;
   }
 
@@ -155,6 +165,7 @@ export class ClientChannelHost {
    * the same Web snapshot/response boundary. */
   observeNativeMessage(value: JsonValue): void {
     if (this.#titles?.observe(value)) return;
+    if (isRecord(value) && value.method === "project/changed") this.clientEvents.projectsChanged();
     this.#native?.observeMessage(value);
   }
 
@@ -219,6 +230,10 @@ export class ClientChannelHost {
       const nativeThreadIds = Array.isArray(params.threadIds)
         ? params.threadIds.filter((value): value is string => typeof value === "string")
         : [];
+      const projects =
+        params.nativeProjects === true && this.#native
+          ? await listNativeProjects(this.#native)
+          : undefined;
       return {
         result: jsonValueSchema.parse(
           await readExternalWorkspaceSnapshot(
@@ -226,11 +241,12 @@ export class ClientChannelHost {
             await this.#host.listRecords(),
             await this.#host.listSectionPlacements(),
             nativeThreadIds,
+            projects,
           ),
         ),
       };
     }
-    let native = false;
+    let native = method.startsWith("project/");
     if (method === "thread/start") {
       const route = classifyCreateRequestRoute(parsed.data);
       native = !route || route.selectedHarness === "codex";
@@ -366,7 +382,7 @@ export class ClientChannelHost {
           try {
             Object.assign(
               nativeParams,
-              decodeOfficialCodexModelSelection(harnessModelRefSchema.parse(params.model)),
+              officialCodexModelSelection(harnessModelRefSchema.parse(params.model)),
             );
           } catch {
             return { error: { code: -32602, message: "Invalid official Model Ref" } };
@@ -412,6 +428,7 @@ export class ClientChannelHost {
       throw new ClientChannelRequestError(location.error.code, location.error.message);
     if (location.kind === "official") {
       if (!this.#native) throw new Error("Thread is not owned by this local Host");
+      const handoff = (await this.#host.readThreadHandoff?.(threadId)) ?? undefined;
       const snapshot = await this.#native.snapshot(threadId, {});
       const queue = snapshot.thread.nativeSendError
         ? { result: { data: [] } }
@@ -442,6 +459,7 @@ export class ClientChannelHost {
         clientThreadSnapshotSchema.parse({
           ...snapshot,
           queue: { items, pausedReason },
+          ...(handoff ? { handoff } : {}),
         }),
         options,
       );
@@ -459,6 +477,7 @@ export class ClientChannelHost {
       thread = this.#host.loadedThread(threadId);
     }
     if (!thread) throw new Error("Thread is not owned by this local Host");
+    const handoff = (await this.#host.readThreadHandoff?.(threadId)) ?? undefined;
     const interactions = [
       ...[...this.#host.interactions.approvals]
         .filter(([, pending]) => pending.thread === thread)
@@ -481,35 +500,34 @@ export class ClientChannelHost {
     ];
     const state = thread.stateObserver.state;
     const snapshot = clientThreadSnapshotSchema.parse(
-      JSON.parse(
-        JSON.stringify({
-          cursor: this.clientEvents.cursor,
-          activeTurnId: thread.activeTurnId,
-          command: thread.clientCommand
-            ? {
-                ...thread.clientCommand,
-                turn:
-                  thread.activeTurnId && thread.activeTurnId === thread.clientCommand.turn.id
-                    ? (thread.projectedTurns.get(thread.activeTurnId)?.projector.snapshotTurn() ??
-                      thread.clientCommand.turn)
-                    : thread.clientCommand.turn,
-              }
-            : undefined,
-          thread: { ...thread.thread, turns: [] },
-          turnsPage: listExternalTurns(this.#host.clientHistoryTurns(thread), {
-            limit: 5,
-            sortDirection: "desc",
-            itemsView: "full",
-          }),
-          configuration: {
-            effectiveModel: state.effectiveModel,
-            effectiveThinkingOptionId: state.effectiveThinkingOptionId,
-            effectivePermissionModeId: state.effectivePermissionModeId,
-          },
-          queue: this.#host.queueSnapshot(threadId),
-          interactions,
+      copyAsJson({
+        cursor: this.clientEvents.cursor,
+        activeTurnId: thread.activeTurnId,
+        command: thread.clientCommand
+          ? {
+              ...thread.clientCommand,
+              turn:
+                thread.activeTurnId && thread.activeTurnId === thread.clientCommand.turn.id
+                  ? (thread.projectedTurns.get(thread.activeTurnId)?.projector.snapshotTurn() ??
+                    thread.clientCommand.turn)
+                  : thread.clientCommand.turn,
+            }
+          : undefined,
+        thread: { ...thread.thread, turns: [] },
+        turnsPage: listExternalTurns(this.#host.clientHistoryTurns(thread), {
+          limit: 5,
+          sortDirection: "desc",
+          itemsView: "full",
         }),
-      ),
+        configuration: {
+          effectiveModel: state.effectiveModel,
+          effectiveThinkingOptionId: state.effectiveThinkingOptionId,
+          effectivePermissionModeId: state.effectivePermissionModeId,
+        },
+        queue: this.#host.queueSnapshot(threadId),
+        interactions,
+        ...(handoff ? { handoff } : {}),
+      }),
     );
     // Native history may be refreshed after terminal output. Preserve this
     // process's submission receipt, without persisting a second message index.

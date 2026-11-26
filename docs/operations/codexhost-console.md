@@ -38,7 +38,7 @@ type: warning
 
 Console 是仅本机访问的诊断和管理网页，默认端口 `4399`，可由 `codexhost console` 打开。总览的“打开 Web”和“远程访问”按钮通过同一安装的 Launcher `web` 命令确保服务运行，并在默认浏览器打开登录链接，不依赖 Desktop；“远程访问”附带 `--connect-devices`，直接定位到 Web 的连接设备设置页。`codexhost web` 打开的是独立会话 Web，首次默认监听 `127.0.0.1:4400`，需要访问令牌，可用于手机连接；Host 和 Web 脱离终端运行，关闭页面不停止服务。无 Desktop 时 `codexhost` 改为打开会话 Web，不把 Console 当作聊天界面。命令和安装包路径见[独立 Web 应用](../product/standalone-web.md#安装版后台-web)。
 
-`codexhost status` 只读查看后台 Host/Web 的状态、版本、Web 地址及自启状态；`codexhost stop` 依次停止托管 GUI、Web、Host、远程服务、Broker 和 Console，报告被中断的任务数，会话数据保留。自启项用 `codexhost autostart on|off|status` 管理，停止服务不关闭自启，也不撤销 Tailscale Serve。
+`codexhost status` 只读查看后台 Host/Web 的状态、版本、Web 地址及自启状态；`codexhost stop` 依次停止原生桌面壳（`codexhost-shell`）、托管 GUI、Web、Host、远程服务、Broker 和 Console，报告被中断的任务数，会话数据保留。桌面默认启动形态由 `$CODEXHOST_DATA_DIR/launch-preferences-v1.json` 记录，也可通过 `boft app [--onboarding]` 或 `boft launch-prefs get|set` 直接拉起原生桌面壳或调整默认启动方式。自启项用 `codexhost autostart on|off|status` 管理，停止服务不关闭自启，也不撤销 Tailscale Serve。
 
 ## 打开方式
 
@@ -46,7 +46,7 @@ Console 是仅本机访问的诊断和管理网页，默认端口 `4399`，可�
 
 | 启动方式                                                    | 行为                                                                                                                                                                                                                                       |
 | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 安装包（macOS 打开应用、Windows 开始菜单）                  | 默认在浏览器打开控制台总览，再启动 Desktop；启动失败或注入持续失败时另外打开总览查看原因                                                                                                                                                   |
+| 安装包（macOS 打开应用、Windows 开始菜单）                  | 正常启动时在后台准备控制台而不自动弹出浏览器页签；仅在启动失败或注入持续失败时打开总览救援页，仍可通过托盘菜单或 `codexhost console` 按需打开                                                                                              |
 | 终端（npm 的 `codexhost`、`codexhost launch`、`npm start`） | 不打开浏览器；成功和失败都输出 `codexhost console: http://127.0.0.1:4399/`，Web 就绪时另输出 `codexhost web: <登录链接>`，与 `codexhost web` 的登录链接一致。`CODEXHOST_WEB_SERVICE=0` 或 Web 未就绪时省略 Web 行，不改变 Desktop 启动结果 |
 
 控制台在校验 Shim、Host Runtime、Desktop Controller 和 Renderer 等 Codex 启动资源之前启动；这些文件缺失时，仍能提供故障恢复入口。npm 包装脚本将这部分校验交给 Launcher，不提前拦截。Launcher、Node 和控制台自身文件仍须可用，端口占用等控制台自身故障不保证能打开网页；命令参数解析失败也不进入启动流程。
@@ -163,16 +163,21 @@ Codex Desktop 左侧导航栏的 BOFT 图标位于「更多」和已固定插件
 
 共享 Host 为 Web、Desktop 和 Console 提供同一份更新协调器。后台检查和下载不停止服务；原生 Host 监管进程接管同一份已准备请求，在受监管的 Node 子进程树外启动 Updater。Updater 校验所有者身份并确认全局更新锁已转移给自身后，通过当前安装的旧 Launcher `stop-for-update` 依次停止受管理 GUI、Web 和 Host，再安装。安装阶段其他客户端不能重新拉起服务；Updater 的恢复进程可以启动目标服务。请求使用明确的数据目录，停止和恢复都拒绝接管另一安装的运行服务。
 
-npm 的 Launcher 和 Node 分别来自更新请求的平台包根目录与 `node_path`；Windows 安装包从安装根目录的 `bin` 和 `runtime` 定位；macOS 的 Launcher 位于 `.app/Contents/MacOS/codexhost`，Node 位于 `.app/Contents/Resources/runtime/node`。Host `--stop` 的标准输出作为不透明文本保存在更新状态中，不由 Rust 解析任务数。更新后按原使用方式恢复：纯 Web 只恢复后台 Host 和 Web；受管理 GUI 在线时恢复 GUI 并沿用 Web 的启用设置。恢复检查服务的版本、运行入口、进程身份和监听状态。GUI 恢复由 Launcher 先确保共享 Host 运行，再启动 Desktop，因此不依赖 LaunchServices 保留父子进程关系。
+macOS 和 Linux 上，`stop` 和更新停服由仍在运行的 Launcher 停止其托管进程，兼容有 Launcher 的 v1 实例。新版生成的孤儿只有在原 Launcher 和 Desktop 均已退出，并确认安装、数据目录和端点身份后，才通过本地鉴权通道自行退出；不向孤儿 PID 发送信号。
+
+如果升级前已留下没有归属记录的 v1 Controller，需要一次性手动恢复：先完全退出 Codex Desktop，再用 `lsof -nP -iTCP:<提示中的端口> -sTCP:LISTEN` 找到监听 PID，用 `ps -ww -p <PID> -o command=` 检查命令。仅当命令是旧安装的 Node `desktop-controller.mjs` 且 `--attachment-port` 与提示一致时，才在进程管理器中退出该进程或执行 `kill -TERM <PID>`，然后重试。不要终止无法辨认的监听进程。
+
+npm 的 Launcher 和 Node 分别来自更新请求的平台包根目录与 `node_path`；Windows 安装包从安装根目录的 `bin` 和 `runtime` 定位；macOS 的 Launcher 位于 `.app/Contents/MacOS/boft`，Node 位于 `.app/Contents/Resources/runtime/node`；Linux 压缩包从解压目录的 `bin` 和 `runtime` 定位，更新时整体替换该目录，失败则恢复原目录。Host `--stop` 的标准输出作为不透明文本保存在更新状态中，不由 Rust 解析任务数。更新后按原使用方式恢复：纯 Web 只恢复后台 Host 和 Web；受管理 GUI 在线时恢复 GUI 并沿用 Web 的启用设置。恢复检查服务的版本、运行入口、进程身份和监听状态。GUI 恢复由 Launcher 先确保共享 Host 运行，再启动 Desktop，因此不依赖 LaunchServices 保留父子进程关系。
 
 停止服务后安装或启动失败时，Updater 尝试一次恢复同一安装，更新状态保持失败并附带恢复结果；不保证损坏的安装可以回滚。会话记录保留，被中断任务不自动继续。浏览器在更新期间断线时有界重试状态查询，不重发开始更新；10 分钟内无法确认结果时显示未知，不推断安装失败。
 
-`codexhost update` 提供不打开浏览器的终端入口，适用于 npm、macOS DMG 和 Windows 安装包。命令检查最新 Release，已是最新版本时成功退出。有可用 Host 时，验证它属于当前安装后复用 Host 的更新接口；不同安装或缺少安装身份的旧 Host 会被明确拒绝。终端显示请求已接受不代表安装已经完成，应查看重连后的更新状态和当前版本。
+`boft update` 提供不打开浏览器的终端入口，适用于 npm、macOS DMG、Windows 安装包和 Linux 压缩包。命令检查最新 Release，已是最新版本时成功退出。有可用 Host 时，验证它属于当前安装后复用 Host 的更新接口；不同安装或缺少安装身份的旧 Host 会被明确拒绝。终端显示请求已接受不代表安装已经完成，应查看重连后的更新状态和当前版本。
 
-没有可用 Host 时，Console/CLI 使用独立更新流程，下载、准备后等待 Updater 校验进程身份并确认就绪，转移更新锁，再退出；Updater 等发起进程退出后安装。没有安装 Desktop 时恢复 Web，否则沿用 Desktop 启动方式。创建子进程或获得 PID 不代表交接成功；启动报错、提前退出或交接超时都会报告失败。源码构建和 Linux 非 npm 安装不支持自更新。
+没有可用 Host 时，Console/CLI 使用独立更新流程，下载、准备后等待 Updater 校验进程身份并确认就绪，转移更新锁，再退出；Updater 等发起进程退出后安装。没有安装 Desktop 时恢复 Web，否则沿用 Desktop 启动方式。创建子进程或获得 PID 不代表交接成功；启动报错、提前退出或交接超时都会报告失败。源码构建不支持自更新。
 
 - Windows 安装包更新以 `/DIR` 固定当前安装目录，启动安装器前由 Updater 关闭仍从该安装目录运行的 Launcher、内置 Node（包括独立控制台）、Shim 和 node_repl 包装器，规则与下文的覆盖安装相同；npm 更新前关闭仍从该平台包运行的 codexhost 可执行文件，不关闭共享的系统 Node。安装器和 npm 的输出分别写入本次更新目录的 `installer.log`、`npm-install.log`。失败时保留手动更新入口。
-- npm 安装保留 Node、npm CLI、wrapper 和平台包根目录的绝对路径，后台 Host 不依赖后来连接的 Desktop 提供安装信息。路径必须属于当前 Host 安装。
+- npm 安装保留 Node、npm CLI、wrapper 和平台包根目录的绝对路径，后台 Host 不依赖后来连接的 Desktop 提供安装信息。路径必须属于当前 Host 安装。重启运行的是请求中的平台包根目录，因此 Updater 在确认交接、停止任何服务之前，先用 `npm root --global` 确认这份 npm 能原地替换它：平台包位于该全局目录下 `@codexhost/cli/node_modules` 内时随 CLI 一起替换；是该全局目录下的独立全局包时（启动时版本不一致提示的重装命令会这样安装），在同一条 npm 命令中显式安装同版本平台包；其他布局（例如 npm 的全局目录不是当初安装 codexhost 的那个）直接拒绝更新，原服务保持运行。安装后校验平台包根目录的 `codexhost-distribution.json` 已是目标版本，否则报告该路径未被替换，而不是等待服务就绪超时。远程 SSH Host 的 npm 更新使用同一规则。
+- npm 安装的更新以 GitHub Release 决定提供哪个版本，再用这份安装自己的 npm（含镜像与代理配置）执行 `npm view`，确认 CLI 和本机平台包的该版本都已可装，才显示更新按钮和“有新版本”提示；镜像尚未同步时设置页说明需等待同步，查询失败时报告错误。确认可装的结果在 Host 内保留，未同步的结果 5 分钟后重新查询。点击更新后，更新管理器在交接前用 `npm cache add` 把两个包下载并校验到 npm 缓存，失败则不停止任何服务；Updater 停止服务后以 `--prefer-offline` 从缓存安装。
 - 检查、准备或交接失败时 CLI 返回非零退出码；安装后的最终结果保留在本地状态文件中。
 
 ### Windows 安装包覆盖安装
@@ -192,4 +197,6 @@ codexhost 未运行时，“连接”页列出已安装的插件（读取 `manif
 
 ## 其他命令
 
-`codexhost inspect --json` 输出 Codex Desktop 安装信息与 Launcher 运行状态；未找到 Codex Desktop 时在 `desktopError` 中说明，不以失败退出。
+- `codexhost inspect --json` 输出 Codex Desktop 安装信息与 Launcher 运行状态；未找到 Codex Desktop 时在 `desktopError` 中说明，不以失败退出。
+- `boft app [--onboarding]` 启动独立 Tauri v2 原生桌面壳（可选强制展示首次选择界面）；无图形会话且未指定 `--onboarding` 时回退到后台 Web，写入 `$CODEXHOST_DATA_DIR/desktop-shell-ready.json`（`0600`）。桌面壳按规范化数据目录单实例：同一目录再次启动只激活已有窗口，不同数据目录可同时运行。
+- `boft launch-prefs get --json` 与 `boft launch-prefs set --surface <native-shell|codex-desktop> [--onboarding-completed true|false]` 读取或保存桌面默认启动方式（`$CODEXHOST_DATA_DIR/launch-preferences-v1.json`，`0600`）。

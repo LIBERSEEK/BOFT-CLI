@@ -56,7 +56,7 @@ PR 维护只做两件事：**明确标题自动标签、CI 结束后更新一条
 
 ## CI 执行范围和发布校验
 
-`ci.yml` 保留四项基线 job，不配置分支保护。macOS CI 和 ARM64 发行包使用 `macos-26` 原生 ARM64 runner；macOS x64 发行包使用 `macos-15-intel`。为减少重复工作，执行范围如下：
+`ci.yml` 保留四项基线 job，不配置分支保护。macOS CI 和两个 macOS 发行目标均使用 `macos-26` ARM64 runner，x64 发行包使用 `x86_64-apple-darwin` 目标交叉编译。为减少重复工作，执行范围如下：
 
 | 检查 | Linux x64 | macOS / Windows | Linux ARM64 |
 | --- | --- | --- | --- |

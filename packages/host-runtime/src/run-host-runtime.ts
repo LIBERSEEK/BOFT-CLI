@@ -39,6 +39,8 @@ import {
 import { installDelegationSkills } from "./delegation-skill.js";
 import type { DelegationControlRegistration } from "./delegation-types.js";
 import { readRemoteDelegationThread } from "./remote-delegation-read.js";
+import { createRemotePeerDelegationClient } from "./remote-peer-delegation.js";
+import { FilePeerStartIdempotencyStore } from "./peer-start-idempotency-store.js";
 import {
   DELEGATION_CLI_NODE_PATH_ENV,
   DELEGATION_CLI_PATH_ENV,
@@ -72,6 +74,7 @@ import { consoleEntrypoint, createHostConsoleOpener } from "./console-opener.js"
 import { createLauncherExternalUrlOpener } from "./launcher-url-opener.js";
 import { createHostWebOpener } from "./web-opener.js";
 import { createHostUpdateCoordinator, type HostUpdateCoordinator } from "./update-coordinator.js";
+import { HostReleaseAnnouncement } from "./release-announcement.js";
 import { ModelPriceCatalog, defaultModelPriceDirectory } from "./model-prices.js";
 import { UsageStatistics } from "./usage-statistics.js";
 import {
@@ -211,6 +214,10 @@ export async function prepareDelegationRuntime(input: {
   });
   const registry = new DelegationControlRegistry({
     remoteRead: (request) => readRemoteDelegationThread(input.environment, request),
+    remotePeer: createRemotePeerDelegationClient(input.environment),
+    peerStartStore: new FilePeerStartIdempotencyStore(
+      path.join(codexhostDataDirectory(input.environment), "peer-delegation-requests"),
+    ),
     diagnose: diagnoseWatch,
     watchStore: new FileDelegationWatchStore(
       defaultDelegationWatchDirectory(input.environment),
@@ -311,6 +318,7 @@ async function runWithConsoleControl(
   host: AppServerHost,
   enabled: boolean,
   environment: NodeJS.ProcessEnv,
+  registry: DelegationControlRegistry,
 ): Promise<number> {
   const control = enabled
     ? await startConsoleControlServer({ target: host, environment }).catch((error: unknown) => {
@@ -321,7 +329,11 @@ async function runWithConsoleControl(
       })
     : undefined;
   const clients = enabled
-    ? await startClientChannelServer({ target: host, environment }).catch((error: unknown) => {
+    ? await startClientChannelServer({
+        target: host,
+        peerDelegation: (params) => registry.handlePeerDelegationChannelRequest(params),
+        environment,
+      }).catch((error: unknown) => {
         process.stderr.write(
           `codexhost Host Runtime: client channel unavailable: ${error instanceof Error ? error.message : String(error)}\n`,
         );
@@ -384,6 +396,10 @@ export async function runHostRuntime(input: {
           environment: input.environment,
         })
       : undefined);
+  const releaseAnnouncement = maintenanceRuntimePath
+    ? new HostReleaseAnnouncement(maintenanceRuntimePath, input.environment)
+    : undefined;
+  const announcementOptions = releaseAnnouncement ? { releaseAnnouncement } : {};
   // Only a Launcher-started local Host can open the console on this machine.
   // The development entry does not pass its URL; the Launcher still exports the path.
   const consoleHostRuntimePath = hostRuntimePath ?? input.environment.CODEXHOST_HOST_RUNTIME_PATH;
@@ -401,8 +417,6 @@ export async function runHostRuntime(input: {
     input.environment.CODEXHOST_REMOTE_SSH_MANAGED === "1"
       ? undefined
       : createLauncherExternalUrlOpener(input.environment);
-  // The local console reads the statistics; read the native storage ahead of its first visit.
-  if (consoleOpener) usageStatistics.warm();
 
   if (!isRemoteUnixListenerInvocation(input.arguments)) {
     const webOpener = createHostWebOpener(input.environment);
@@ -448,6 +462,7 @@ export async function runHostRuntime(input: {
               ...shared,
               ...installedHarnessPluginOptions(delegationEnvironment, false, input.hostRuntimeUrl),
               onDelegationApi,
+              ...announcementOptions,
               ...(updateCoordinator ? { updateCoordinator } : {}),
               ...(consoleOpener ? { consoleOpener } : {}),
               ...(externalUrlOpener ? { externalUrlOpener } : {}),
@@ -457,6 +472,7 @@ export async function runHostRuntime(input: {
               host,
               consoleOpener !== undefined,
               delegationEnvironment,
+              registry,
             );
           } finally {
             await official.close();
@@ -473,6 +489,7 @@ export async function runHostRuntime(input: {
             ...installedHarnessPluginOptions(delegationEnvironment, false, input.hostRuntimeUrl),
             mappingStore,
             closeMappingStoreOnExit: false,
+            ...announcementOptions,
             ...(updateCoordinator ? { updateCoordinator } : {}),
             ...(consoleOpener ? { consoleOpener } : {}),
             ...(externalUrlOpener ? { externalUrlOpener } : {}),
@@ -496,7 +513,7 @@ export async function runHostRuntime(input: {
                 modelPrices,
                 usageStatistics,
                 ...common,
-                desktopExtensionBackends: host.desktopExtensionBackends,
+                hostExtensions: host.hostExtensions,
                 arguments: [],
                 desktopInput,
                 desktopOutput,
@@ -511,6 +528,7 @@ export async function runHostRuntime(input: {
             host,
             consoleOpener !== undefined,
             delegationEnvironment,
+            registry,
           );
         } finally {
           try {
@@ -577,6 +595,7 @@ export async function runHostRuntime(input: {
         desktopOutput: sharedOwner.output,
         diagnosticOutput: process.stderr,
         externalOnly: true,
+        ...announcementOptions,
         sharedThreads: createRemoteSharedExternalBridge(
           maintenanceRuntimePath,
           delegationEnvironment,
@@ -607,7 +626,7 @@ export async function runHostRuntime(input: {
             modelPrices,
             usageStatistics,
             ...(sharedDelegation ? { sharedDelegation } : {}),
-            desktopExtensionBackends: externalHost.desktopExtensionBackends,
+            hostExtensions: externalHost.hostExtensions,
             sharedThreads: new SharedThreadBridge({
               connect: async () => sharedOwner.connect(),
               delegateCreates: true,
@@ -626,6 +645,7 @@ export async function runHostRuntime(input: {
             officialRuntimeScope,
             accountControl,
             onDelegationApi: (api) => registry.register(api),
+            ...announcementOptions,
             ...(updateCoordinator ? { updateCoordinator } : {}),
           });
         },

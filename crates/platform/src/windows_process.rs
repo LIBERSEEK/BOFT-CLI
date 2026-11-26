@@ -9,6 +9,9 @@ use std::ptr::null;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use windows::Win32::Foundation::{ERROR_ACCESS_DENIED, HANDLE, WAIT_OBJECT_0};
+use windows::Win32::System::Threading::{PROCESS_SYNCHRONIZE, WaitForSingleObject};
+
 type Handle = *mut c_void;
 
 const INVALID_HANDLE_VALUE: Handle = -1_isize as Handle;
@@ -123,6 +126,18 @@ unsafe extern "system" {
 pub struct ProcessEntry {
     pub id: u32,
     pub parent_id: u32,
+    executable_name: [u16; 260],
+}
+
+impl ProcessEntry {
+    pub fn has_executable_name(&self, name: &str) -> bool {
+        let end = self
+            .executable_name
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(260);
+        name.eq_ignore_ascii_case(&String::from_utf16_lossy(&self.executable_name[..end]))
+    }
 }
 
 pub struct ChildJob(Handle);
@@ -184,18 +199,20 @@ pub fn process_entries() -> io::Result<Vec<ProcessEntry>> {
         let mut entry: NativeProcessEntry = zeroed();
         entry.size = size_of::<NativeProcessEntry>() as u32;
         let mut entries = Vec::new();
-        if Process32FirstW(snapshot, &mut entry) != 0 {
-            loop {
-                entries.push(ProcessEntry {
-                    id: entry.process_id,
-                    parent_id: entry.parent_process_id,
-                });
-                if Process32NextW(snapshot, &mut entry) == 0 {
-                    break;
-                }
-            }
+        let mut found = Process32FirstW(snapshot, &mut entry);
+        while found != 0 {
+            entries.push(ProcessEntry {
+                id: entry.process_id,
+                parent_id: entry.parent_process_id,
+                executable_name: entry.executable_name,
+            });
+            found = Process32NextW(snapshot, &mut entry);
         }
+        let error = io::Error::last_os_error();
         CloseHandle(snapshot);
+        if error.raw_os_error() != Some(windows::Win32::Foundation::ERROR_NO_MORE_FILES.0 as i32) {
+            return Err(error);
+        }
         Ok(entries)
     }
 }
@@ -209,9 +226,10 @@ pub fn process_image_path(process_id: u32) -> io::Result<PathBuf> {
         let mut buffer = vec![0_u16; 32_768];
         let mut length = buffer.len() as u32;
         let result = QueryFullProcessImageNameW(process, 0, buffer.as_mut_ptr(), &mut length);
+        let error = (result == 0).then(io::Error::last_os_error);
         CloseHandle(process);
-        if result == 0 {
-            return Err(io::Error::last_os_error());
+        if let Some(error) = error {
+            return Err(error);
         }
         buffer.truncate(length as usize);
         Ok(PathBuf::from(String::from_utf16_lossy(&buffer)))
@@ -293,13 +311,17 @@ pub fn terminate_process_instance(
 
 pub fn terminate_process(process_id: u32, exit_code: u32) -> io::Result<()> {
     unsafe {
-        let process = OpenProcess(PROCESS_TERMINATE, 0, process_id);
+        let process = OpenProcess(PROCESS_TERMINATE | PROCESS_SYNCHRONIZE.0, 0, process_id);
         if process.is_null() {
             return Err(io::Error::last_os_error());
         }
         let result = TerminateProcess(process, exit_code);
         let error = if result == 0 {
-            Some(io::Error::last_os_error())
+            let error = io::Error::last_os_error();
+            // Windows also reports access denied for an already terminated process.
+            let already_exited = error.raw_os_error() == Some(ERROR_ACCESS_DENIED.0 as i32)
+                && handle_has_exited(process);
+            (!already_exited).then_some(error)
         } else {
             None
         };
@@ -309,6 +331,22 @@ pub fn terminate_process(process_id: u32, exit_code: u32) -> io::Result<()> {
             None => Ok(()),
         }
     }
+}
+
+pub fn process_has_exited(process_id: u32) -> bool {
+    unsafe {
+        let process = OpenProcess(PROCESS_SYNCHRONIZE.0, 0, process_id);
+        if process.is_null() {
+            return false;
+        }
+        let exited = handle_has_exited(process);
+        CloseHandle(process);
+        exited
+    }
+}
+
+fn handle_has_exited(process: Handle) -> bool {
+    unsafe { WaitForSingleObject(HANDLE(process), 0) == WAIT_OBJECT_0 }
 }
 
 pub fn atomic_replace_file(source: &std::path::Path, target: &std::path::Path) -> io::Result<()> {
@@ -379,10 +417,27 @@ mod tests {
     use std::thread;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-    use super::atomic_replace_file;
+    use super::{atomic_replace_file, terminate_process};
 
     const FILE_SHARE_READ: u32 = 0x0000_0001;
     const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+
+    #[test]
+    fn terminating_an_exited_process_succeeds_while_its_handle_is_open() {
+        let mut child = std::process::Command::new("cmd.exe")
+            .args(["/d", "/c", "exit 0"])
+            .spawn()
+            .expect("start an independent process");
+        assert!(
+            child
+                .wait()
+                .expect("wait for the process to exit")
+                .success()
+        );
+
+        terminate_process(child.id(), 1).expect("the process already exited");
+        assert!(!crate::process_exists(child.id()));
+    }
 
     #[test]
     fn retries_atomic_replace_while_a_transient_reader_blocks_deletion() {

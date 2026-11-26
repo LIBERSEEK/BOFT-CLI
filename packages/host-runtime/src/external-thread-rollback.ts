@@ -12,6 +12,7 @@ import {
 } from "@codexhost/protocol-core";
 import {
   permissionModeFixedAtCreate,
+  sameHarnessModelRef,
   type HostTurnId,
   type NativeCheckpointRef,
   type NativeSessionRef,
@@ -21,7 +22,7 @@ import {
   externalThreadValue,
   type ExternalThreadRepository,
 } from "./external-thread-repository.js";
-import { DELEGATION_THREAD_ID_ENV } from "./delegation-types.js";
+import { threadDelegationEnvironment } from "./bearer-token.js";
 import type { ExternalThread, ExternalThreadRuntime } from "./external-thread-runtime.js";
 import { ownTurns } from "./external-thread-side-chat.js";
 
@@ -55,7 +56,7 @@ function sameCurrentConfiguration(
   replacement: HarnessSessionState,
 ): boolean {
   return (
-    current.effectiveModel?.id === replacement.effectiveModel?.id &&
+    sameHarnessModelRef(current.effectiveModel, replacement.effectiveModel) &&
     current.effectiveThinkingOptionId === replacement.effectiveThinkingOptionId &&
     current.effectivePermissionModeId === replacement.effectivePermissionModeId
   );
@@ -135,10 +136,7 @@ async function executeCurrentLastTurnRollback(input: {
     opened = await adapter.open({
       kind: "rollbackLastTurn",
       cwd: current.cwd,
-      environment: {
-        ...(input.environment ?? process.env),
-        [DELEGATION_THREAD_ID_ENV]: current.id,
-      },
+      environment: threadDelegationEnvironment(input.environment ?? process.env, current.id),
       sourceRef: currentNativeRef as NativeSessionRef,
       ...(configuration.effectiveModel ? { model: configuration.effectiveModel } : {}),
       ...(configuration.effectiveThinkingOptionId
@@ -210,15 +208,16 @@ async function executeCurrentLastTurnRollback(input: {
     turns: ownTurns(aligned.record, aligned.turns),
     sessionId: current.sessionId,
   });
-  await runtime.replace(current, {
+  const replaced = await runtime.replace(current, {
     record: aligned.record,
     session,
     sessionId: current.sessionId,
     thread,
     turns: aligned.turns,
+    historicalPlans: aligned.historicalPlans,
     restoredState: replacementState,
   });
-  return { ok: true, thread };
+  return { ok: true, thread: replaced.thread };
 }
 
 export async function executeExternalThreadRollback(input: {
@@ -248,6 +247,16 @@ export async function executeExternalThreadRollback(input: {
   }
   const refreshError = await runtime.refresh(derived);
   if (refreshError) return { ok: false, error: refreshError };
+  const displayedLastTurn = derived.turns.at(-1);
+  if (
+    displayedLastTurn?.status === "failed" &&
+    displayedLastTurn.id !== derived.record.turnMappings.at(-1)?.hostTurnId
+  ) {
+    return {
+      ok: false,
+      error: { code: -32080, message: "The last Turn has no Native history to roll back" },
+    };
+  }
   if (
     expectedLastTurnId !== undefined &&
     derived.record.turnMappings.at(-1)?.hostTurnId !== expectedLastTurnId
@@ -356,10 +365,7 @@ export async function executeExternalThreadRollback(input: {
     opened = await adapter.open({
       kind: "fork",
       cwd: derived.cwd,
-      environment: {
-        ...(input.environment ?? process.env),
-        [DELEGATION_THREAD_ID_ENV]: derived.id,
-      },
+      environment: threadDelegationEnvironment(input.environment ?? process.env, derived.id),
       sourceRef: sourceNativeRef as NativeSessionRef,
       checkpoint: boundary.nativeCheckpointRef as NativeCheckpointRef,
     });
@@ -416,12 +422,13 @@ export async function executeExternalThreadRollback(input: {
     turns: ownTurns(aligned.record, aligned.turns),
     sessionId: derived.sessionId,
   });
-  await runtime.replace(derived, {
+  const replaced = await runtime.replace(derived, {
     record: aligned.record,
     session,
     sessionId: derived.sessionId,
     thread,
     turns: aligned.turns,
+    historicalPlans: aligned.historicalPlans,
   });
-  return { ok: true, thread };
+  return { ok: true, thread: replaced.thread };
 }

@@ -21,6 +21,12 @@ export class ClientChannelEvents {
     };
     this.publish(event);
   }
+  projectsChanged(): void {
+    this.publish({
+      type: "projects-changed",
+      cursor: { epoch: this.epoch, sequence: ++this.sequence },
+    });
+  }
   skillsChanged(cwd?: string): void {
     this.publish({
       type: "skills-changed",
@@ -44,6 +50,13 @@ export class ClientChannelEvents {
   preferencesChanged(revision: number): void {
     this.publish({
       type: "preferences-changed",
+      cursor: { epoch: this.epoch, sequence: ++this.sequence },
+      revision,
+    });
+  }
+  extensionsChanged(revision: number): void {
+    this.publish({
+      type: "extensions-changed",
       cursor: { epoch: this.epoch, sequence: ++this.sequence },
       revision,
     });

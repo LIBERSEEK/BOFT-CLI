@@ -1,7 +1,8 @@
 /** Chat-owned Slot declarations and composed component props. */
 import type { ReactNode } from "react";
 import type { MessageId } from "@deepseek-ai/dsh-llm/brand";
-import type { ResponseAnnotation } from "@codexhost/shared-contracts";
+import type { ResponseAnnotation, ThreadHandoffMetadata } from "@codexhost/shared-contracts";
+import type { ModelCatalog } from "@deepseek-ai/dsh-api-remotes/client";
 import type { SessionId, SessionSeq } from "@deepseek-ai/dsh-session/types";
 import type {
   CommandNode,
@@ -217,6 +218,36 @@ export interface SentMessageEditing {
   send(): void;
 }
 
+export interface ChatHandoffInput {
+  readonly atSeq?: number;
+  readonly targetHarnessId: string;
+  readonly targetModel?: string;
+  readonly targetThinkingOptionId?: string;
+}
+
+export interface ChatHandoffRequest extends ChatHandoffInput {
+  readonly sessionId: string;
+}
+
+export interface ChatHandoffResult {
+  readonly sessionId: string;
+  readonly handoff: ThreadHandoffMetadata;
+}
+
+export interface ChatHandoffModalRequest {
+  readonly seq: number;
+  readonly sessionId: SessionId;
+  readonly targetHarnessId?: string;
+  readonly atSeq?: number;
+}
+
+export interface ChatHandoffLauncher {
+  open(
+    sessionId: SessionId,
+    options?: { readonly targetHarnessId?: string; readonly atSeq?: number },
+  ): void;
+}
+
 declare module "@deepseek-ai/cordis" {
   interface Context {
     chatTurnDiffs: {
@@ -225,6 +256,10 @@ declare module "@deepseek-ai/cordis" {
     chatMessageEditing: {
       send(sessionId: string, atSeq: number, text: string): Promise<SentMessageEditReceipt>;
     };
+    chatHandoff: {
+      handoff(request: ChatHandoffRequest): Promise<ChatHandoffResult>;
+    };
+    chatHandoffLauncher: ChatHandoffLauncher;
   }
 }
 declare module "@deepseek-ai/dsh-session-projection/types" {
@@ -243,6 +278,7 @@ export interface ChatNodeOwnerProps {
   openFile: (path: string, options?: OpenFileOptions) => void;
   inspectCall: ((callId: ToolCallId) => void) | undefined;
   forkAt: (seq: number) => Promise<void>;
+  handoffAt?: ((seq: number) => void) | undefined;
   loadTurnDiffs?: ((turn: number, path?: string) => Promise<readonly DiffHunk[]>) | undefined;
   messageEditing?: SentMessageEditing | undefined;
   /**
@@ -316,6 +352,8 @@ export interface ChatViewInjected {
     presentation: ObservableSnapshot<ChatPresentationPolicy>;
     /** Whether the Sidebar Browser is registered. */
     browserAvailable: ObservableSnapshot<boolean>;
+    /** Pending cross-Harness handoff modal open request initiated outside ChatView. */
+    handoffRequest: ObservableSnapshot<ChatHandoffModalRequest | null>;
   };
   keyedHooks: {
     /** Resolve the stable source for one Chat Node key. */
@@ -345,6 +383,10 @@ export interface ChatViewInjected {
     read: () => ChatScrollPosition | null;
   };
   forkAt: (seq: number) => Promise<void>;
+  openSession: (sessionId: string) => void;
+  handoff?: ((input: ChatHandoffInput) => Promise<void>) | undefined;
+  clearHandoffRequest: (seq: number) => void;
+  loadModelCatalog?: (() => Promise<ModelCatalog>) | undefined;
   editMessage?: ((seq: number, text: string) => Promise<SentMessageEditReceipt>) | undefined;
   loadTurnDiffs?: ((turn: number, path?: string) => Promise<readonly DiffHunk[]>) | undefined;
   fileMentions: (owner: TurnTailOwnerProps) => MarkdownFileMentions | undefined;

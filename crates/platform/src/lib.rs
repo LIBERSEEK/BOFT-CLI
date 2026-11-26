@@ -32,12 +32,16 @@ pub use macos_aqua_process::{
     AQUA_SPAWN_ARGUMENT, run_aqua_spawn_helper, spawn_in_desktop_session,
 };
 #[cfg(target_os = "macos")]
+mod macos_process_events;
+#[cfg(target_os = "macos")]
 mod macos_process_observation;
 mod process;
 mod process_chain;
 mod process_identity;
 pub use independent_service::{IndependentServiceRegistration, register_independent_service};
-pub use process_identity::{ProcessIdentity, process_identity, process_instance};
+pub use process_identity::{
+    ProcessIdentity, observe_process_identity, process_identity, process_instance,
+};
 mod process_supervision;
 mod process_termination;
 mod proxy_environment;
@@ -61,17 +65,21 @@ mod windows_ui;
 
 pub use background::{configure_detached_service_command, detach_from_terminal};
 pub use desktop_launch::{
-    DesktopProcess, launch_desktop, launch_stock_desktop, open_external_url,
-    open_latest_codexhost_release, reveal_file,
+    DesktopProcess, launch_desktop, launch_desktop_with_removed_environment, launch_stock_desktop,
+    open_external_url, open_latest_codexhost_release, reveal_file,
 };
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-pub use desktop_launch::{DesktopSession, launch_desktop_session};
+pub use desktop_launch::{
+    DesktopSession, launch_desktop_session, launch_desktop_session_with_removed_environment,
+};
 #[cfg(not(target_os = "linux"))]
 pub use installation::discover_codex_desktop;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 pub use installation::discover_codex_desktop_from_root;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 pub use installation::discover_desktop_managed_codex_cli;
+#[cfg(target_os = "windows")]
+pub use installation::discover_registered_codex_desktop;
 #[cfg(target_os = "linux")]
 pub use linux_installation::discover_codex_desktop;
 pub use macos_native_harness_broker::{
@@ -99,7 +107,9 @@ pub use process::{desktop_process_ids, desktop_root_process_ids, process_started
 pub use process::{
     desktop_process_tree, desktop_root_snapshots_for_installation, process_snapshots,
 };
-pub use process_chain::descendant_executable_pair_exists;
+pub use process_chain::{
+    HostChainObservation, descendant_executable_pair_exists, observe_host_chain,
+};
 pub use process_supervision::{ChildProcessGuard, SupervisedChild, spawn_supervised};
 pub use process_termination::{
     terminate_process_group_instance, terminate_process_identity, terminate_process_instance,
@@ -142,6 +152,9 @@ pub const CUSTOM_INSTALL_ROOT_ENV: &str = "CODEXHOST_INSTALL_ROOT";
 pub enum DesktopLaunchMode {
     LaunchServices,
     DirectExecutable,
+    /// Spawn the registered Store executable instead of activating its AUMID.
+    #[cfg(target_os = "windows")]
+    WindowsDirect,
 }
 
 impl DesktopLaunchMode {
@@ -150,6 +163,8 @@ impl DesktopLaunchMode {
         match self {
             Self::LaunchServices => "launch-services",
             Self::DirectExecutable => "direct-executable",
+            #[cfg(target_os = "windows")]
+            Self::WindowsDirect => "windows-direct",
         }
     }
 }

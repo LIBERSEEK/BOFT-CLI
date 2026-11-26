@@ -2,7 +2,7 @@ import type { HostThreadSnapshot, OpenSessionInput } from "@codexhost/harness-ad
 import { FakeHarnessAdapter, FakeHarnessSession } from "@codexhost/harness-adapter/testing";
 import type { JsonObject } from "@codexhost/protocol-core";
 import { harnessIdSchema, hostThreadIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { withInjectedText, withoutInjectedText } from "../src/external-thread-side-chat.js";
 import {
@@ -38,6 +38,36 @@ async function call(
 ): Promise<JsonObject> {
   writeRequest(fixture.desktopInput, { id, method, params });
   return fixture.collector.waitFor((message) => requestId(message, id));
+}
+
+function startedThreadId(message: JsonObject): unknown {
+  if (message.method !== "thread/started") return undefined;
+  return ((message.params as JsonObject | undefined)?.thread as JsonObject | undefined)?.id;
+}
+
+/** Like Claude Code, a new Session reports its Native identity only on its first Turn. */
+function deferIdentity(fixture: Fixture): void {
+  const open = fixture.adapter.open.bind(fixture.adapter);
+  vi.spyOn(fixture.adapter, "open").mockImplementation(async (input) => {
+    const result = await open(input);
+    if (!result.ok) return result;
+    const state = result.value.initialState;
+    Object.defineProperty(result.value, "initialState", {
+      value: { ...state, nativeRef: undefined },
+    });
+    const outputs = result.value.outputs;
+    Object.defineProperty(result.value, "outputs", {
+      value: (async function* (): AsyncGenerator<HarnessOutput> {
+        for await (const output of outputs) {
+          if (output.kind === "event" && output.event.type === "turn.started") {
+            yield { kind: "event", event: { type: "session.state.changed", state } };
+          }
+          yield output;
+        }
+      })(),
+    });
+    return result;
+  });
 }
 
 /** Desktop's persistent Side Chat: an attached Fork, then its boundary. */
@@ -180,6 +210,49 @@ describe("External Side Chats", () => {
     }
   });
 
+  it("does not replay an inherited plan when a Side Chat resumes", async () => {
+    const fixture = createFixture();
+    try {
+      const sourceId = await startExternalThread(fixture, "codexhost/pi-native", 1, {
+        historyMode: "paginated",
+      });
+      const turnId = await startPiTurn(fixture, sourceId, 2);
+      const source = fixture.adapter.sessions[0];
+      if (!source) throw new Error("Missing source Session");
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
+      source.completeItem(
+        source.startToolExecution("Todo", {
+          todos: [{ content: "Parent task", status: "pending" }],
+        }),
+        { status: "succeeded" },
+      );
+      source.succeedTurn();
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+
+      const sideChatId = await openSideChat(fixture, sourceId, 3);
+      const sideChat = fixture.adapter.sessions[1];
+      if (!sideChat) throw new Error("Missing Side Chat Session");
+      sideChat.capabilities.persistentPlan = true;
+      const before = fixture.collector.messages.length;
+      const resumed = await call(fixture, 5, "thread/resume", {
+        threadId: sideChatId,
+        excludeTurns: true,
+        initialTurnsPage: { limit: 5, itemsView: "full" },
+      });
+      expect(resumed.result).toMatchObject({
+        thread: { turns: [] },
+        initialTurnsPage: { data: [] },
+      });
+      // Order the notification stream after the resume.
+      await call(fixture, 6, "thread/read", { threadId: sideChatId });
+      expect(fixture.collector.messages.slice(before)).not.toContainEqual(
+        expect.objectContaining({ method: "turn/plan/updated" }),
+      );
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
   it("opens a Side Chat while the source's first Turn runs, with no inherited history", async () => {
     const fixture = createFixture();
     try {
@@ -192,6 +265,7 @@ describe("External Side Chats", () => {
       );
 
       // As in native Codex, the fork carries completed history only: here, none.
+      deferIdentity(fixture);
       const sideChatId = await openSideChat(fixture, sourceId, 3);
       const started = await call(fixture, 5, "turn/start", {
         threadId: sideChatId,
@@ -216,6 +290,10 @@ describe("External Side Chats", () => {
         excludeTurns: true,
       });
       expect(temporary.result).toMatchObject({ thread: { id: expect.any(String) } });
+      // As in native Codex, only the temporary Side Chat is announced as a started Thread.
+      const temporaryId = ((temporary.result as JsonObject).thread as JsonObject).id;
+      await fixture.collector.waitFor((message) => startedThreadId(message) === temporaryId);
+      expect(fixture.collector.messages.map(startedThreadId)).not.toContain(sideChatId);
       const plain = await call(fixture, 7, "thread/fork", { threadId: sourceId });
       expect(plain.error).toMatchObject({ code: -32080 });
 

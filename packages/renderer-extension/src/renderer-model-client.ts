@@ -1,42 +1,8 @@
 import {
-  DESKTOP_EXTENSIONS_LIST_METHOD,
-  DESKTOP_EXTENSIONS_ENABLE_METHOD,
-  DESKTOP_EXTENSIONS_DISABLE_METHOD,
-  DESKTOP_EXTENSIONS_RECOVER_METHOD,
-  DESKTOP_EXTENSIONS_CATALOG_METHOD,
-  DESKTOP_EXTENSIONS_INSTALL_METHOD,
-  DESKTOP_EXTENSIONS_UNINSTALL_METHOD,
-  DESKTOP_EXTENSIONS_ASSET_METHOD,
-  DESKTOP_EXTENSIONS_SETTINGS_GET_METHOD,
-  DESKTOP_EXTENSIONS_SETTINGS_SET_METHOD,
-  DESKTOP_EXTENSIONS_BACKEND_INVOKE_METHOD,
-  desktopExtensionsListResultSchema,
-  desktopExtensionMutationResultSchema,
-  desktopExtensionSelectionParamsSchema,
-  desktopExtensionsRecoveryParamsSchema,
-  desktopExtensionsCatalogParamsSchema,
-  desktopExtensionsCatalogResultSchema,
-  desktopExtensionsInstallParamsSchema,
-  desktopExtensionsInstallResultSchema,
-  desktopExtensionsUninstallParamsSchema,
-  desktopExtensionsUninstallResultSchema,
-  desktopExtensionsAssetParamsSchema,
-  desktopExtensionsAssetResultSchema,
-  desktopExtensionsSettingsGetParamsSchema,
-  desktopExtensionsSettingsSetParamsSchema,
-  desktopExtensionsSettingsResultSchema,
-  desktopExtensionsBackendInvokeParamsSchema,
-  desktopExtensionsBackendInvokeResultSchema,
-  type DesktopExtensionsListResult,
-  type DesktopExtensionMutationResult,
-  type DesktopExtensionSelectionParams,
-  type DesktopExtensionsRecoveryParams,
-  type DesktopExtensionsCatalogParams,
-  type DesktopExtensionsCatalogResult,
-  type DesktopExtensionsInstallParams,
-  type DesktopExtensionsInstallResult,
-  type DesktopExtensionsUninstallParams,
-  type DesktopExtensionsUninstallResult,
+  HOST_EXTENSIONS_RPC,
+  hostExtensionsRpcSchemas,
+  type HostExtensionsRpcParams,
+  type HostExtensionsRpcResult,
   SKILLS_LIST_METHOD,
   SKILLS_CHANGED_METHOD,
   skillsListParamsSchema,
@@ -119,6 +85,11 @@ import {
   codexAccountListResultSchema,
   externalThreadForkParamsSchema,
   externalThreadForkResultSchema,
+  THREAD_HANDOFF_METHOD,
+  threadHandoffParamsSchema,
+  threadHandoffResultSchema,
+  type ThreadHandoffParams,
+  type ThreadHandoffResult,
   harnessCommandCatalogSchema,
   harnessCommandsInspectParamsSchema,
   harnessConfigurationStateSchema,
@@ -142,6 +113,14 @@ import {
   threadOwnershipListResultSchema,
   threadUsageInspectionParamsSchema,
   threadUsageInspectionSchema,
+  RELEASE_ANNOUNCEMENT_ACKNOWLEDGE_METHOD,
+  RELEASE_ANNOUNCEMENT_GET_METHOD,
+  releaseAnnouncementAcknowledgeParamsSchema,
+  releaseAnnouncementGetParamsSchema,
+  releaseAnnouncementGetResultSchema,
+  type ReleaseAnnouncementAcknowledgeParams,
+  type ReleaseAnnouncementGetParams,
+  type ReleaseAnnouncementGetResult,
   updateCheckResultSchema,
   updateEmptyParamsSchema,
   updateStartResultSchema,
@@ -181,7 +160,11 @@ import {
   RendererMethodUnavailableError,
   type RendererRequestOptions,
 } from "./renderer-request-sender.js";
-import { verifyNativeCodexThread } from "./renderer-native-thread.js";
+import {
+  usesIndependentNativeInference,
+  readNativeCodexThread,
+  verifyNativeCodexThread,
+} from "./renderer-native-thread.js";
 import {
   HARNESS_PREFERENCES_GET_METHOD,
   HARNESS_PREFERENCES_PATCH_METHOD,
@@ -211,6 +194,7 @@ export const HARNESS_ACCOUNT_SOURCES_METHOD = "codexhost/harness/accounts/source
 export const HARNESS_ACCOUNT_INSPECT_METHOD = "codexhost/harness/accounts/inspect";
 export const HARNESS_WEB_UI_OPEN_METHOD = "codexhost/harness/web-ui/open";
 export const THREAD_FORK_METHOD = "codexhost/thread/fork";
+export { THREAD_HANDOFF_METHOD };
 export const THREAD_INSPECT_METHOD = "codexhost/thread/inspect";
 export const HARNESS_COMMANDS_INSPECT_METHOD = "codexhost/harness/commands/inspect";
 export const THREAD_COMMANDS_INSPECT_METHOD = "codexhost/thread/commands/inspect";
@@ -282,6 +266,9 @@ function notificationTarget(manager: RequestManagerCandidate): RequestManagerCan
   return nested && typeof nested.addNotificationCallback === "function" ? nested : null;
 }
 
+/** Target of a native inference route check: an existing Thread or a new draft's workspace. */
+export type NativeInferenceTarget = ThreadInspectionParams | { cwd: string };
+
 export interface RendererModelClient extends Partial<RendererSessionImportClient> {
   watchThreadTree?(receive: (snapshot: ThreadTreeSnapshot) => void): () => void;
   hasDesktopThread?(id: string): Promise<boolean>;
@@ -300,39 +287,42 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
   setIdleReleaseSettings?(settings: IdleReleaseSettings): Promise<IdleReleaseSettings>;
   listLoadedSessions?(): Promise<LoadedSession[]>;
   /** Use the local Host client, independent of the active Composer. */
-  listDesktopExtensions?(): Promise<DesktopExtensionsListResult>;
-  listDesktopExtensionCatalog?(
-    input?: DesktopExtensionsCatalogParams,
-  ): Promise<DesktopExtensionsCatalogResult>;
-  installDesktopExtension?(
-    input: DesktopExtensionsInstallParams,
-  ): Promise<DesktopExtensionsInstallResult>;
-  uninstallDesktopExtension?(
-    input: DesktopExtensionsUninstallParams,
-  ): Promise<DesktopExtensionsUninstallResult>;
-  enableDesktopExtension?(
-    input: DesktopExtensionSelectionParams,
-  ): Promise<DesktopExtensionMutationResult>;
-  disableDesktopExtension?(
-    input: DesktopExtensionSelectionParams,
-  ): Promise<DesktopExtensionMutationResult>;
-  disableAllDesktopExtensionsAndReload?(
-    input?: DesktopExtensionsRecoveryParams,
-  ): Promise<DesktopExtensionMutationResult>;
-  readDesktopExtensionAsset?(input: {
-    id: string;
-    path: string;
-  }): Promise<{ mimeType: string; dataUrl: string }>;
-  getDesktopExtensionSettings?(input: { id: string }): Promise<{ values: Record<string, unknown> }>;
-  setDesktopExtensionSettings?(input: {
-    id: string;
-    values: Record<string, unknown>;
-  }): Promise<{ values: Record<string, unknown> }>;
-  invokeDesktopExtensionBackend?(input: {
-    id: string;
-    method: string;
-    params?: unknown;
-  }): Promise<{ result: unknown }>;
+  listHostExtensions?(): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.list>>;
+  snapshotHostExtensions?(): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.snapshot>>;
+  subscribeHostExtensionsChanged?(listener: () => void): () => void;
+  listHostExtensionCatalog?(
+    input?: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.catalog>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.catalog>>;
+  installHostExtension?(
+    input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.install>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.install>>;
+  updateHostExtension?(
+    input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.update>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.update>>;
+  enableHostExtension?(
+    input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.enable>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.enable>>;
+  disableHostExtension?(
+    input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.disable>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.disable>>;
+  uninstallHostExtension?(
+    input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.uninstall>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.uninstall>>;
+  recoverHostExtensions?(
+    input?: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.recover>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.recover>>;
+  readHostExtensionAsset?(
+    input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.asset>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.asset>>;
+  getHostExtensionSettings?(
+    input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.settingsGet>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.settingsGet>>;
+  setHostExtensionSettings?(
+    input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.settingsSet>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.settingsSet>>;
+  invokeHostExtensionBackend?(
+    input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.backendInvoke>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.backendInvoke>>;
   currentHostId?(composer?: Element): string | null;
   knownHostIds?(): readonly string[];
   listHarnessPlugins?(): Promise<HarnessPluginListResult>;
@@ -340,12 +330,19 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
   subscribeSkillsChanged?(listener: (params: SkillsChangedParams) => void): () => void;
   clientForHost?(hostId: string): RendererModelClient | null;
   forkThread(input: ExternalThreadForkParams): Promise<ExternalThreadForkResult>;
+  handoffThread(input: ThreadHandoffParams): Promise<ThreadHandoffResult>;
   inspectHarness(
     input: HarnessInspectParams,
     options?: RendererRequestOptions,
   ): Promise<HarnessInspection>;
   openHarnessWebUi?(input: HarnessWebUiOpenParams): Promise<void>;
   inspectThread(input: ThreadInspectionParams): Promise<ThreadInspection>;
+  /**
+   * Checks whether native Codex inference bypasses the Codex quota. An existing
+   * Thread uses its own provider and workspace; a new draft passes the
+   * workspace Desktop picked for it so project `.codex/config.toml` applies.
+   */
+  usesIndependentNativeInference?(input?: NativeInferenceTarget): Promise<boolean>;
   inspectHarnessCommands(input: HarnessCommandsInspectParams): Promise<HarnessCommandCatalog>;
   inspectThreadCommands(input: ThreadCommandsInspectParams): Promise<HarnessCommandCatalog>;
   executeThreadCommand(input: ThreadCommandExecuteParams): Promise<ThreadCommandExecuteResult>;
@@ -369,6 +366,10 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
   checkUpdate(): Promise<UpdateCheckResult | null>;
   startUpdate(): Promise<UpdateStartResult>;
   readUpdateStatus(): Promise<UpdateStatusResult>;
+  getReleaseAnnouncement?(
+    input?: ReleaseAnnouncementGetParams,
+  ): Promise<ReleaseAnnouncementGetResult | null>;
+  acknowledgeReleaseAnnouncement?(input: ReleaseAnnouncementAcknowledgeParams): Promise<void>;
   openConsole?(): Promise<ConsoleOpenResult>;
   openExternalUrl?(url: string): Promise<void>;
   openWeb?(): Promise<WebOpenResult>;
@@ -452,6 +453,18 @@ export function createRendererModelClient(
     ),
   };
 
+  const extensionListeners = new Set<() => void>();
+  const extensionsChanged = <T>(result: T): T => {
+    for (const listener of [...extensionListeners]) {
+      try {
+        listener();
+      } catch {
+        // A renderer subscriber must not invalidate a successful Host mutation.
+      }
+    }
+    return result;
+  };
+
   const watchThreadTree = (receive: (snapshot: ThreadTreeSnapshot) => void) => {
     let closed = false;
     let subscriptionId: string | undefined;
@@ -508,10 +521,11 @@ export function createRendererModelClient(
     try {
       result = await manager.sendRequest(HARNESS_INSPECT_METHOD, params, options);
     } catch (error) {
-      // Hosts that predate `purpose` reject it as an unknown param; they only run full inspection.
-      if (!params.purpose || !isInvalidParams(error)) throw error;
+      // Older Hosts only accept the base inspection parameters.
+      if ((!params.purpose && !params.credentialAccess) || !isInvalidParams(error)) throw error;
       const full = { ...params };
       delete full.purpose;
+      delete full.credentialAccess;
       result = await manager.sendRequest(HARNESS_INSPECT_METHOD, full, options);
     }
     return harnessInspectionSchema.parse(result);
@@ -567,6 +581,31 @@ export function createRendererModelClient(
   };
 
   return Object.freeze({
+    async usesIndependentNativeInference(input?: NativeInferenceTarget): Promise<boolean> {
+      if (!input) return false;
+      if ("threadId" in input) {
+        const thread = await readNativeCodexThread(
+          manager.sendRequest,
+          threadInspectionParamsSchema.parse(input).threadId,
+        );
+        if (!thread.cwd) return false;
+        return usesIndependentNativeInference(
+          await manager.sendRequest("config/read", {
+            includeLayers: false,
+            cwd: thread.cwd,
+          }),
+          thread.modelProvider,
+        );
+      }
+      const cwd = typeof input.cwd === "string" && input.cwd.trim().length > 0 ? input.cwd : null;
+      if (!cwd) return false;
+      return usesIndependentNativeInference(
+        await manager.sendRequest("config/read", {
+          includeLayers: false,
+          cwd,
+        }),
+      );
+    },
     async getHarnessPreferences(scope = "external") {
       return harnessPreferenceSnapshotSchema.parse(
         await manager.sendRequest(
@@ -675,6 +714,11 @@ export function createRendererModelClient(
       const params = externalThreadForkParamsSchema.parse(input);
       const result = await manager.sendRequest(THREAD_FORK_METHOD, params);
       return externalThreadForkResultSchema.parse(result);
+    },
+    async handoffThread(input: ThreadHandoffParams): Promise<ThreadHandoffResult> {
+      const params = threadHandoffParamsSchema.parse(input);
+      const result = await manager.sendRequest(THREAD_HANDOFF_METHOD, params);
+      return threadHandoffResultSchema.parse(result);
     },
     inspectHarness,
     async listSkills(params: SkillsListParams): Promise<SkillsListResult> {
@@ -799,113 +843,114 @@ export function createRendererModelClient(
         await manager.sendRequest(REMOTE_UPDATE_METHOD, { version }),
       );
     },
-    async listDesktopExtensions(): Promise<DesktopExtensionsListResult> {
-      return desktopExtensionsListResultSchema.parse(
-        await manager.sendRequest(DESKTOP_EXTENSIONS_LIST_METHOD, {}),
+    async listHostExtensions() {
+      const schema = hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.list];
+      return schema.result.parse(
+        await manager.sendRequest(HOST_EXTENSIONS_RPC.list, schema.params.parse({})),
       );
     },
-    async listDesktopExtensionCatalog(
-      input: DesktopExtensionsCatalogParams = {},
-    ): Promise<DesktopExtensionsCatalogResult> {
-      return desktopExtensionsCatalogResultSchema.parse(
-        await manager.sendRequest(
-          DESKTOP_EXTENSIONS_CATALOG_METHOD,
-          desktopExtensionsCatalogParamsSchema.parse(input),
+    async snapshotHostExtensions() {
+      const schema = hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.snapshot];
+      return schema.result.parse(
+        await manager.sendRequest(HOST_EXTENSIONS_RPC.snapshot, schema.params.parse({})),
+      );
+    },
+    subscribeHostExtensionsChanged(listener: () => void) {
+      extensionListeners.add(listener);
+      return () => {
+        extensionListeners.delete(listener);
+      };
+    },
+    async listHostExtensionCatalog(
+      input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.catalog> = {},
+    ) {
+      const schema = hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.catalog];
+      return schema.result.parse(
+        await manager.sendRequest(HOST_EXTENSIONS_RPC.catalog, schema.params.parse(input)),
+      );
+    },
+    async installHostExtension(input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.install>) {
+      const schema = hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.install];
+      return extensionsChanged(
+        schema.result.parse(
+          await manager.sendRequest(HOST_EXTENSIONS_RPC.install, schema.params.parse(input)),
         ),
       );
     },
-    async installDesktopExtension(
-      input: DesktopExtensionsInstallParams,
-    ): Promise<DesktopExtensionsInstallResult> {
-      return desktopExtensionsInstallResultSchema.parse(
-        await manager.sendRequest(
-          DESKTOP_EXTENSIONS_INSTALL_METHOD,
-          desktopExtensionsInstallParamsSchema.parse(input),
+    async updateHostExtension(input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.update>) {
+      const schema = hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.update];
+      return extensionsChanged(
+        schema.result.parse(
+          await manager.sendRequest(HOST_EXTENSIONS_RPC.update, schema.params.parse(input)),
         ),
       );
     },
-    async uninstallDesktopExtension(
-      input: DesktopExtensionsUninstallParams,
-    ): Promise<DesktopExtensionsUninstallResult> {
-      return desktopExtensionsUninstallResultSchema.parse(
-        await manager.sendRequest(
-          DESKTOP_EXTENSIONS_UNINSTALL_METHOD,
-          desktopExtensionsUninstallParamsSchema.parse(input),
+    async enableHostExtension(input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.enable>) {
+      const schema = hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.enable];
+      return extensionsChanged(
+        schema.result.parse(
+          await manager.sendRequest(HOST_EXTENSIONS_RPC.enable, schema.params.parse(input)),
         ),
       );
     },
-    async enableDesktopExtension(
-      input: DesktopExtensionSelectionParams,
-    ): Promise<DesktopExtensionMutationResult> {
-      return desktopExtensionMutationResultSchema.parse(
-        await manager.sendRequest(
-          DESKTOP_EXTENSIONS_ENABLE_METHOD,
-          desktopExtensionSelectionParamsSchema.parse(input),
+    async disableHostExtension(input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.disable>) {
+      const schema = hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.disable];
+      return extensionsChanged(
+        schema.result.parse(
+          await manager.sendRequest(HOST_EXTENSIONS_RPC.disable, schema.params.parse(input)),
         ),
       );
     },
-    async disableDesktopExtension(
-      input: DesktopExtensionSelectionParams,
-    ): Promise<DesktopExtensionMutationResult> {
-      return desktopExtensionMutationResultSchema.parse(
-        await manager.sendRequest(
-          DESKTOP_EXTENSIONS_DISABLE_METHOD,
-          desktopExtensionSelectionParamsSchema.parse(input),
+    async uninstallHostExtension(
+      input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.uninstall>,
+    ) {
+      const schema = hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.uninstall];
+      return extensionsChanged(
+        schema.result.parse(
+          await manager.sendRequest(HOST_EXTENSIONS_RPC.uninstall, schema.params.parse(input)),
         ),
       );
     },
-    async disableAllDesktopExtensionsAndReload(
-      input: DesktopExtensionsRecoveryParams = {},
-    ): Promise<DesktopExtensionMutationResult> {
-      return desktopExtensionMutationResultSchema.parse(
-        await manager.sendRequest(
-          DESKTOP_EXTENSIONS_RECOVER_METHOD,
-          desktopExtensionsRecoveryParamsSchema.parse(input),
+    async recoverHostExtensions(
+      input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.recover> = {},
+    ) {
+      const schema = hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.recover];
+      return extensionsChanged(
+        schema.result.parse(
+          await manager.sendRequest(HOST_EXTENSIONS_RPC.recover, schema.params.parse(input)),
         ),
       );
     },
-    async readDesktopExtensionAsset(input: {
-      id: string;
-      path: string;
-    }): Promise<{ mimeType: string; dataUrl: string }> {
-      return desktopExtensionsAssetResultSchema.parse(
-        await manager.sendRequest(
-          DESKTOP_EXTENSIONS_ASSET_METHOD,
-          desktopExtensionsAssetParamsSchema.parse(input),
+    async readHostExtensionAsset(input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.asset>) {
+      const schema = hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.asset];
+      return schema.result.parse(
+        await manager.sendRequest(HOST_EXTENSIONS_RPC.asset, schema.params.parse(input)),
+      );
+    },
+    async getHostExtensionSettings(
+      input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.settingsGet>,
+    ) {
+      const schema = hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.settingsGet];
+      return schema.result.parse(
+        await manager.sendRequest(HOST_EXTENSIONS_RPC.settingsGet, schema.params.parse(input)),
+      );
+    },
+    async setHostExtensionSettings(
+      input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.settingsSet>,
+    ) {
+      const schema = hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.settingsSet];
+      return extensionsChanged(
+        schema.result.parse(
+          await manager.sendRequest(HOST_EXTENSIONS_RPC.settingsSet, schema.params.parse(input)),
         ),
       );
     },
-    async getDesktopExtensionSettings(input: {
-      id: string;
-    }): Promise<{ values: Record<string, unknown> }> {
-      return desktopExtensionsSettingsResultSchema.parse(
-        await manager.sendRequest(
-          DESKTOP_EXTENSIONS_SETTINGS_GET_METHOD,
-          desktopExtensionsSettingsGetParamsSchema.parse(input),
-        ),
-      );
-    },
-    async setDesktopExtensionSettings(input: {
-      id: string;
-      values: Record<string, unknown>;
-    }): Promise<{ values: Record<string, unknown> }> {
-      return desktopExtensionsSettingsResultSchema.parse(
-        await manager.sendRequest(
-          DESKTOP_EXTENSIONS_SETTINGS_SET_METHOD,
-          desktopExtensionsSettingsSetParamsSchema.parse(input),
-        ),
-      );
-    },
-    async invokeDesktopExtensionBackend(input: {
-      id: string;
-      method: string;
-      params?: unknown;
-    }): Promise<{ result: unknown }> {
-      return desktopExtensionsBackendInvokeResultSchema.parse(
-        await manager.sendRequest(
-          DESKTOP_EXTENSIONS_BACKEND_INVOKE_METHOD,
-          desktopExtensionsBackendInvokeParamsSchema.parse(input),
-        ),
+    async invokeHostExtensionBackend(
+      input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.backendInvoke>,
+    ) {
+      const schema = hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.backendInvoke];
+      return schema.result.parse(
+        await manager.sendRequest(HOST_EXTENSIONS_RPC.backendInvoke, schema.params.parse(input)),
       );
     },
     async checkUpdate(): Promise<UpdateCheckResult | null> {
@@ -928,6 +973,19 @@ export function createRendererModelClient(
         updateEmptyParamsSchema.parse({}),
       );
       return updateStatusResultSchema.parse(result);
+    },
+    async getReleaseAnnouncement(
+      input: ReleaseAnnouncementGetParams = {},
+    ): Promise<ReleaseAnnouncementGetResult | null> {
+      const params = releaseAnnouncementGetParamsSchema.parse(input);
+      const result = await manager.sendRequest(RELEASE_ANNOUNCEMENT_GET_METHOD, params);
+      return releaseAnnouncementGetResultSchema.parse(result);
+    },
+    async acknowledgeReleaseAnnouncement(
+      input: ReleaseAnnouncementAcknowledgeParams,
+    ): Promise<void> {
+      const params = releaseAnnouncementAcknowledgeParamsSchema.parse(input);
+      await manager.sendRequest(RELEASE_ANNOUNCEMENT_ACKNOWLEDGE_METHOD, params);
     },
     async openWeb(): Promise<WebOpenResult> {
       const result = await manager.sendRequest(WEB_OPEN_METHOD, webOpenParamsSchema.parse({}));

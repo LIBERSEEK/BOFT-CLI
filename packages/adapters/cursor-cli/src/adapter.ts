@@ -146,10 +146,8 @@ export class CursorAdapter implements HarnessAdapter {
   readonly harnessId = harnessIdSchema.parse("cursor-cli");
   readonly #sessions = new Set<CursorSession>();
   readonly #forks = new Map<AbortController, Promise<HarnessResult<HarnessSession>>>();
-  readonly #inspections = new Map<
-    string,
-    { pending: boolean; result: Promise<HarnessInspection> }
-  >();
+  readonly #inspections = new Map<string, Promise<HarnessInspection>>();
+  readonly #inspectionTasks = new Set<Promise<HarnessInspection>>();
   #closed = false;
   readonly sessionImport: CursorSessionImport;
   constructor(readonly options: CursorAdapterOptions = {}) {
@@ -175,7 +173,12 @@ export class CursorAdapter implements HarnessAdapter {
       };
     const cwd = path.resolve(input.cwd ?? process.cwd());
     const cached = this.#inspections.get(cwd);
-    if (cached && (cached.pending || !input.refresh)) return cached.result;
+    if (input.refresh) {
+      this.#inspections.clear();
+      if (cached && this.#inspectionTasks.has(cached)) this.#inspections.set(cwd, cached);
+    }
+    const current = this.#inspections.get(cwd);
+    if (current) return current;
     const result = (async (): Promise<HarnessInspection> => {
       const transport = new CursorTransport(this.transportOptions(cwd));
       try {
@@ -197,11 +200,9 @@ export class CursorAdapter implements HarnessAdapter {
       }
     })();
     // Keep results, including failures, until explicit refresh or Adapter shutdown.
-    const entry = { pending: true, result };
-    this.#inspections.set(cwd, entry);
-    void result.finally(() => {
-      entry.pending = false;
-    });
+    this.#inspections.set(cwd, result);
+    this.#inspectionTasks.add(result);
+    void result.finally(() => this.#inspectionTasks.delete(result));
     return result;
   }
   async open(input: OpenSessionInput): Promise<HarnessResult<HarnessSession>> {
@@ -455,9 +456,7 @@ export class CursorAdapter implements HarnessAdapter {
     for (const controller of this.#forks.keys()) controller.abort();
     await Promise.allSettled([importing, ...this.#forks.values()]);
     await Promise.allSettled([...this.#sessions].map((session) => session.close()));
-    await Promise.allSettled(
-      [...this.#inspections.values()].map((inspection) => inspection.result),
-    );
+    await Promise.allSettled(this.#inspectionTasks);
   }
 }
 
@@ -470,6 +469,10 @@ export class CursorSession implements HarnessSession {
   readonly harnessId = harnessIdSchema.parse("cursor-cli");
   get capabilities() {
     return cursorCapabilities(this.info);
+  }
+  /** The live Session catalog, including parameters the inspection Session does not pin. */
+  modelCatalog() {
+    return cursorCatalog(this.info);
   }
   readonly initialUsage = null;
   readonly commands: HarnessCommandCapability = {
@@ -714,6 +717,14 @@ export class CursorSession implements HarnessSession {
           return rejected("invalidRequest", "Unknown Cursor execution mode");
         selections = [["mode", command.permissionModeId]];
       }
+      let published = false;
+      const publish = (): void => {
+        published = true;
+        this.#channel.emit({
+          kind: "event",
+          event: { type: "session.state.changed", state: structuredClone(this.initialState) },
+        });
+      };
       for (const [configId, value] of selections) {
         // Recheck after each response: selecting a model may change other configuration values.
         if (
@@ -744,11 +755,10 @@ export class CursorSession implements HarnessSession {
           );
         delete this.initialState.effectiveThinkingOptionId;
         Object.assign(this.initialState, cursorThinkingState(this.info));
-        this.#channel.emit({
-          kind: "event",
-          event: { type: "session.state.changed", state: structuredClone(this.initialState) },
-        });
+        publish();
       }
+      // An already-applied selection is still a confirmation. Desktop waits for this event.
+      if (!published) publish();
       return { ok: true, value: { completed: true } };
     } catch (error) {
       return { ok: false, error: cursorError(error) };

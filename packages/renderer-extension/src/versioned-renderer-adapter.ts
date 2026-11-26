@@ -20,6 +20,7 @@ import {
   harnessThinkingOptionIdSchema,
   hostThreadIdSchema,
   type ExternalThreadForkParams,
+  type ThreadHandoffParams,
   type HarnessModelRef,
   type HarnessPermissionModeId,
   type HarnessThinkingOptionId,
@@ -38,9 +39,11 @@ import {
 
 import type { RendererAgent } from "./agent-selection-state.js";
 import { installRendererForkControl } from "./renderer-fork-control.js";
+import { installRendererHandoffControl } from "./renderer-handoff-control.js";
 import {
   createThreadUsageSubscriptionRelay,
   type RendererModelClient,
+  type NativeInferenceTarget,
 } from "./renderer-model-client.js";
 
 export const PI_TRANSPORT_MODEL_ID = "codexhost/pi-native";
@@ -144,6 +147,7 @@ export interface RendererDraftPrewarmPolicy {
   state: "ready";
   hostId: string;
   readonly requestTarget?: () => unknown;
+  readonly requiresCreationMode?: true;
   select(
     model: string | null,
     draftId?: string,
@@ -171,93 +175,6 @@ declare global {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-export function piTransportModelId(
-  model?: HarnessModelRef,
-  thinkingOptionId?: HarnessThinkingOptionId,
-): string {
-  if (!model) {
-    if (thinkingOptionId) throw new Error("Pi transport Thinking requires a Model Ref");
-    return PI_TRANSPORT_MODEL_ID;
-  }
-  const parsedModel = harnessModelRefSchema.parse(model);
-  const parsedThinking = thinkingOptionId
-    ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
-    : undefined;
-  return `${PI_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedThinking ? `@${parsedThinking}` : ""}`;
-}
-
-export function ompTransportModelId(
-  model?: HarnessModelRef,
-  thinkingOptionId?: HarnessThinkingOptionId,
-  permissionModeId?: HarnessPermissionModeId,
-): string {
-  if (!model) {
-    if (permissionModeId || thinkingOptionId) {
-      throw new Error("OMP transport configuration requires a Model Ref");
-    }
-    return OMP_TRANSPORT_MODEL_ID;
-  }
-  const parsedModel = harnessModelRefSchema.parse(model);
-  const parsedPermissionMode = permissionModeId
-    ? harnessPermissionModeIdSchema.parse(permissionModeId)
-    : undefined;
-  const parsedThinking = thinkingOptionId
-    ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
-    : undefined;
-  if (parsedPermissionMode) {
-    return `${OMP_TRANSPORT_MODEL_PREFIX}${parsedModel.id}@${parsedPermissionMode}@${parsedThinking ?? ""}`;
-  }
-  return `${OMP_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedThinking ? `@${parsedThinking}` : ""}`;
-}
-
-export function antigravityTransportModelId(
-  model?: HarnessModelRef,
-  permissionModeId?: HarnessPermissionModeId,
-  thinkingOptionId?: HarnessThinkingOptionId,
-): string {
-  if (!model) {
-    if (permissionModeId || thinkingOptionId) {
-      throw new Error("Antigravity transport configuration requires a Model Ref");
-    }
-    return ANTIGRAVITY_TRANSPORT_MODEL_ID;
-  }
-  const parsedModel = harnessModelRefSchema.parse(model);
-  const parsedPermission = permissionModeId
-    ? harnessPermissionModeIdSchema.parse(permissionModeId)
-    : undefined;
-  const parsedThinking = thinkingOptionId
-    ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
-    : undefined;
-  if (parsedThinking) {
-    return `${ANTIGRAVITY_TRANSPORT_MODEL_PREFIX}${parsedModel.id}@${parsedPermission ?? ""}@${parsedThinking}`;
-  }
-  return `${ANTIGRAVITY_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedPermission ? `@${parsedPermission}` : ""}`;
-}
-
-export function openCodeTransportModelId(
-  model?: HarnessModelRef,
-  permissionModeId?: HarnessPermissionModeId,
-  thinkingOptionId?: HarnessThinkingOptionId,
-): string {
-  if (!model) {
-    if (permissionModeId || thinkingOptionId) {
-      throw new Error("OpenCode transport configuration requires a Model Ref");
-    }
-    return OPENCODE_TRANSPORT_MODEL_ID;
-  }
-  const parsedModel = harnessModelRefSchema.parse(model);
-  const parsedPermissionMode = permissionModeId
-    ? harnessPermissionModeIdSchema.parse(permissionModeId)
-    : undefined;
-  const parsedThinking = thinkingOptionId
-    ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
-    : undefined;
-  if (parsedThinking) {
-    return `${OPENCODE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}@${parsedPermissionMode ?? ""}@${parsedThinking}`;
-  }
-  return `${OPENCODE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedPermissionMode ? `@${parsedPermissionMode}` : ""}`;
 }
 
 export function decodeOpenCodeTransportModelId(value: unknown): {
@@ -291,54 +208,6 @@ export function decodeOpenCodeTransportModelId(value: unknown): {
 
 export function isOpenCodeTransportModelId(value: unknown): value is string {
   return decodeOpenCodeTransportModelId(value) !== null;
-}
-
-export function claudeTransportModelId(
-  model?: HarnessModelRef,
-  permissionModeId?: HarnessPermissionModeId,
-  thinkingOptionId?: HarnessThinkingOptionId,
-): string {
-  if (!model) {
-    if (permissionModeId || thinkingOptionId) {
-      throw new Error("Claude Code transport configuration requires a Model Ref");
-    }
-    return CLAUDE_CODE_TRANSPORT_MODEL_ID;
-  }
-  const parsedModel = harnessModelRefSchema.parse(model);
-  const parsedPermissionMode = permissionModeId
-    ? harnessPermissionModeIdSchema.parse(permissionModeId)
-    : undefined;
-  const parsedThinkingOption = thinkingOptionId
-    ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
-    : undefined;
-  if (parsedThinkingOption) {
-    return `${CLAUDE_CODE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}@${parsedPermissionMode ?? ""}@${parsedThinkingOption}`;
-  }
-  return `${CLAUDE_CODE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedPermissionMode ? `@${parsedPermissionMode}` : ""}`;
-}
-
-export function grokTransportModelId(
-  model?: HarnessModelRef,
-  permissionModeId?: HarnessPermissionModeId,
-  thinkingOptionId?: HarnessThinkingOptionId,
-): string {
-  if (!model) {
-    if (permissionModeId || thinkingOptionId) {
-      throw new Error("Grok transport configuration requires a Model Ref");
-    }
-    return GROK_TRANSPORT_MODEL_ID;
-  }
-  const parsedModel = harnessModelRefSchema.parse(model);
-  const parsedPermissionMode = permissionModeId
-    ? harnessPermissionModeIdSchema.parse(permissionModeId)
-    : undefined;
-  const parsedThinking = thinkingOptionId
-    ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
-    : undefined;
-  if (parsedThinking) {
-    return `${GROK_TRANSPORT_MODEL_PREFIX}${parsedModel.id}@${parsedPermissionMode ?? ""}@${parsedThinking}`;
-  }
-  return `${GROK_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedPermissionMode ? `@${parsedPermissionMode}` : ""}`;
 }
 
 export function decodeGrokTransportModelId(value: unknown): {
@@ -407,22 +276,6 @@ export function isGrokTransportModelId(value: unknown): value is string {
 
 export function isClaudeTransportModelId(value: unknown): value is string {
   return decodeClaudeTransportModelId(value) !== null;
-}
-
-export function deepSeekHarnessTransportModelId(
-  model?: HarnessModelRef,
-  permissionModeId?: HarnessPermissionModeId,
-): string {
-  if (!model) {
-    if (permissionModeId) {
-      throw new Error("DeepSeek Harness transport Permission Mode requires a Model Ref");
-    }
-    return DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID;
-  }
-  const parsedPermissionModeId = permissionModeId
-    ? harnessPermissionModeIdSchema.parse(permissionModeId)
-    : undefined;
-  return `${DEEPSEEK_HARNESS_TRANSPORT_MODEL_PREFIX}${harnessModelRefSchema.parse(model).id}${parsedPermissionModeId ? `@${parsedPermissionModeId}` : ""}`;
 }
 
 export function decodeDeepSeekHarnessTransportModelId(value: unknown): {
@@ -730,7 +583,7 @@ type ComposerDomIdentity =
   | { kind: "conversation"; threadId: HostThreadId }
   | { kind: "ambiguous" };
 
-function findComposerDomIdentity(composer: Element): ComposerDomIdentity {
+export function findComposerDomIdentity(composer: Element): ComposerDomIdentity {
   // Codex 26.818 renders one direct portal marker inside the Composer root. The
   // conversation attribute is omitted for an unsubmitted client-new-thread and
   // populated once that draft is bound to a real Thread. Prefer this scoped DOM
@@ -981,9 +834,16 @@ export function installCurrentRendererAdapter(): {
       return client.listHarnessPlugins();
     },
     forkThread: (input: ExternalThreadForkParams) => currentModelClient().forkThread(input),
+    handoffThread: (input: ThreadHandoffParams) => currentModelClient().handoffThread(input),
     inspectHarness: (...args: Parameters<RendererModelClient["inspectHarness"]>) =>
       currentModelClient().inspectHarness(...args),
     inspectThread: (input: ThreadInspectionParams) => currentModelClient().inspectThread(input),
+    usesIndependentNativeInference: async (input?: NativeInferenceTarget) => {
+      const client = currentModelClient();
+      return client.usesIndependentNativeInference
+        ? client.usesIndependentNativeInference(input)
+        : false;
+    },
     inspectHarnessCommands: (input: HarnessCommandsInspectParams) =>
       currentModelClient().inspectHarnessCommands(input),
     inspectThreadCommands: (input: ThreadCommandsInspectParams) =>
@@ -1081,11 +941,24 @@ export function installCurrentRendererAdapter(): {
       );
     },
   });
+  const handoffControl = installRendererHandoffControl({
+    getClient: () => (disposed ? null : modelControl),
+    getHostId: (composer) => modelControl.currentHostId?.(composer) ?? null,
+    resolveComposerThreadId: (composer) =>
+      threadIdFromComposerModelTarget(findComposerModelTarget(composer)),
+    reportError: (error) => {
+      console.error(
+        "codexhost Thread Handoff failed",
+        error instanceof Error ? error.name : "UnknownError",
+      );
+    },
+  });
 
   const selectedPolicies = new Map<string, RendererDraftPrewarmPolicy>();
   const draftModels = createScopedDraftModelWriter();
   const handleRoutingPolicyChange = (): void => {
     currentRequestRoute();
+    handoffControl.refresh();
   };
   window.addEventListener("codexhost:draft-prewarm-policy-changed", handleRoutingPolicyChange);
   currentRequestRoute();
@@ -1108,17 +981,27 @@ export function installCurrentRendererAdapter(): {
     );
     const carrier = selection?.model;
     if (carrier !== null && carrier !== undefined && typeof carrier !== "string") return false;
+    const rejectDraftSwitch = (reason: string): false => {
+      console.warn("codexhost draft Agent switch unavailable", { reason, agent });
+      return false;
+    };
     const route = window.__codexhostHostRoutingV1?.forComposer(composer);
-    if (!route) return false;
+    if (!route) return rejectDraftSwitch("draft-route-unavailable");
     try {
       const target = composer ? findComposerModelTarget(composer) : null;
       if (target?.[0] === "conversation") return true;
       if (target?.[0] !== "default" || typeof target[1] !== "string" || !composer)
-        return agent === "codex";
-      const binding = findScopedDraftModelBinding(composer, target[1]);
+        return agent === "codex" || rejectDraftSwitch("draft-identity-unavailable");
       const draftKey = target[1];
-      if (!binding || !route.policy.scopedCreation)
-        return agent === "codex" && !draftModels.has(draftKey);
+      const binding = findScopedDraftModelBinding(composer, draftKey);
+      if (!binding || !route.policy.scopedCreation) {
+        return (
+          (agent === "codex" && !draftModels.has(draftKey)) ||
+          rejectDraftSwitch(binding ? "scoped-creation-unavailable" : "draft-writer-unverified")
+        );
+      }
+      if (carrier && route.policy.requiresCreationMode && !binding.creationModes?.length)
+        return rejectDraftSwitch("draft-submit-mode-unverified");
       // The draft write may synchronously render a new creation mode.
       const previous = draftModels.model(draftKey);
       const policyChanged = route.policy.select(carrier ?? null, draftKey, binding.creationModes);
@@ -1140,7 +1023,7 @@ export function installCurrentRendererAdapter(): {
       selectedPolicies.set(route.hostId, route.policy);
     } catch {
       updateStatus("installing", "draft-routing-policy-unavailable", null);
-      return false;
+      return rejectDraftSwitch("draft-routing-policy-unavailable");
     }
     return true;
   };
@@ -1160,6 +1043,7 @@ export function installCurrentRendererAdapter(): {
       const cleanups = [
         ...[...selectedPolicies.values()].map((policy) => () => policy.select(null)),
         () => forkControl.dispose(),
+        () => handoffControl.dispose(),
         () => stopGroupSync(),
         () => clients.dispose(),
         () => usageSubscription.dispose(),

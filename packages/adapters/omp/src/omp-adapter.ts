@@ -10,7 +10,7 @@ import {
   type OmpModelListResult,
 } from "./omp-model-list.js";
 import { createTwoFilesPatch, parsePatch } from "diff";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { realpath, stat } from "node:fs/promises";
 import path from "node:path";
 
@@ -74,6 +74,7 @@ import {
   harnessCommandCatalogSchema,
   type HarnessCommandCatalog,
   harnessIdSchema,
+  harnessModelRefSchema,
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
   hostInteractionIdSchema,
@@ -81,6 +82,8 @@ import {
   nativeCheckpointRefSchema,
   nativeSessionRefSchema,
   type HarnessId,
+  type AccountCreditsSnapshot,
+  type HarnessAccountSnapshot,
   type HarnessPermissionModeId,
   type HostInteractionId,
   type HostItemId,
@@ -98,6 +101,13 @@ import {
 } from "./omp-slash-commands.js";
 import { mapOmpSnapshot, resolveOmpForkBoundary, type OmpSessionHistory } from "./omp-history.js";
 import { ompUsageHistory, ompUsageRecord, type OmpUsageObservation } from "./omp-usage.js";
+import {
+  createOmpAccountCredits,
+  latestOmpAccount,
+  ompMessageAccount,
+  ompStreamingAccount,
+  type OmpAccountCredits,
+} from "./omp-account-credits.js";
 import { readOmpSessionHistory, verifyOmpSessionCwd } from "./omp-session-file.js";
 import { OmpSessionImport } from "./session-import.js";
 import { rollbackOmpLastTurn } from "./omp-last-turn-rollback.js";
@@ -117,9 +127,10 @@ import {
   type OmpTurnResult,
 } from "./omp-rpc-session.js";
 import {
-  decodeOmpModelRef,
-  encodeOmpModelRef,
+  createOmpModelIndex,
   normalizeOmpModelCatalog,
+  normalizeStoredOmpModelRef,
+  resolveOmpModelRef,
   normalizeOmpThinkingOptions,
   sameOmpModel,
   type OmpNativeModel,
@@ -306,17 +317,14 @@ function nativeModelFromState(state: OmpSessionState): OmpNativeModelRef | null 
   return { provider: state.provider, id: state.modelId };
 }
 
-function effectiveModelFromState(state: OmpSessionState): HarnessModelRef | undefined {
-  const model = nativeModelFromState(state);
-  return model ? encodeOmpModelRef(model) : undefined;
-}
-
 function harnessStateFromOmp(
   state: OmpSessionState,
   thinkingLevels: readonly HarnessThinkingOptionId[] | null,
-  permissionModeId?: HarnessPermissionModeId,
+  index: ReturnType<typeof createOmpModelIndex>,
+  permissionModeId: HarnessPermissionModeId,
 ): HarnessSessionState {
-  const effectiveModel = effectiveModelFromState(state);
+  const model = nativeModelFromState(state);
+  const effectiveModel = model ? index.ref(model) : undefined;
   const availableThinkingOptions = thinkingLevels
     ? normalizeOmpThinkingOptions(thinkingLevels)
     : undefined;
@@ -689,6 +697,8 @@ class OmpHarnessSession implements HarnessSession {
   readonly #requestedModel: HarnessModelRef | undefined;
   readonly #requestedThinkingOptionId: HarnessThinkingOptionId | undefined;
   readonly #toolOutputLimit: number;
+  readonly #accountCredits: OmpAccountCredits;
+  #modelIndex: ReturnType<typeof createOmpModelIndex>;
   #permissionMode: OmpPermissionMode;
   #permissionModeId: HarnessPermissionModeId;
   #acceptingTurn = false;
@@ -700,6 +710,8 @@ class OmpHarnessSession implements HarnessSession {
   #state: HarnessSessionState = {};
   #transport: OmpTurnTransport | null = null;
   #usage: HostUsage | null;
+  #accountKey: string | null;
+  #streamingAccountKey: string | null | undefined;
   #usageGeneration = 0;
   #usageRefreshSequence = 0;
 
@@ -708,6 +720,8 @@ class OmpHarnessSession implements HarnessSession {
     createTransport: OmpAdapterDependencies["createTransport"],
     onClosed: () => void,
     options: {
+      accountCredits: OmpAccountCredits;
+      initialAccountKey?: string | null;
       closeTimeoutMs: number;
       model?: HarnessModelRef;
       thinkingOptionId?: HarnessThinkingOptionId;
@@ -716,6 +730,7 @@ class OmpHarnessSession implements HarnessSession {
       permissionMode: OmpPermissionMode;
       permissionModeId: HarnessPermissionModeId;
       startedTransport?: OmpTurnTransport;
+      startedModels?: readonly OmpNativeModel[];
       startedThinkingLevels?: HarnessThinkingOptionId[] | null;
       initialUsage?: HostUsage | null;
       usageHistory?: { requests: HostUsageRequest[]; complete: boolean };
@@ -728,6 +743,8 @@ class OmpHarnessSession implements HarnessSession {
     this.#requestedModel = options.model;
     this.#requestedThinkingOptionId = options.thinkingOptionId;
     this.#toolOutputLimit = options.toolOutputLimit;
+    this.#accountCredits = options.accountCredits;
+    this.#accountKey = options.initialAccountKey ?? null;
     this.#permissionMode = options.permissionMode;
     this.#permissionModeId = options.permissionModeId;
     this.capabilities = ((session) => ({
@@ -748,10 +765,12 @@ class OmpHarnessSession implements HarnessSession {
       execute: (command) => this.#executeHarnessCommand(command),
     };
     this.#transport = options.startedTransport ?? null;
+    this.#modelIndex = createOmpModelIndex(options.startedModels ?? []);
     this.initialState = options.startedTransport
       ? harnessStateFromOmp(
           options.startedTransport.state,
           options.startedThinkingLevels ?? null,
+          this.#modelIndex,
           this.#permissionModeId,
         )
       : { effectivePermissionModeId: this.#permissionModeId };
@@ -769,11 +788,51 @@ class OmpHarnessSession implements HarnessSession {
     this.#event({ type: "usage.history", complete: usageHistory.complete });
   }
 
+  handleAssistantStart(message: unknown): void {
+    if (this.#phase !== "open") return;
+    const account = ompStreamingAccount(message);
+    if (account === undefined) return;
+    const previous = this.#displayedAccount();
+    this.#streamingAccountKey = account;
+    if (previous !== account) this.#event({ type: "session.accountCredits.changed" });
+  }
+
+  handleAssistantSummary(messages: readonly unknown[]): void {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const key = ompMessageAccount(messages[i]);
+      if (key !== undefined) {
+        this.#finishAccountAttempt(key);
+        return;
+      }
+    }
+    this.#finishAccountAttempt(undefined);
+  }
+
+  #finishAccountAttempt(accountKey: string | null | undefined): void {
+    if (this.#phase !== "open") return;
+    const previous = this.#displayedAccount();
+    if (accountKey !== undefined) this.#accountKey = accountKey;
+    this.#streamingAccountKey = undefined;
+    if (previous !== this.#accountKey) this.#event({ type: "session.accountCredits.changed" });
+  }
+
   handleTransportUsage(observation: OmpUsageObservation): void {
     if (this.#phase !== "open") return;
+    this.#finishAccountAttempt(ompMessageAccount(observation.message));
     const record = ompUsageRecord(observation.message, observation);
     if (record?.kind === "request") this.#event({ type: "usage.request", request: record.request });
     else if (record?.kind === "missing") this.#event({ type: "usage.history", complete: false });
+  }
+
+  #displayedAccount(): string | null {
+    return this.#streamingAccountKey === undefined ? this.#accountKey : this.#streamingAccountKey;
+  }
+
+  async readAccountCredits(): Promise<AccountCreditsSnapshot | null> {
+    const key = this.#displayedAccount();
+    if (this.#phase !== "open" || key === null) return null;
+    const credits = await this.#accountCredits.forAccount(key);
+    return this.#phase === "open" && key === this.#displayedAccount() ? credits : null;
   }
 
   handleTransportFault(error: OmpRpcFaultError): void {
@@ -840,7 +899,7 @@ class OmpHarnessSession implements HarnessSession {
 
   #subagentConfiguration(): SubagentConfiguration {
     const state = this.#state;
-    const model = state.effectiveModel ? decodeOmpModelRef(state.effectiveModel).id : undefined;
+    const model = this.#transport?.state.modelId;
     return {
       ...(model ? { model } : {}),
       ...(state.effectiveThinkingOptionId
@@ -896,6 +955,7 @@ class OmpHarnessSession implements HarnessSession {
           ...mapOmpSnapshot(history, {
             sessionId: transport.state.sessionId,
             model: nativeModelForHistory(transport.state),
+            models: this.#modelIndex.models,
           }),
           state: this.#state,
         },
@@ -1123,16 +1183,17 @@ class OmpHarnessSession implements HarnessSession {
         error: invalidState("Omp Model selection requires a started Native Session"),
       };
     }
-    let requested: OmpNativeModelRef;
-    try {
-      requested = decodeOmpModelRef(command.model);
-    } catch (error) {
-      return { ok: false, error: normalizedError(error, "invalidRequest") };
-    }
-
     const previousModel = this.#state.effectiveModel;
     this.#configuring = true;
     try {
+      let requested: OmpNativeModelRef;
+      try {
+        const index = createOmpModelIndex(await transport.getAvailableModels());
+        requested = resolveOmpModelRef(harnessModelRefSchema.parse(command.model), index);
+        this.#modelIndex = index;
+      } catch (error) {
+        return { ok: false, error: normalizedError(error, "invalidRequest") };
+      }
       let state: OmpSessionState;
       let thinkingLevels: HarnessThinkingOptionId[] | null;
       try {
@@ -1147,8 +1208,7 @@ class OmpHarnessSession implements HarnessSession {
         return { ok: false, error: normalizedError(error, "nativeFailure") };
       }
       const actual = nativeModelFromState(state);
-      const nextModel = effectiveModelFromState(state);
-      if (previousModel?.id !== nextModel?.id) {
+      if (previousModel?.id !== this.#state.effectiveModel?.id) {
         this.#invalidateUsage();
         void this.#refreshUsage();
       }
@@ -1292,6 +1352,8 @@ class OmpHarnessSession implements HarnessSession {
       permissionMode: mode,
       onFault: (error) => queueMicrotask(() => this.#fault(error)),
       onSubagentEvent: (event) => this.handleTransportEvent(event),
+      onAssistantStart: (message) => this.handleAssistantStart(message),
+      onAssistantSummary: (messages) => this.handleAssistantSummary(messages),
       onUsage: (observation) => this.handleTransportUsage(observation),
     });
     try {
@@ -1651,6 +1713,8 @@ class OmpHarnessSession implements HarnessSession {
       cwd: this.#cwd,
       onFault: (error) => queueMicrotask(() => this.#fault(error)),
       onSubagentEvent: (event) => this.handleTransportEvent(event),
+      onAssistantStart: (message) => this.handleAssistantStart(message),
+      onAssistantSummary: (messages) => this.handleAssistantSummary(messages),
       onUsage: (observation) => this.handleTransportUsage(observation),
       permissionMode: this.#permissionMode,
     });
@@ -1659,9 +1723,11 @@ class OmpHarnessSession implements HarnessSession {
       .then(async () => {
         if (this.#phase !== "open") throw new Error("Omp Session closed during startup");
         let state = transport.state;
+        const models = await transport.getAvailableModels();
+        this.#modelIndex = createOmpModelIndex(models);
         let thinkingLevels = await transport.getAvailableThinkingLevels();
         if (this.#requestedModel) {
-          const requested = decodeOmpModelRef(this.#requestedModel);
+          const requested = resolveOmpModelRef(this.#requestedModel, this.#modelIndex);
           const current = nativeModelFromState(state);
           if (!sameOmpModel(current, requested)) state = await transport.selectModel(requested);
           thinkingLevels = await transport.getAvailableThinkingLevels();
@@ -1677,7 +1743,7 @@ class OmpHarnessSession implements HarnessSession {
               this.#requestedThinkingOptionId === "off" &&
               (state.thinkingLevel === "off" ||
                 (current !== null &&
-                  (await transport.getAvailableModels()).some(
+                  models.some(
                     (model) => sameOmpModel(model, current) && model.reasoning === false,
                   )));
             // A non-reasoning Model has no native Thinking selector. The
@@ -1717,7 +1783,12 @@ class OmpHarnessSession implements HarnessSession {
     state: OmpSessionState,
     thinkingLevels: readonly HarnessThinkingOptionId[] | null,
   ): void {
-    this.#state = harnessStateFromOmp(state, thinkingLevels, this.#permissionModeId);
+    this.#state = harnessStateFromOmp(
+      state,
+      thinkingLevels,
+      this.#modelIndex,
+      this.#permissionModeId,
+    );
     this.#event({ type: "session.state.changed", state: this.#state });
   }
 
@@ -2203,6 +2274,7 @@ class OmpHarnessSession implements HarnessSession {
   ): void {
     if (this.#active !== active) return;
     this.#active = null;
+    this.#finishAccountAttempt(undefined);
     const itemOutcome: HostItemOutcome =
       outcome.status === "failed"
         ? { status: "failed", error: outcome.error }
@@ -2299,6 +2371,7 @@ class OmpHarnessSession implements HarnessSession {
 }
 
 export class OmpAdapter implements HarnessAdapter {
+  readonly normalizeStoredModelRef = normalizeStoredOmpModelRef;
   readonly commandCatalog = ompCommandCatalog;
   readonly liveCommandCatalog = true;
   readonly harnessId: HarnessId = ompHarnessId;
@@ -2366,6 +2439,10 @@ export class OmpAdapter implements HarnessAdapter {
     },
   };
   readonly #closeTimeoutMs: number;
+  readonly #accountCredits: OmpAccountCredits;
+  readonly #accountCommand: string | undefined;
+  readonly #environment: NodeJS.ProcessEnv;
+  readonly #sessionQuota = new Map<string, { credits: OmpAccountCredits; sessions: number }>();
   readonly #createTransport: OmpAdapterDependencies["createTransport"];
   readonly #inspectionCache = new Map<string, Extract<HarnessInspection, { status: "ready" }>>();
   readonly #inspectionInFlight = new Map<string, Promise<HarnessInspection>>();
@@ -2388,6 +2465,9 @@ export class OmpAdapter implements HarnessAdapter {
     },
   ) {
     this.#createTransport = dependencies.createTransport;
+    this.#accountCommand = options.command;
+    this.#environment = { ...process.env, ...options.environment };
+    this.#accountCredits = createOmpAccountCredits(options.command, this.#environment);
     const listModels = dependencies.listModels ?? listOmpModels;
     this.#listModels = ({ cwd, signal }) =>
       listModels({
@@ -2402,16 +2482,29 @@ export class OmpAdapter implements HarnessAdapter {
     this.#toolOutputLimit = options.toolOutputLimit ?? DEFAULT_TOOL_OUTPUT_LIMIT;
   }
 
+  async inspectAccounts(): Promise<HarnessAccountSnapshot[]> {
+    return this.#closePromise ? [] : this.#accountCredits.inspectAccounts();
+  }
+
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
     if (this.#closePromise) return closedInspection();
     const cwd = input.cwd ?? process.cwd();
+    if (input.refresh) {
+      const catalog =
+        input.purpose === "availability" ? undefined : this.#inspectionInFlight.get(cwd);
+      const availability =
+        input.purpose === "availability" ? this.#availabilityInFlight.get(cwd) : undefined;
+      this.#inspectionCache.clear();
+      this.#inspectionInFlight.clear();
+      this.#availabilityInFlight.clear();
+      if (catalog) this.#inspectionInFlight.set(cwd, catalog);
+      if (availability) this.#availabilityInFlight.set(cwd, availability);
+    }
     const inFlight = this.#inspectionInFlight.get(cwd);
     if (inFlight) return inFlight;
-    if (!input.refresh) {
-      const cached = this.#inspectionCache.get(cwd);
-      if (cached) return cached;
-    }
-    if (input.purpose === "availability") return this.#inspectAvailability(cwd, input.refresh);
+    const cached = this.#inspectionCache.get(cwd);
+    if (cached) return cached;
+    if (input.purpose === "availability") return this.#inspectAvailability(cwd);
     return this.#startFullInspection(cwd);
   }
 
@@ -2422,9 +2515,7 @@ export class OmpAdapter implements HarnessAdapter {
    * update `#thinkingSelectionSupported`. When the list cannot answer, a full inspection answers
    * instead, reusing one that is in flight or finished meanwhile.
    */
-  async #inspectAvailability(cwd: string, refresh = false): Promise<HarnessInspection> {
-    // An explicit re-check must not leave an older full catalog to answer the next catalog load.
-    if (refresh) this.#inspectionCache.delete(cwd);
+  async #inspectAvailability(cwd: string): Promise<HarnessInspection> {
     let pending = this.#availabilityInFlight.get(cwd);
     if (!pending) {
       const listing = this.#listAvailability(cwd);
@@ -2446,7 +2537,10 @@ export class OmpAdapter implements HarnessAdapter {
 
   #startFullInspection(cwd: string): Promise<HarnessInspection> {
     const inspection = this.#inspectCwd(cwd).then((result) => {
-      if (result.status === "ready") this.#inspectionCache.set(cwd, result);
+      if (result.status === "ready" && this.#inspectionInFlight.get(cwd) === inspection) {
+        this.#inspectionCache.set(cwd, result);
+        this.#thinkingSelectionSupported = result.capabilities.configuration.selectThinkingOption;
+      }
       return result;
     });
     this.#inspectionInFlight.set(cwd, inspection);
@@ -2526,7 +2620,6 @@ export class OmpAdapter implements HarnessAdapter {
       const models = await transport.getAvailableModels();
       stage = "capabilities";
       const thinkingLevels = await transport.getAvailableThinkingLevels();
-      this.#thinkingSelectionSupported = thinkingLevels !== null;
       const catalog = normalizeOmpModelCatalog(
         models,
         nativeModelFromState(transport.state),
@@ -2584,6 +2677,9 @@ export class OmpAdapter implements HarnessAdapter {
         },
       };
     }
+    const environment = input.environment
+      ? { ...this.#environment, ...input.environment }
+      : this.#environment;
     if (input.kind === "create") {
       let permissionModeId =
         input.permissionModeId ??
@@ -2598,10 +2694,12 @@ export class OmpAdapter implements HarnessAdapter {
         return { ok: false, error: normalizedError(error, "invalidRequest") };
       }
       if (input.model) {
-        try {
-          decodeOmpModelRef(input.model);
-        } catch (error) {
-          return { ok: false, error: normalizedError(error, "invalidRequest") };
+        const parsed = harnessModelRefSchema.safeParse(input.model);
+        if (!parsed.success || parsed.data.serviceTier) {
+          return {
+            ok: false,
+            error: { code: "invalidRequest", message: "Invalid Omp Model Ref", retryable: false },
+          };
         }
       }
       const thinkingOptionId = input.thinkingOptionId
@@ -2620,7 +2718,7 @@ export class OmpAdapter implements HarnessAdapter {
       return {
         ok: true,
         value: this.#trackSession(input.cwd, {
-          ...(input.environment ? { environment: input.environment } : {}),
+          environment,
           ...(input.model ? { model: input.model } : {}),
           ...(thinkingOptionId?.success ? { thinkingOptionId: thinkingOptionId.data } : {}),
           supportsThinkingSelection: this.#thinkingSelectionSupported === true,
@@ -2662,11 +2760,14 @@ export class OmpAdapter implements HarnessAdapter {
       }
       transport = this.#createTransport({
         cwd: input.cwd,
+        environment,
         ...(input.kind === "resume"
           ? { sessionFile: sourceSessionFile }
           : { forkSessionFile: sourceSessionFile }),
         onFault: (error) => session?.handleTransportFault(error),
         onSubagentEvent: (event) => session?.handleTransportEvent(event),
+        onAssistantStart: (message) => session?.handleAssistantStart(message),
+        onAssistantSummary: (messages) => session?.handleAssistantSummary(messages),
         onUsage: (observation) => session?.handleTransportUsage(observation),
       });
       await transport.start();
@@ -2741,14 +2842,20 @@ export class OmpAdapter implements HarnessAdapter {
       startedThinkingLevels = reconciled.thinkingLevels;
       this.#thinkingSelectionSupported = startedThinkingLevels !== null;
       const initialUsage = await transport.getSessionUsage().catch(() => null);
-      const usageHistory = await transport
-        .getEntries()
-        .then(ompUsageHistory)
-        .catch(() => ({ requests: [], complete: false }));
+      const history = await transport.getEntries().catch(() => null);
+      const usageHistory = history ? ompUsageHistory(history) : { requests: [], complete: false };
+      let initialAccountKey: string | null = null;
+      try {
+        if (history) initialAccountKey = latestOmpAccount(history);
+      } catch {
+        // Broken branch ancestry must not attribute an account or prevent resume.
+      }
       session = this.#trackSession(input.cwd, {
         usageHistory,
-        ...(input.environment ? { environment: input.environment } : {}),
+        initialAccountKey,
+        environment,
         startedTransport: transport,
+        startedModels: await transport.getAvailableModels(),
         startedThinkingLevels,
         initialUsage,
         supportsThinkingSelection: startedThinkingLevels !== null,
@@ -2775,30 +2882,52 @@ export class OmpAdapter implements HarnessAdapter {
   #trackSession(
     cwd: string,
     options: {
-      environment?: NodeJS.ProcessEnv;
+      initialAccountKey?: string | null;
+      environment: NodeJS.ProcessEnv;
       model?: HarnessModelRef;
       thinkingOptionId?: HarnessThinkingOptionId;
       supportsThinkingSelection: boolean;
       permissionMode: OmpPermissionMode;
       permissionModeId: HarnessPermissionModeId;
       startedTransport?: OmpTurnTransport;
+      startedModels?: readonly OmpNativeModel[];
       startedThinkingLevels?: HarnessThinkingOptionId[] | null;
       initialUsage?: HostUsage | null;
       usageHistory?: { requests: HostUsageRequest[]; complete: boolean };
     },
   ): OmpHarnessSession {
     const environment = options.environment;
-    const createTransport = environment
-      ? (input: OmpRpcSessionOptions) => this.#createTransport({ ...input, environment })
-      : this.#createTransport;
+    // OMP loads project dotenv files from its working directory. Only the Host's
+    // per-thread delegation marker can be ignored when sharing a quota probe.
+    const entries = Object.entries(environment)
+      .filter(([name]) => name !== "CODEXHOST_THREAD_ID")
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    const key = createHash("sha256")
+      .update(JSON.stringify([cwd, entries]))
+      .digest("hex");
+    let quota = this.#sessionQuota.get(key);
+    if (!quota) {
+      quota = {
+        credits: createOmpAccountCredits(this.#accountCommand, environment, cwd),
+        sessions: 0,
+      };
+      this.#sessionQuota.set(key, quota);
+    }
+    const shared = quota;
+    shared.sessions++;
     const session = new OmpHarnessSession(
       cwd,
-      createTransport,
+      (input) => this.#createTransport({ ...input, environment }),
       () => {
         this.#sessions.delete(session);
+        if (--shared.sessions === 0) this.#sessionQuota.delete(key);
       },
       {
         closeTimeoutMs: this.#closeTimeoutMs,
+        accountCredits: shared.credits,
+        ...(options.initialAccountKey !== undefined
+          ? { initialAccountKey: options.initialAccountKey }
+          : {}),
         ...(options.model ? { model: options.model } : {}),
         ...(options.thinkingOptionId ? { thinkingOptionId: options.thinkingOptionId } : {}),
         toolOutputLimit: this.#toolOutputLimit,
@@ -2806,6 +2935,7 @@ export class OmpAdapter implements HarnessAdapter {
         permissionMode: options.permissionMode,
         permissionModeId: options.permissionModeId,
         ...(options.startedTransport ? { startedTransport: options.startedTransport } : {}),
+        ...(options.startedModels ? { startedModels: options.startedModels } : {}),
         ...(options.startedThinkingLevels !== undefined
           ? { startedThinkingLevels: options.startedThinkingLevels }
           : {}),

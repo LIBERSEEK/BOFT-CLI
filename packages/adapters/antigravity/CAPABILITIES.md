@@ -13,10 +13,10 @@
 |---|---|
 | Harness ID | `antigravity` |
 | 原生接口与传输方式 | 官方 CLI ACP Server（`agy acp`，stdio NDJSON JSON-RPC 2.0，`@agentclientprotocol/sdk`） |
-| 已验证的原生版本 | `agy 1.5.9`（最低要求 `1.5.8`，含 `usage_update`、`auto` 模式及审批/取消修复） |
+| 已验证的原生版本 | `agy 1.5.9`、`1.5.16`（最低要求 `1.5.8`，含 `usage_update`、`auto` 模式、审批/取消修复及 `>= 1.5.0` 并发 `session/prompt` steer） |
 | 交付范围 | 预装发行 / Desktop 产品接入 / 完整委派 |
 | 参考插件 | `kimi-code`（ACP stdio 传输、elicitation 与 configOptions 状态映射）；`codebuddy`（ACP 交互、子代理工具投影与只读会话导入）；`workbuddy`（附加系统提示词跨 Harness 委派） |
-| 最后验证 | 历史读取：2026-11-18，macOS（darwin arm64），`agy 1.5.11` 原生 SQLite 只读；其他能力矩阵：2026-11-15 |
+| 最后验证 | 并发 `session/prompt` steer 与 `1.5.15+` 非 daemon 后台保持：2026-11-25，macOS（darwin arm64），`agy 1.5.16` 隔离线协议探针；历史读取：2026-11-18，`agy 1.5.11` 原生 SQLite 只读；其余能力矩阵：2026-11-15 |
 
 ## 能力
 
@@ -26,9 +26,9 @@
 | A2 | 工厂 | 必做 | P0 | 支持 | `src/plugin.ts` | `test/plugin.test.ts`、`installed-harness-plugins.test.ts` | 传播环境变量并默认关闭后台自更新弹窗 |
 | A3 | 检查 | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/model-catalog.ts` | `test/antigravity-adapter.test.ts`；实测 `agy --version` / `agy models` | 校验最低 ACP 版本（`>= 1.5.8`），不创建用户会话 |
 | A4 | 创建 Session | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts` | `test/antigravity-adapter.test.ts`；实测 `session/new` | 未传配置时保持原生默认；预热不产生 `session/list` 空记录 |
-| A5 | 执行 Turn | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts`、`src/acp-projection.ts` | `test/antigravity-adapter.test.ts`；实测 `session/prompt` | 支持文本与图片输入、流式文本与思考块 |
+| A5 | 执行 Turn | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts`、`src/acp-projection.ts` | `test/antigravity-adapter.test.ts`、`test/acp-transport.test.ts`；实测 `session/prompt` | 支持文本与图片输入、流式文本与思考块，以及通过并发 `session/prompt` 原生运行中插话（`turn.steer`） |
 | A6 | 取消 | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts` | `test/antigravity-adapter.test.ts`；实测 `session/cancel` | 取消关闭活动交互与工具项，保留会话继续下一轮 |
-| A7 | 只读快照 | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/native-replay.ts`、`src/acp-projection.ts` | `test/native-history.test.ts`、`test/antigravity-adapter.test.ts` | 直接只读 `~/.gemini/antigravity-cli/conversations/<id>.db` 的 `steps`（用户输入、planner、警告），解码为事件后交给投影器生成稳定 Turn/Item；不启动 `agy`、不走 `session/load`；活动库读取已提交的 WAL 快照并跳过仍在生成或执行的步骤；数据库不可读或格式未知时报 `Antigravity history unavailable`，无本地镜像、无降级 |
+| A7 | 只读快照 | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/native-replay.ts`、`src/acp-projection.ts` | `test/native-history.test.ts`、`test/antigravity-adapter.test.ts` | 直接只读 `~/.gemini/antigravity-cli/conversations/<id>.db` 的 `steps`（用户输入、planner、已结算压缩 checkpoint、警告与工具），解码为事件后交给投影器生成稳定 Turn/Item；不启动 `agy`、不走 `session/load`；活动库读取已提交的 WAL 快照并跳过仍在生成或执行的步骤；数据库不可读或格式未知时报 `Antigravity history unavailable`，无本地镜像、无降级 |
 | A8 | 持久身份 + resume | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts` | `test/antigravity-adapter.test.ts`；实测 `session/resume` | 恢复对象保留持久身份；普通恢复的可写 `session/resume` 延迟到首次执行或配置操作，派生会话在交付前确认可写恢复 |
 | A9 | 错误与并发 | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts` | `test/antigravity-adapter.test.ts`、`test/acp-transport.test.ts` | 忙碌返回 `sessionBusy`，进程异常与鉴权错误归一化脱敏 |
 | A10 | 关闭 | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts` | `test/acp-transport.test.ts` | `session/close` + stdin 关闭 + 超时信号清理子进程 |
@@ -36,14 +36,14 @@
 | B2 | 切换 Thinking | 原生有则必做 | P1 | 支持 | `src/antigravity-adapter.ts`、`src/model-catalog.ts` | `test/antigravity-adapter.test.ts`；实测 `session/set_config_option(thought_level)` | 支持 `low` / `medium` / `high` / `xhigh` 按模型动态裁剪 |
 | B3 | 权限模式 | 原生有则必做 | P1 | 支持 | `src/permission-modes.ts`、`src/antigravity-adapter.ts` | `test/permission-modes.test.ts`、`test/antigravity-adapter.test.ts`；实测 `session/set_mode` | 原生 `default`、`accept-edits`、`auto`、`plan` 实时切换，并兼容 `dangerously-skip-permissions` |
 | B4 | 无人值守执行 | 必做（支持或明确拒绝） | P1 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts` | `test/skip-permissions.test.ts` | `unattended-full-access` 启动 `agy acp --dangerously-skip-permissions` 并写入 `locator` 供恢复保持 |
-| B5 | Fork | 原生有则必做 | P1 | 支持 | `src/fork.ts` | `test/fork.test.ts` | 原生无 `session/fork` RPC；空闲态按 SQLite `step_type=14` 边界克隆裁剪后经 `session/resume` 打开 |
+| B5 | Fork | 原生有则必做 | P1 | 支持 | `src/fork.ts` | `test/fork.test.ts` | 按用户输入或已结算唤醒边界克隆裁剪后经 `session/resume` 打开；源运行中仅限早于活动 Turn 的已确认用户回合 |
 | B6 | 跨目录 Fork | 原生有则必做 | P2 | 支持 | `src/fork.ts`、`src/antigravity-adapter.ts` | `test/fork.test.ts` | 克隆会话通过 `session/resume({ cwd })` 绑定新工作目录 |
-| B7 | 回滚最后一轮 | 原生有则必做 | P1 | 支持 | `src/rollback.ts` | `test/rollback.test.ts` | 空闲态克隆并截断最后一轮 SQLite `step_type=14` 边界，不破坏源会话 |
+| B7 | 回滚最后一轮 | 原生有则必做 | P1 | 支持 | `src/rollback.ts` | `test/rollback.test.ts` | 空闲态克隆并截断最后一个用户 Turn 或已结算的唤醒 Turn，不破坏源会话 |
 | B8 | 工具、命令、文件内容 | 原生有则必做 | P0 | 支持 | `src/acp-projection.ts`、`src/tool-projection.ts` | `test/acp-projection.test.ts`；实测 `tool_call` / `tool_call_update` | 映射命令、工具、思考块与原生 `{ type: "diff" }` 文件变更 |
 | B9 | 审批 | 原生有则必做 | P0 | 支持 | `src/acp-projection.ts`、`src/antigravity-adapter.ts` | `test/acp-projection.test.ts`；实测 `session/request_permission` | 精确映射原生 `allow_once` / `allow_always` / `reject_once` |
 | B10 | 提问 | 原生有则必做 | P0 | 支持 | `src/acp-projection.ts`、`src/antigravity-adapter.ts` | `test/acp-projection.test.ts`；实测 `elicitation/create` | 声明 `elicitation.form` 原生接收单选/多选与自由输入，无需外部 Hook |
 | B11 | 原生 Subagent | 原生有则必做 | P2 | 支持 | `src/subagents.ts`、`src/subagent-transcript.ts` | `test/subagents.test.ts` | 识别 `invoke_subagent` 工具调用，结合 `conversation_summaries.db` 与 `brain/<id>` 读取状态与 Transcript |
-| B12 | 自主 Turn | 原生有则必做 | P1 | 不适用 | — | 实测 `agy acp` 1.5.9 为请求驱动 `session/prompt`，不在空闲态主动发起无请求 Turn | 后台子代理更新通过 `subagent.*` 事件独立上报；备注：已删除曾接入的 `codexhost_background`（`wait_for_background_task`）轮内等待 MCP 与提示词，避免后台任务占住当前 Turn 影响停止与继续输入 |
+| B12 | 自主 Turn | 原生有则必做 | P1 | 支持（结算后发布） | `src/wake-observer.ts`、`src/native-replay.ts` | `test/antigravity-adapter.test.ts`、`test/acp-transport.test.ts`、`test/native-history.test.ts`；`agy 1.5.13` / `1.5.16` 实测与原生历史只读回放 | `agy 1.5.15+` 的非 daemon 后台任务与定时器保持在当前 `session/prompt` 内流式输出（可通过原生 `turn.steer` 直接插话而不取消后台任务）；常驻 daemon 任务与空闲态唤醒无 ACP stop reason，通过 SQLite 系统消息与原生运行 ID 确认边界，发布与历史一致的无输入 Turn，prompt 在途期间开始的唤醒已属于该 Turn、不补发 |
 | B13 | 会话用量 | 原生有则必做 | P1 | 支持 | `src/acp-usage.ts` | `test/acp-usage.test.ts`；实测 `PromptResponse.usage` 与 `usage_update` | 合并缓存输入与推理输出口径，实时上报上下文窗口与 Token 快照 |
 | B14 | 请求级计量 | 原生有则必做 | P2 | 支持 | `src/acp-usage.ts`、`src/native-request-timing.ts` | `test/acp-usage.test.ts`、`test/native-request-timing.test.ts`；真实转录与 SQLite 只读回放 | 输出已含思考；无工具调用且计时核验通过的请求以首个可见输出至生成结束计非思考 Token（`timedOutputTokens`）；思考数无法确认、全部为思考或整块工具参数时仅保留用量、不参与 TPS 或均值；客户端回退仍限零思考单请求；Turn 内按历史与本轮已完成请求累计费用，不计正在生成的请求，缺失用量仍声明不完整；重复回放不重复计费 |
 | B15 | 接收委派 | 必做（验证项） | P1 | 支持 | `src/antigravity-adapter.ts` | `test/antigravity-adapter.test.ts` | 满足 A8 可写恢复 + B4 无人值守执行 + 环境变量传播 |
@@ -65,12 +65,14 @@
 ## 受限与已知缺口
 
 - 最低 CLI 版本要求 `agy >= 1.5.8`：早期 `1.1.x–1.4.x` 无 `agy acp`，`1.5.0–1.5.7` 缺少 `usage_update` 或存在权限二次弹窗/关闭保存缺陷；低于 `1.5.8` 时 `inspect` 返回明确升级提示，连接页可直接一键更新。
-- Fork 与回滚：原生 `agy acp` 1.5.9 未实现 `session/fork` RPC（返回 `-32601 Method not found`），因此通过空闲态克隆并按原生 SQLite `steps` 表 `step_type = 14`（`user_input`）边界裁剪数据库后调用 `session/resume` 实现；活动 Turn 期间拒绝派生操作并返回 `sessionBusy`。
+- Fork 与回滚：原生 `agy acp` 1.5.9 未实现 `session/fork` RPC（返回 `-32601 Method not found`），因此克隆 SQLite，按用户输入（`step_type = 14`）或已结算唤醒边界裁剪后调用 `session/resume`。回滚在活动 Turn 期间返回 `sessionBusy`；运行中 Fork 仅当目标是当前会话已确认完成、严格早于活动 Turn 的用户检查点、没有运行中的子代理、源库为 WAL 时放行。边界定位和克隆使用同一只读快照，不占用源会话，也不复制 `brain` 目录。裁剪时 `gen_metadata`、`executor_metadata`、`parent_references`、`battle_mode_infos` 按各自 protobuf 中的原生步骤索引保留前缀（行号不是步骤号），派生摘要由保留前缀重算。
+- 自主唤醒与后台等待：`agy 1.5.15+` 在存在非 daemon 后台任务（如一次性 `schedule` 定时器、后台命令、子代理）时保持 `session/prompt` 打开直至任务完成，运行中可直接通过 `turn.steer`（并发 `session/prompt`）插话而不取消后台任务；仅常驻 daemon 任务（`IsDaemon: true`）或旧版 CLI 的空闲态唤醒通过 SQLite 确认最终回答后独立发布为无输入 Turn。原生 SQLite 历史按原生运行边界回放（包含 `wake-*` 节点），Fork、回滚与委派读取均以原生边界为准。
 - 权限模式中的 `dangerously-skip-permissions` 对应 CLI 启动参数 `--dangerously-skip-permissions`；在会话空闲态与普通 ACP 模式互切时，Adapter 在保持同一 `nativeSessionId` 的前提下重建进程并通过 `session/resume` 无缝恢复。
 - 历史由原生 SQLite 读取，包含工具调用名称、参数与配对结果文本；读取不依赖 ACP 进程，耗时为毫秒级，由 Host 分页。连续的用户输入沿用既有分组规则合并为一轮，以保持已存 Turn 身份稳定。
 
 ## 插件外改动
 
+- 共享 `turn.autonomous.completed` 允许只观测到原生已结算结果的 Adapter 提交快照；Host 去重并增量追加，Protocol Core 对空输入省略用户气泡。
 - 历史终态的通用展示：`shared-contracts` / `protocol-core` 保留 unknown 终态元数据，`web-server` / `session-runtime` 保留 unknown 原因，Web UI 中性显示“已结束”，不加入 Antigravity 专用 Host 分支。
 - `package-lock.json`：`@codexhost/adapter-antigravity` 增加工作区已有的 `@agentclientprotocol/sdk@1.3.0` 与 `diff@8.0.2` 依赖声明。
 - `packages/host-runtime/src/usage-statistics.ts`：提升全局用量统计文件缓存版本号（`CACHE_VERSION` 至 `8`），使升级后重建 Antigravity 模型归一与隐式缓存写入统计。
@@ -85,6 +87,7 @@
 | SQLite 历史读取 | `npx vitest run --config tests/vitest.config.js packages/adapters/antigravity/test/native-history.test.ts`；只读读取 69 个真实主会话 | 读取全部成功，393 个已存 Turn ID 按原顺序保留；`readSnapshot` 中位数 0.61 ms、P95 9.03 ms，不启动 ACP |
 | 用量对账与计时 | 既有测试会话的原生 SQLite / 转录只读回放，经过共享 `UsageMeter` | 单请求、多请求、原生问答及重复回放通过；无新增模型调用 |
 | 原生边界 | 本机 `agy 1.5.9` 隔离探针（`initialize` / `session/new` / `prompt` / `request_permission` / `elicitation` / `load` / `resume` / `list`） | 已通过前置实测 |
+| 原生 steer 线协议 | 本机 `agy 1.5.16` 隔离探针（在非 daemon 一次性 `schedule` 定时器等待期间并发发送第二个 `session/prompt`） | 首个 `session/prompt` 立即返回 `end_turn` 与用量，定时器保持 `in_progress` 并在到期后于第二个 `session/prompt` 内完成并结算 |
 | 插件加载 | `npm run build:typescript && npx vitest run -c tests/vitest.config.js packages/host-runtime/test/installed-harness-plugins.test.ts` | 插件打包与真实 Cordis Loader 加载通过 |
 | Host 集成 | 独立 `CODEXHOST_DATA_DIR` 下 `HostRuntime` 全链路隔离验收（预热草稿配置选择、多轮对话、文件 Diff 与审批、Host 重启冷恢复、跨目录 Fork、Rollback、会话导入、会话与全局用量计价） | 5 阶段全链路实测全部通过，退出后 `agy acp` 残留进程为 0 |
 | 真实原生验收 | `CODEXHOST_RUN_ANTIGRAVITY_QUESTION_REAL=1 npx vitest run -c tests/vitest.config.js packages/host-runtime/test/antigravity-question.real.test.ts` | 1/1 通过（真实 `elicitation/create` 回答、中途取消 `interaction.closed` 顺序、`session/resume` 恢复） |

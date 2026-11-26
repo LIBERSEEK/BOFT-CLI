@@ -7,6 +7,9 @@ use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+// A platform package installed as its own global package in `$HOME/node_modules`.
+const PACKAGE: &str = "node_modules/@codexhost/cli-fixture";
+
 struct Fixture {
     root: PathBuf,
     owner: Child,
@@ -18,11 +21,11 @@ impl Fixture {
             std::process::id(),
             thread::current().id()
         ));
-        fs::create_dir_all(root.join("package/bin")).unwrap();
+        fs::create_dir_all(root.join(PACKAGE).join("bin")).unwrap();
         for name in ["web-running", "host-running", "console-running"] {
             fs::write(root.join(name), "running").unwrap();
         }
-        let launcher = root.join("package/bin/codexhost");
+        let launcher = root.join(PACKAGE).join("bin/codexhost");
         fs::write(
             &launcher,
             r#"#!/bin/sh
@@ -38,7 +41,7 @@ printf 'Host stopped; interrupted tasks: 7\n<opaque output>\n'
         .unwrap();
         fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755)).unwrap();
         fs::write(root.join("install.sh"), format!(
-            "set -eu\n[ ! -f \"$HOME/web-running\" ]\n[ ! -f \"$HOME/host-running\" ]\nprintf 'install\\n' >> \"$HOME/order\"\nexit {}\n",
+            "set -eu\nif [ \"$1\" = root ]; then echo \"$HOME/node_modules\"; exit 0; fi\n[ ! -f \"$HOME/web-running\" ]\n[ ! -f \"$HOME/host-running\" ]\nprintf 'install\\n' >> \"$HOME/order\"\nexit {}\n",
             if fail_install { 1 } else { 0 }
         )).unwrap();
         fs::write(root.join("launch.sh"), format!(
@@ -51,7 +54,7 @@ printf 'Host stopped; interrupted tasks: 7\n<opaque output>\n'
             "wait_executable":"/bin/sleep", "runtime_descriptor_path":root.join("runtime.json"),
             "status_path":root.join("status.json"), "installation": {
                 "kind":"npm", "node_path":"/bin/sh", "npm_cli_path":root.join("install.sh"),
-                "npm_launcher_path":root.join("launch.sh"), "npm_package_root":root.join("package")
+                "npm_launcher_path":root.join("launch.sh"), "npm_package_root":root.join(PACKAGE)
             }
         })).unwrap()).unwrap();
         Self { root, owner }
@@ -162,12 +165,29 @@ fn failed_install_restores_services_and_preserves_failure_and_stop_output() {
 
 #[test]
 fn service_managed_handoff_does_not_wait_for_the_owner_and_reports_recovery_failure() {
+    assert_managed_update_failure(false);
+}
+
+#[test]
+fn failed_pre_update_shutdown_does_not_install_and_preserves_the_gui_error() {
+    assert_managed_update_failure(true);
+}
+
+fn assert_managed_update_failure(stop_fails: bool) {
     let mut fixture = Fixture::new(true);
-    let launcher = fixture.root.join("package/bin/codexhost");
+    let launcher = fixture.root.join(PACKAGE).join("bin/codexhost");
     let script = fs::read_to_string(&launcher).unwrap().replace(
         "[ \"$3\" = /bin/sh ]",
         "[ \"$3\" = /bin/sh ]\n[ \"$4\" = --data ]\n[ \"$5\" = \"$HOME/data\" ]\n[ \"$CODEXHOST_DATA_DIR\" = \"$HOME/data\" ]",
     );
+    let script = if stop_fails {
+        script.replace(
+            "rm \"$HOME/web-running\" \"$HOME/host-running\"",
+            "echo 'stopping Desktop failed: lifecycle verification rejected' >&2\nexit 1",
+        )
+    } else {
+        script
+    };
     fs::write(launcher, script).unwrap();
     let path = fixture.root.join("request.json");
     let mut request: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
@@ -243,12 +263,14 @@ fn service_managed_handoff_does_not_wait_for_the_owner_and_reports_recovery_fail
     let status: serde_json::Value =
         serde_json::from_slice(&fs::read(status_path).unwrap()).unwrap();
     assert_eq!(status["phase"], "failed");
-    assert!(
-        status["error"]
-            .as_str()
-            .unwrap()
-            .contains("npm update failed")
-    );
+    let error = status["error"].as_str().unwrap();
+    if stop_fails {
+        assert!(error.contains("pre-update service shutdown failed"));
+        assert!(error.contains("stopping Desktop failed: lifecycle verification rejected"));
+        assert!(fixture.root.join("host-running").exists());
+    } else {
+        assert!(error.contains("npm update failed"));
+    }
     assert!(
         status["error"]
             .as_str()
@@ -257,7 +279,11 @@ fn service_managed_handoff_does_not_wait_for_the_owner_and_reports_recovery_fail
     );
     assert_eq!(
         fs::read_to_string(fixture.root.join("order")).unwrap(),
-        "stop\ninstall\n"
+        if stop_fails {
+            "stop\n"
+        } else {
+            "stop\ninstall\n"
+        }
     );
 }
 

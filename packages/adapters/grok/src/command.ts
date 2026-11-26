@@ -59,7 +59,7 @@ export function grokInvocation(
   windowsVerbatimArguments: boolean;
 } {
   const arguments_ = ["agent", "--no-leader"];
-  if (modelId?.trim()) arguments_.push("--model", modelId);
+  if (modelId !== undefined) arguments_.push("--model", modelId);
   arguments_.push("stdio");
   return commandInvocation(command, arguments_, process.env, platform);
 }

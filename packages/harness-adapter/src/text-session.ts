@@ -7,6 +7,7 @@ import type {
   HarnessCommandCatalog,
   HarnessId,
   HarnessInspection,
+  HarnessModelCatalog,
   HarnessModelRef,
   HarnessPermissionModeId,
   HarnessSessionCapabilities,
@@ -23,7 +24,7 @@ import type {
   NativeTurnRef,
 } from "@codexhost/shared-contracts";
 
-import type { HostUsage, HostUsageRequest } from "./usage.js";
+import type { HostUsage, HostUsageRequest, HostUsageRequestTiming } from "./usage.js";
 import type { HarnessSessionUsageCapability } from "./session-usage.js";
 import type { HarnessCredentialExport, HarnessCredentialImports } from "./credential-imports.js";
 
@@ -46,6 +47,7 @@ export type HarnessErrorCode =
   | "unavailable"
   | "authenticationRequired"
   | "configurationRequired"
+  | "credentialAccessRequired"
   | "sessionNotFound"
   | "sessionBusy"
   | "checkpointNotFound"
@@ -79,6 +81,8 @@ export interface InspectHarnessInput {
    * not stand in for a full inspection.
    */
   purpose?: "availability";
+  /** Interactive credential access: `allow` permits a first prompt, `retry` also permits retrying a failed read. */
+  credentialAccess?: "allow" | "retry";
 }
 
 export type HarnessExecutionPolicy = "default" | "unattended-full-access";
@@ -88,6 +92,8 @@ export interface CreateSessionInput {
   cwd: string;
   environment?: Record<string, string | undefined>;
   executionPolicy?: HarnessExecutionPolicy;
+  /** Speculative draft creation, without an explicit request to run this Harness. */
+  prewarm?: true;
   model?: HarnessModelRef;
   thinkingOptionId?: HarnessThinkingOptionId;
   permissionModeId?: HarnessPermissionModeId;
@@ -282,6 +288,12 @@ export interface HarnessCommandAccepted {
 }
 
 export interface HarnessCommandCapability {
+  /**
+   * Immutable built-in commands that this Session can always execute directly
+   * without waiting for a live `list()` scan. Omit unless every command here
+   * is guaranteed valid for this Session regardless of live updates.
+   */
+  readonly staticCatalog?: HarnessCommandCatalog;
   list(): Promise<HarnessResult<HarnessCommandCatalog>>;
   execute(command: HarnessCommandInvocation): Promise<HarnessResult<HarnessCommandAccepted>>;
 }
@@ -510,16 +522,33 @@ export interface SessionStateChangedEvent {
   state: HarnessSessionState;
 }
 
+/** A display title from the native Session, available to an unnamed Host Thread. */
+export interface SessionTitleChangedEvent {
+  type: "session.title.changed";
+  title: string;
+}
+
 export interface SessionUsageChangedEvent {
   type: "session.usage.changed";
   usage: HostUsage | null;
   observedForTurnId?: HostTurnId;
 }
 
+/** Invalidate an account quota projection without changing token usage. */
+export interface SessionAccountCreditsChangedEvent {
+  type: "session.accountCredits.changed";
+}
+
 /** One native model request's usage; Host derives cost, cache and speed metrics from these. */
 export interface UsageRequestEvent {
   type: "usage.request";
   request: HostUsageRequest;
+}
+
+export interface UsageRequestTimingEvent {
+  type: "usage.request.timing";
+  turnId: HostTurnId;
+  timing: HostUsageRequestTiming;
 }
 
 /**
@@ -558,6 +587,13 @@ export interface AutonomousTurnStartedEvent {
    * durations reflect native time instead of replay time.
    */
   startedAtMs?: number;
+}
+
+/** A native autonomous Turn observed only after it commits. It does not acquire
+ * the foreground execution slot and its snapshot must also appear in history. */
+export interface AutonomousTurnCompletedEvent {
+  type: "turn.autonomous.completed";
+  snapshot: HostTurnSnapshot;
 }
 
 export interface ItemStartedEvent {
@@ -631,13 +667,17 @@ export interface SessionFaultedEvent {
 
 export type HostEvent =
   | SessionStateChangedEvent
+  | SessionTitleChangedEvent
   | SessionUsageChangedEvent
+  | SessionAccountCreditsChangedEvent
   | UsageRequestEvent
+  | UsageRequestTimingEvent
   | UsageHistoryEvent
   | SubagentStateChangedEvent
   | SubagentTranscriptChangedEvent
   | TurnStartedEvent
   | AutonomousTurnStartedEvent
+  | AutonomousTurnCompletedEvent
   | ItemStartedEvent
   | ItemUpdatedEvent
   | ItemCompletedEvent
@@ -671,7 +711,14 @@ export interface HarnessSession {
    * A read is advisory: turn.steer must recheck admission before handing input to the Harness.
    */
   readCapabilities?(): Promise<HarnessSessionCapabilities>;
+  /**
+   * Catalog that contains this Session's effective Model. Thread inspection uses it
+   * when that Model is more specific than the Adapter's separate inspection catalog.
+   */
+  modelCatalog?(): HarnessModelCatalog;
   refreshUsage?(): Promise<void>;
+  /** Account quota attributed to this Session, rather than shared across the Adapter. */
+  readAccountCredits?(): Promise<AccountCreditsSnapshot | null>;
   /** Native background work (e.g. a background command) is still running; the Session must not be released. */
   hasBackgroundWork?(): boolean;
   /** Stops every running detached Item; each still settles through its own events. */
@@ -733,7 +780,10 @@ export interface HarnessAdapter {
   /** Native CLI version checks and explicit updates. Never updates the Host plugin,
    * starts a model Turn, or restarts existing Sessions. Commands are Adapter-owned.
    */
-  installation?(action: "check" | "update"): Promise<HarnessInstallationState>;
+  installation?(
+    action: "check" | "update",
+    confirmedVersion?: string,
+  ): Promise<HarnessInstallationState>;
   /** Explicit first-time CLI installation using an Adapter-owned official source. */
   install?(): Promise<void>;
   /**
@@ -789,6 +839,16 @@ export interface HarnessAdapter {
   inspectAccounts?(): Promise<readonly HarnessAccountSnapshot[]>;
 
   inspect(input?: InspectHarnessInput): Promise<HarnessInspection>;
+  /**
+   * Maps a Model Ref saved by an earlier release to the matching entry of `catalog`.
+   * Host calls it only for a saved Ref that the catalog does not contain. Return
+   * undefined when the saved value matches no single current Model. Local implementations
+   * are pure; a Broker proxy may return a Promise.
+   */
+  normalizeStoredModelRef?(
+    ref: HarnessModelRef,
+    catalog: HarnessModelCatalog,
+  ): HarnessModelRef | undefined | Promise<HarnessModelRef | undefined>;
   open(input: OpenSessionInput): Promise<HarnessResult<HarnessSession>>;
   close(): Promise<void>;
 }

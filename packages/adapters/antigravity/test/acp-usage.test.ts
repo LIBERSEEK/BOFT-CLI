@@ -6,7 +6,7 @@ import { parseHostUsage, parseHostUsageRequest } from "@codexhost/harness-adapte
 import { UsageMeter } from "@codexhost/session-runtime/usage-metering";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DatabaseSync } from "node:sqlite";
-import { writeNativeTimingDatabase } from "./support/native-timing-fixture.js";
+import { writeNativeTimingDatabase } from "../../../../tests/fixtures/antigravity/native-timing-fixture.js";
 
 import {
   AntigravitySessionUsageTracker,
@@ -90,7 +90,7 @@ describe("Antigravity Session usage", () => {
   it("meters historical and completed live requests without waiting for the Turn to end", async () => {
     const meter = new UsageMeter();
     const prices = { find: () => ({ input: 1, output: 2, cacheRead: 0.1, cacheWrite: 1 }) };
-    const apply = (update: Awaited<ReturnType<typeof tracker.collectNewTranscriptRequests>>) => {
+    const apply = (update: Awaited<ReturnType<typeof tracker.replayHistoricalRequests>>) => {
       for (const request of update.requests) meter.recordRequest(request, "turn-live");
       meter.recordHistory(update.complete);
       return meter.derive(update.usage, prices);
@@ -481,9 +481,16 @@ describe("Antigravity Session usage", () => {
       file,
       planner(3, { tool_calls: [{ name: "read_file", args: { Path: "test" } }] }) + "\n",
     );
+    await writeNativeTimingDatabase(home, [
+      { step: 1 },
+      { step: 3, created: 10000, started: 12000, completed: 13000 },
+    ]);
     const update = await tracker.collectNewTranscriptRequests();
     expect(update.requests).toHaveLength(1);
     expect(update.requests[0]).not.toHaveProperty("startedAtMs");
+    expect(update.timings).toEqual([
+      { requestId: "step:3", requestStartedAtMs: 10000, timeToFirstOutputMs: 2000 },
+    ]);
     expect(update.usage).toMatchObject({ outputTokens: 40, outputTokensPerSecond: 10 });
   });
 
@@ -518,7 +525,7 @@ describe("Antigravity Session usage", () => {
     expect(result.usage?.outputTokensPerSecond).toBeCloseTo(50 / 3);
   });
 
-  it.each([0, 10])("waits for timing, thought=%i", async (thought) => {
+  it.each([0, 10])("publishes usage before timing, thought=%i", async (thought) => {
     await transcript(planner(1));
     const database = await writeNativeTimingDatabase(home, [{ step: 1, thought }]);
     const db = new DatabaseSync(database);
@@ -528,18 +535,26 @@ describe("Antigravity Session usage", () => {
       db.close();
     }
     tracker.beginTurn(1000);
-    expect((await tracker.collectNewTranscriptRequests()).requests).toEqual([]);
-    expect((await tracker.collectNewTranscriptRequests()).requests).toEqual([]);
+    const early = await tracker.collectNewTranscriptRequests();
+    expect(early.complete).toBe(true);
+    expect(early.requests).toMatchObject([
+      { requestId: "step:1", outputTokens: 20, reasoningOutputTokens: thought },
+    ]);
+    expect(early.requests[0]).not.toHaveProperty("startedAtMs");
+    expect(early.timings).toEqual([]);
     await writeNativeTimingDatabase(home, [{ step: 1, thought }]);
     const completed = await tracker.collectNewTranscriptRequests();
-    expect(completed.requests).toHaveLength(1);
-    expect(completed.requests[0]).toMatchObject({
-      reasoningOutputTokens: thought,
-      timedOutputTokens: 20 - thought,
-      startedAtMs: 3000,
-      completedAtMs: 5000,
-    });
-    expect((await tracker.collectNewTranscriptRequests()).requests).toEqual([]);
+    expect(completed.requests).toEqual([]);
+    expect(completed.timings).toEqual([
+      {
+        requestId: "step:1",
+        requestStartedAtMs: 1000,
+        timeToFirstOutputMs: 2000,
+        output: { outputTokens: 20 - thought, startedAtMs: 3000, completedAtMs: 5000 },
+      },
+    ]);
+    expect(completed.usage?.outputTokensPerSecond).toBe((20 - thought) / 2);
+    expect((await tracker.collectNewTranscriptRequests()).timings).toEqual([]);
     const usage = { ...nativePrompt, thoughtTokens: thought };
     expect(
       (await tracker.collectNewTranscriptRequests({ promptUsage: usage, completedAtMs: 8000 }))
@@ -564,31 +579,34 @@ describe("Antigravity Session usage", () => {
     expect(update.usage).not.toHaveProperty("outputTokensPerSecond");
   });
 
-  it.each([0, 10])("flushes untimed at Turn end, thought=%i", async (thought) => {
-    await transcript(planner(1));
-    const file = await writeNativeTimingDatabase(home, [{ step: 1, thought }]);
-    const db = new DatabaseSync(file);
-    try {
-      db.exec("DELETE FROM gen_metadata");
-    } finally {
-      db.close();
-    }
-    tracker.beginTurn(1000);
-    expect((await tracker.collectNewTranscriptRequests()).requests).toEqual([]);
-    const usage = { ...nativePrompt, thoughtTokens: thought };
-    const update = await tracker.collectNewTranscriptRequests({
-      promptUsage: usage,
-      completedAtMs: 8000,
-    });
-    expect(update.requests).toHaveLength(1);
-    expect(update.requests[0]).toMatchObject({ reasoningOutputTokens: thought });
-    expect(update.requests[0]).not.toHaveProperty("startedAtMs");
-    expect(update.requests[0]).not.toHaveProperty("timedOutputTokens");
-    const result = tracker.recordTurnPromptUsage({ usage });
-    expect(result.complete).toBe(true);
-    expect(result.usage).not.toHaveProperty("outputTokensPerSecond");
-    expect((await tracker.collectNewTranscriptRequests()).requests).toEqual([]);
-  });
+  it.each([0, 10])(
+    "supplements already published usage with timing available at Turn end, thought=%i",
+    async (thought) => {
+      await transcript(planner(1));
+      const file = await writeNativeTimingDatabase(home, [{ step: 1, thought }]);
+      const db = new DatabaseSync(file);
+      try {
+        db.exec("DELETE FROM gen_metadata");
+      } finally {
+        db.close();
+      }
+      tracker.beginTurn(1000);
+      const early = await tracker.collectNewTranscriptRequests();
+      expect(early.requests).toMatchObject([{ reasoningOutputTokens: thought }]);
+      expect(early.requests[0]).not.toHaveProperty("timedOutputTokens");
+      await writeNativeTimingDatabase(home, [{ step: 1, thought }]);
+      const usage = { ...nativePrompt, thoughtTokens: thought };
+      const update = await tracker.collectNewTranscriptRequests({
+        promptUsage: usage,
+        completedAtMs: 8000,
+      });
+      expect(update.requests).toEqual([]);
+      expect(update.timings).toMatchObject([{ timeToFirstOutputMs: 2000 }]);
+      const result = tracker.recordTurnPromptUsage({ usage });
+      expect(result.complete).toBe(true);
+      expect(result.usage?.outputTokensPerSecond).toBe((20 - thought) / 2);
+    },
+  );
 
   it("does not backfill live speed when replaying historical native timings", async () => {
     await transcript(planner(1));
@@ -619,6 +637,9 @@ describe("Antigravity Session usage", () => {
     });
     expect(update.requests[0]).not.toHaveProperty("startedAtMs");
     expect(update.requests[1]).toMatchObject({ startedAtMs: 12000, completedAtMs: 13000 });
+    expect(update.timings).toEqual([
+      { requestId: "step:3", requestStartedAtMs: 10000, timeToFirstOutputMs: 2000 },
+    ]);
     expect(tracker.recordTurnPromptUsage({ usage }).usage?.outputTokensPerSecond).toBe(30);
   });
 
@@ -985,23 +1006,33 @@ describe("Antigravity Session usage", () => {
       expect((await tracker.collectNewTranscriptRequests()).requests).toHaveLength(1);
     }
     const clock = { firstOutputAtMs: 1000, completedAtMs: 3000 };
-    expect((await tracker.collectNewTranscriptRequests(clock)).requests).toEqual([]);
-    const result = tracker.recordTurnPromptUsage({
-      usage: {
-        inputTokens: 100 * steps,
-        cachedReadTokens: 50 * steps,
-        cachedWriteTokens: 0,
-        outputTokens: 20 * steps,
-      },
-      ...clock,
-    });
+    const usage = {
+      inputTokens: 100 * steps,
+      cachedReadTokens: 50 * steps,
+      cachedWriteTokens: 0,
+      outputTokens: 20 * steps,
+      thoughtTokens: 0,
+    };
+    const final = await tracker.collectNewTranscriptRequests({ ...clock, promptUsage: usage });
+    expect(final.requests).toEqual([]);
+    expect(final.timings).toEqual(
+      steps === 1
+        ? [
+            {
+              requestId: "step:1",
+              output: { startedAtMs: 1000, completedAtMs: 3000, outputTokens: 20 },
+            },
+          ]
+        : [],
+    );
+    const result = tracker.recordTurnPromptUsage({ usage, ...clock });
     expect(result).not.toHaveProperty("fallbackRequest");
     expect(result.usage).toMatchObject({
       inputTokens: 150 * steps,
       outputTokens: 20 * steps,
       totalTokens: 170 * steps,
     });
-    if (steps > 1) expect(result.usage).not.toHaveProperty("outputTokensPerSecond");
+    expect(result.usage?.outputTokensPerSecond).toBe(steps === 1 ? 10 : undefined);
 
     tracker.beginTurn();
     expect((await tracker.collectNewTranscriptRequests()).requests).toEqual([]);
@@ -1425,6 +1456,176 @@ describe("Antigravity Session usage", () => {
       inputTokens: 135,
       cachedInputTokens: 20,
       cacheWriteInputTokens: 15,
+    });
+  });
+
+  it("projects ACP context usage onto per-model native max_context_tokens without cross-model leakage", async () => {
+    await transcript(
+      planner(1, { model: "gemini-3.8-flash-high" }),
+      planner(3, { model: "gemini-4-neon-xhigh" }),
+    );
+    await writeNativeTimingDatabase(home, [
+      { step: 1, maxContextTokens: 256_000 },
+      { step: 3, maxContextTokens: 512_000, retries: 1 },
+    ]);
+
+    // Before native metadata is replayed, ACP's nominal size is used directly.
+    expect(tracker.recordContextWindow(362_000, 1_048_576)).toMatchObject({
+      contextUsedTokens: 362_000,
+      contextWindowTokens: 1_048_576,
+      contextUsagePercent: (362_000 / 1_048_576) * 100,
+    });
+
+    // Historical replay resolves each model's effective limit and updates the active context projection.
+    const replayed = await tracker.replayHistoricalRequests();
+    expect(replayed.usage).toMatchObject({
+      contextUsedTokens: 362_000,
+      contextWindowTokens: 512_000,
+      contextUsagePercent: (362_000 / 512_000) * 100,
+    });
+
+    // Switching models selects that model's limit and never leaks a prior model's limit onto an unseen model.
+    expect(tracker.setActiveModel("gemini-3.8-flash")).toMatchObject({
+      contextWindowTokens: 256_000,
+      contextUsagePercent: 100,
+    });
+    expect(tracker.setActiveModel("claude-sonnet-5-5-thinking")).toMatchObject({
+      contextWindowTokens: 1_048_576,
+      contextUsagePercent: (362_000 / 1_048_576) * 100,
+    });
+
+    // Live Claude steps expose their native limit immediately even before PromptResponse settles cacheWrite.
+    tracker.beginTurn();
+    await appendFile(
+      file,
+      `${planner(5, { model: "claude-sonnet-5-5-thinking-xhigh", input_tokens: 100, cache_read_tokens: 50 })}\n`,
+    );
+    await writeNativeTimingDatabase(home, [
+      { step: 1, maxContextTokens: 256_000 },
+      { step: 3, maxContextTokens: 512_000, retries: 1 },
+      { step: 5, maxContextTokens: 840_000 },
+    ]);
+    const liveClaude = await tracker.collectNewTranscriptRequests();
+    expect(liveClaude.usage).toMatchObject({
+      contextUsedTokens: 362_000,
+      contextWindowTokens: 840_000,
+      contextUsagePercent: (362_000 / 840_000) * 100,
+    });
+
+    // Late gen_metadata commits for an already-consumed step still update that model's window.
+    tracker.setActiveModel("gemini-4-carbon");
+    await appendFile(file, `${planner(7, { model: "gemini-4-carbon-high" })}\n`);
+    const dbPath = await writeNativeTimingDatabase(home, [{ step: 7, maxContextTokens: 512_000 }]);
+    const db = new DatabaseSync(dbPath);
+    try {
+      db.exec("DELETE FROM gen_metadata");
+    } finally {
+      db.close();
+    }
+    expect((await tracker.collectNewTranscriptRequests()).usage?.contextWindowTokens).toBe(
+      1_048_576,
+    );
+    await writeNativeTimingDatabase(home, [{ step: 7, maxContextTokens: 512_000 }]);
+    expect((await tracker.collectNewTranscriptRequests()).usage?.contextWindowTokens).toBe(512_000);
+  });
+
+  it("backfills native max_context_tokens independently of #awaitingTiming after historical replay or settled timing", async () => {
+    // 1. Historical replay runs before gen_metadata exists (historical steps never enter #awaitingTiming).
+    await transcript(planner(1, { model: "gemini-4-neon-xhigh" }));
+    tracker.recordContextWindow(362_000, 1_048_576);
+    expect((await tracker.replayHistoricalRequests()).usage?.contextWindowTokens).toBe(1_048_576);
+    await writeNativeTimingDatabase(home, [{ step: 1, maxContextTokens: 512_000 }]);
+    expect((await tracker.collectNewTranscriptRequests()).usage).toMatchObject({
+      contextUsedTokens: 362_000,
+      contextWindowTokens: 512_000,
+      contextUsagePercent: (362_000 / 512_000) * 100,
+    });
+
+    // 2. Live step settles timing first (clearing #awaitingTiming) before max_context_tokens appears.
+    tracker.setActiveModel("gemini-3.8-flash");
+    tracker.beginTurn(0);
+    await appendFile(file, `${planner(3, { model: "gemini-3.8-flash-high" })}\n`);
+    await writeNativeTimingDatabase(home, [
+      { step: 1, maxContextTokens: 512_000 },
+      { step: 3, created: 1000, started: 3000, completed: 5000 },
+    ]);
+    const settled = await tracker.collectNewTranscriptRequests();
+    expect(settled.timings).toHaveLength(1);
+    expect(settled.usage?.contextWindowTokens).toBe(1_048_576);
+
+    await writeNativeTimingDatabase(home, [
+      { step: 1, maxContextTokens: 512_000 },
+      { step: 3, created: 1000, started: 3000, completed: 5000, maxContextTokens: 256_000 },
+    ]);
+    expect((await tracker.collectNewTranscriptRequests()).usage).toMatchObject({
+      contextUsedTokens: 362_000,
+      contextWindowTokens: 256_000,
+      contextUsagePercent: 100,
+    });
+
+    // 3. A newer historical step for an already-cached model still replaces the older window once committed.
+    const sameModelTracker = new AntigravitySessionUsageTracker({
+      nativeSessionId: "session-same-model",
+      homedir: home,
+    });
+    const sameModelFile = path.join(
+      home,
+      ".gemini/antigravity-cli/brain/session-same-model/.system_generated/logs/transcript.jsonl",
+    );
+    await mkdir(path.dirname(sameModelFile), { recursive: true });
+    await writeFile(
+      sameModelFile,
+      `${planner(1, { model: "gemini-4-neon-xhigh" })}\n${planner(3, { model: "gemini-4-neon-xhigh" })}\n`,
+    );
+    await writeNativeTimingDatabase(
+      home,
+      [{ step: 1, maxContextTokens: 512_000 }],
+      "session-same-model",
+    );
+    sameModelTracker.recordContextWindow(128_000, 1_048_576);
+    expect((await sameModelTracker.replayHistoricalRequests()).usage).toMatchObject({
+      contextWindowTokens: 512_000,
+      contextUsagePercent: 25,
+    });
+    await writeNativeTimingDatabase(
+      home,
+      [
+        { step: 1, maxContextTokens: 512_000 },
+        { step: 3, maxContextTokens: 256_000 },
+      ],
+      "session-same-model",
+    );
+    expect((await sameModelTracker.collectNewTranscriptRequests()).usage).toMatchObject({
+      contextWindowTokens: 256_000,
+      contextUsagePercent: 50,
+    });
+
+    // 4. When the DB becomes readable after replay and only an older step has a window, a newer missing step does not mask it.
+    const delayedDbTracker = new AntigravitySessionUsageTracker({
+      nativeSessionId: "session-delayed-db",
+      homedir: home,
+    });
+    const delayedDbFile = path.join(
+      home,
+      ".gemini/antigravity-cli/brain/session-delayed-db/.system_generated/logs/transcript.jsonl",
+    );
+    await mkdir(path.dirname(delayedDbFile), { recursive: true });
+    await writeFile(
+      delayedDbFile,
+      `${planner(1, { model: "gemini-4-neon-xhigh" })}\n${planner(3, { model: "gemini-4-neon-xhigh" })}\n`,
+    );
+    delayedDbTracker.recordContextWindow(256_000, 1_048_576);
+    expect((await delayedDbTracker.replayHistoricalRequests()).usage?.contextWindowTokens).toBe(
+      1_048_576,
+    );
+    await writeNativeTimingDatabase(
+      home,
+      [{ step: 1, maxContextTokens: 512_000 }, { step: 3 }],
+      "session-delayed-db",
+    );
+    expect((await delayedDbTracker.collectNewTranscriptRequests()).usage).toMatchObject({
+      contextWindowTokens: 512_000,
+      contextUsagePercent: 50,
     });
   });
 });

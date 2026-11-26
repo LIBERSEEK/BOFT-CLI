@@ -7,9 +7,18 @@ import type {
 } from "@codexhost/harness-adapter";
 import { FakeHarnessAdapter, FakeHarnessSession } from "@codexhost/harness-adapter/testing";
 import type { JsonObject } from "@codexhost/protocol-core";
-import { harnessIdSchema, hostThreadIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
+import {
+  harnessIdSchema,
+  hostItemIdSchema,
+  hostThreadIdSchema,
+  hostTurnIdSchema,
+} from "@codexhost/shared-contracts";
+import type { DelegationControlApi } from "../src/delegation-types.js";
+import { withFailedTurns } from "../src/external-turn-projection.js";
 
 import {
+  answerOfficialParentCwd,
+  rollbackCapableAdapter,
   JsonLineCollector,
   closeFixture,
   createFixture,
@@ -68,7 +77,455 @@ async function listIds(fixture: Fixture, id: number, params: JsonObject): Promis
   return ((response.result as JsonObject).data as JsonObject[]).map((row) => row.id as string);
 }
 
+describe("External Thread failed history", () => {
+  it.each(["refresh", "write failure", "reopen", "unavailable"])(
+    "reads the accepted failed fifth Turn after %s",
+    async (mode) => {
+      let api: DelegationControlApi | undefined;
+      const adapter = rollbackCapableAdapter();
+      const fixture = createFixture({
+        externalAdapters: new Map([["pi", adapter]]),
+        onDelegationApi: (registration) => {
+          api = registration;
+        },
+      });
+      try {
+        await fixture.ready;
+        if (!api) throw new Error("No Delegation API");
+        const starting = api.start({
+          harnessId: "pi",
+          task: "first input",
+          cwd: "/synthetic",
+          parentThreadId: "parent-thread",
+        });
+        await answerOfficialParentCwd(fixture);
+        const { threadId, turnId: first } = await starting;
+        const session = adapter.sessions[0];
+        if (!session) throw new Error("Missing fake Session");
+        const succeed = async (turnId: string) => {
+          session.appendText("successful answer");
+          session.succeedTurn();
+          await fixture.collector.waitFor((message) =>
+            turnEvent(message, "turn/completed", turnId),
+          );
+        };
+        await succeed(first);
+        const predecessors = [first];
+        for (let index = 2; index <= 4; index++) {
+          const { turnId } = await api.send({ threadId, message: `input ${index}` });
+          await succeed(turnId);
+          predecessors.push(turnId);
+        }
+        const previous = await session.readSnapshot();
+        const snapshots = vi.spyOn(session, "readSnapshot").mockResolvedValue(previous);
+        if (mode === "write failure") {
+          vi.spyOn(fixture.mappingStore, "saveFailedTurn").mockRejectedValueOnce(
+            new Error("metadata write failed"),
+          );
+        }
+        if (mode === "unavailable") {
+          vi.spyOn(adapter, "open").mockResolvedValue({
+            ok: false,
+            error: { code: "unavailable", message: "cannot reopen", retryable: false },
+          });
+        }
+        const { turnId } = await api.send({
+          threadId,
+          message: "input missing from native history",
+        });
+        session.appendText("partial reply before failure");
+        const failure = {
+          code: "authenticationRequired",
+          message: "not logged in",
+          retryable: false,
+        } as const;
+        if (mode === "reopen" || mode === "unavailable") session.fault(failure);
+        else session.failTurn(failure);
+        await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+        const expectedMessages = {
+          totalTurns: 5,
+          turns: [
+            {
+              turnId,
+              turnNumber: 5,
+              status: "failed",
+              messages: [
+                { role: "user", text: "input missing from native history" },
+                { role: "agent", text: "partial reply before failure" },
+              ],
+            },
+          ],
+        };
+        await expect(
+          api.wait({ threadId, view: "messages", from: 5, timeoutMs: 1000 }),
+        ).resolves.toMatchObject({
+          ...expectedMessages,
+          status: "failed",
+          timedOut: false,
+        });
+        await expect(api.read({ threadId, view: "result" })).resolves.toMatchObject({
+          status: "failed",
+          turn: { turnId },
+          result: { availability: "unavailable" },
+        });
+        const hostId = hostThreadIdSchema.parse(threadId);
+        const record = await fixture.mappingStore.getThread(hostId);
+        expect(record?.turnMappings.map(({ hostTurnId }) => hostTurnId)).toEqual(
+          mode === "unavailable" ? [...predecessors, turnId] : predecessors,
+        );
+        const failureMetadata = {
+          hostTurnId: turnId,
+          afterTurnId: predecessors.at(-1),
+          error: "authenticationRequired",
+        };
+        if (mode === "write failure") expect(record?.failedTurns).toBeUndefined();
+        else expect(record?.failedTurns).toMatchObject([failureMetadata]);
+        expect(JSON.stringify(record)).not.toContain("input missing from native history");
+        expect(JSON.stringify(record)).not.toContain("partial reply before failure");
+        if (mode === "reopen" || mode === "unavailable") return;
+
+        for (const [id, method, params] of [
+          [801, "thread/rollback", { threadId, numTurns: 1 }],
+          [802, "thread/fork", { threadId, lastTurnId: turnId }],
+        ] as const) {
+          writeRequest(fixture.desktopInput, { id, method, params });
+          await expect(
+            fixture.collector.waitFor((message) => requestId(message, id)),
+          ).resolves.toMatchObject({ error: { code: -32080 } });
+        }
+        const next = await api.send({ threadId, message: "next input" });
+        await succeed(next.turnId);
+        const native = session.persistedSnapshot();
+        snapshots.mockResolvedValue({
+          ok: true,
+          value: {
+            ...native,
+            turns: native.turns.filter(({ outcome }) => outcome.status !== "failed"),
+          },
+        });
+        await expect(api.read({ threadId, view: "result" })).resolves.toMatchObject({
+          status: "completed",
+          turn: { turnId: next.turnId },
+        });
+        writeRequest(fixture.desktopInput, {
+          id: 803,
+          method: "thread/rollback",
+          params: { threadId, numTurns: 1 },
+        });
+        await expect(
+          fixture.collector.waitFor((message) => requestId(message, 803)),
+        ).resolves.toMatchObject({
+          result: {
+            thread: {
+              turns: expect.arrayContaining([
+                expect.objectContaining({ id: turnId, status: "failed" }),
+              ]),
+            },
+          },
+        });
+        await expect(api.read({ threadId, view: "messages", from: 5 })).resolves.toMatchObject(
+          expectedMessages,
+        );
+        const rolledBack = await fixture.mappingStore.getThread(hostId);
+        expect(rolledBack?.turnMappings.map(({ hostTurnId }) => hostTurnId)).toEqual(predecessors);
+        expect(rolledBack?.failedTurns).toEqual(
+          mode === "write failure" ? undefined : [failureMetadata],
+        );
+      } finally {
+        await stopFixture(fixture);
+      }
+    },
+  );
+
+  it("preserves nativeTurnRef and suppresses preview leak when Turn mapping persistence fails", async () => {
+    let api: DelegationControlApi | undefined;
+    const adapter = rollbackCapableAdapter();
+    const fixture = createFixture({
+      externalAdapters: new Map([["pi", adapter]]),
+      onDelegationApi: (registration) => {
+        api = registration;
+      },
+    });
+    try {
+      await fixture.ready;
+      if (!api) throw new Error("No Delegation API");
+      const starting = api.start({
+        harnessId: "pi",
+        task: "secret failed first input",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+      });
+      await answerOfficialParentCwd(fixture);
+      const { threadId, turnId } = await starting;
+      const session = adapter.sessions[0];
+      if (!session) throw new Error("Missing fake Session");
+      vi.spyOn(fixture.mappingStore, "upsertTurnMappings").mockRejectedValueOnce(
+        new Error("transient mapping store failure"),
+      );
+      session.appendText("reply before persistence failure");
+      session.succeedTurn();
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+
+      // Native history persisted the turn as completed, while Host marked it failed.
+      const read = await api.read({ threadId, view: "messages" });
+      expect(read).toMatchObject({
+        totalTurns: 1,
+        turns: [{ turnId, turnNumber: 1, status: "failed" }],
+      });
+      const record = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId));
+      expect(record?.preview).toBeUndefined();
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("keeps later Host assistant reply when native failed history only saved an earlier segment", async () => {
+    let api: DelegationControlApi | undefined;
+    const adapter = rollbackCapableAdapter();
+    const fixture = createFixture({
+      externalAdapters: new Map([["pi", adapter]]),
+      onDelegationApi: (registration) => {
+        api = registration;
+      },
+    });
+    try {
+      await fixture.ready;
+      if (!api) throw new Error("No Delegation API");
+      const starting = api.start({
+        harnessId: "pi",
+        task: "first input",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+      });
+      await answerOfficialParentCwd(fixture);
+      const { threadId, turnId } = await starting;
+      const session = adapter.sessions[0];
+      if (!session) throw new Error("Missing fake Session");
+      session.appendText("earlier reply");
+      const partialSnapshot = session.persistedSnapshot();
+      session.appendText(" and later reply");
+      session.failTurn({ code: "nativeFailure", message: "boom", retryable: false });
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+
+      const fullNative = session.persistedSnapshot();
+      const nativeTurn = fullNative.turns[0];
+      if (!nativeTurn) throw new Error("Missing persisted failed turn");
+      vi.spyOn(session, "readSnapshot").mockResolvedValue({
+        ok: true,
+        value: {
+          ...fullNative,
+          turns: [
+            {
+              ...nativeTurn,
+              items: [
+                {
+                  item: {
+                    type: "agentMessage",
+                    itemId:
+                      partialSnapshot.turns[0]?.items[0]?.item.itemId ??
+                      hostItemIdSchema.parse("native-agent-1"),
+                    text: "earlier reply",
+                  },
+                  outcome: { status: "succeeded" },
+                },
+              ],
+            },
+          ],
+        },
+      });
+      const read = await api.read({ threadId, view: "messages" });
+      expect(read).toMatchObject({
+        totalTurns: 1,
+        turns: [
+          {
+            turnId,
+            status: "failed",
+            messages: [
+              { role: "user", text: "first input" },
+              { role: "agent", text: "earlier reply and later reply" },
+            ],
+          },
+        ],
+      });
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("preserves multiple distinct live replies and accepted steer inputs when merging failed Turns", () => {
+    const failedTurnId = hostTurnIdSchema.parse("failed-turn-merge");
+    const failure = { hostTurnId: failedTurnId, error: "executionFailed" as const };
+    const mergedReplies = withFailedTurns(
+      [
+        {
+          id: failedTurnId,
+          status: "failed",
+          items: [{ type: "agentMessage", id: "n1", text: "A" }],
+        },
+      ],
+      [failure],
+      new Map([
+        [
+          failedTurnId,
+          {
+            failure,
+            items: [
+              { type: "agentMessage", id: "h1", text: "A" },
+              { type: "agentMessage", id: "h2", text: "B" },
+              { type: "agentMessage", id: "h3", text: "B with detail" },
+            ],
+          },
+        ],
+      ]),
+    );
+    expect(mergedReplies[0]?.items).toEqual([
+      { type: "agentMessage", id: "n1", text: "A" },
+      { type: "agentMessage", id: "h2", text: "B" },
+      { type: "agentMessage", id: "h3", text: "B with detail" },
+    ]);
+
+    const user1 = { type: "userMessage", id: "u1", content: [{ type: "text", text: "initial" }] };
+    const steer1 = { type: "userMessage", id: "u2", content: [{ type: "text", text: "steer" }] };
+    const withoutNative = withFailedTurns(
+      [],
+      [failure],
+      new Map([[failedTurnId, { failure, items: [user1, steer1] }]]),
+    );
+    expect(withoutNative[0]?.items).toEqual([user1, steer1]);
+
+    const withInitialNative = withFailedTurns(
+      [
+        {
+          id: failedTurnId,
+          status: "failed",
+          items: [
+            {
+              type: "userMessage",
+              id: "native-u1",
+              content: [{ type: "text", text: "initial", text_elements: [] }],
+            },
+          ],
+        },
+      ],
+      [failure],
+      new Map([[failedTurnId, { failure, items: [user1, steer1] }]]),
+    );
+    expect(withInitialNative[0]?.items).toHaveLength(2);
+    expect(withInitialNative[0]?.items).toContainEqual(steer1);
+  });
+});
+
 describe("External Thread metadata updates", () => {
+  it("creates a Thread in the requested project and restores the assignment from disk", async () => {
+    let fixture = createFixture();
+    try {
+      await fixture.ready;
+      answerOfficial(fixture, new Set(["project-a"]));
+      writeRequest(fixture.desktopInput, {
+        id: 1,
+        method: "thread/start",
+        params: {
+          request: { model: "codexhost/pi-native", cwd: "/worktree", projectId: "project-a" },
+        },
+      });
+      const response = await fixture.collector.waitFor((message) => requestId(message, 1));
+      expect(response).toMatchObject({
+        result: { thread: { cwd: "/worktree", projectId: "project-a" } },
+      });
+      const { id } = (response.result as { thread: { id: string } }).thread;
+      await expect(listIds(fixture, 2, { projectId: "project-a" })).resolves.toEqual([id]);
+      await closeFixture(fixture);
+      fixture = createFixture({ mappingStoreDirectory: fixture.mappingStoreDirectory });
+      await fixture.ready;
+      await expect(
+        fixture.mappingStore.getThread(hostThreadIdSchema.parse(id)),
+      ).resolves.toMatchObject({
+        cwd: "/worktree",
+        projectId: "project-a",
+      });
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it.each(["prewarm", "deferred identity"] as const)(
+    "returns the cleared project when it is deleted during %s startup",
+    async (mode) => {
+      const adapter =
+        mode === "deferred identity"
+          ? new DeferredNativeSessionAdapter(harnessIdSchema.parse("pi"))
+          : new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+      const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+      const opening = Promise.withResolvers<undefined>();
+      const resume = Promise.withResolvers<undefined>();
+      const open = adapter.open.bind(adapter);
+      vi.spyOn(adapter, "open").mockImplementation(async (input) => {
+        opening.resolve(undefined);
+        await resume.promise;
+        return open(input);
+      });
+      const projects = new Set(["project-a"]);
+      answerOfficial(fixture, projects);
+      try {
+        await fixture.ready;
+        writeRequest(fixture.desktopInput, {
+          id: 1,
+          method: "thread/start",
+          params: {
+            model: "codexhost/pi-native",
+            cwd: "/worktree",
+            projectId: "project-a",
+            ...(mode === "prewarm" ? { codexhostPrewarm: true } : {}),
+          },
+        });
+        await opening.promise;
+        projects.delete("project-a");
+        writeRequest(fixture.official.stdout, {
+          method: "project/changed",
+          params: { projectId: "project-a", changeType: "deleted" },
+        });
+        await expect(
+          fixture.collector.waitFor((message) => method(message, "thread/project/updated")),
+        ).resolves.toMatchObject({ params: { projectId: null } });
+        resume.resolve(undefined);
+        await expect(
+          fixture.collector.waitFor((message) => requestId(message, 1)),
+        ).resolves.toMatchObject({ result: { thread: { projectId: null, cwd: "/worktree" } } });
+      } finally {
+        resume.resolve(undefined);
+        await stopFixture(fixture);
+      }
+    },
+  );
+
+  it.each([
+    { projectId: "missing" },
+    { projectId: "mismatched" },
+    { projectId: 123 },
+    { projectId: "" },
+    { projectId: "project-a", projectlessWorkspace: { prompt: "test" } },
+  ])("rejects an invalid project target before opening a Session: %j", async (params) => {
+    const fixture = createFixture();
+    try {
+      await fixture.ready;
+      answerOfficial(fixture, new Set(["project-a"]));
+      writeRequest(fixture.desktopInput, {
+        id: 1,
+        method: "thread/start",
+        params: { model: "codexhost/pi-native", cwd: "/worktree", ...params },
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 1)),
+      ).resolves.toMatchObject({
+        error: { code: -32602 },
+      });
+      await expect(listIds(fixture, 2, {})).resolves.toEqual([]);
+      expect(fixture.adapter.sessions).toHaveLength(0);
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
   it("persists a project assignment and emits the official project notification", async () => {
     const fixture = createFixture();
     answerOfficial(fixture, new Set(["project-a"]));
@@ -139,7 +596,7 @@ describe("External Thread metadata updates", () => {
     ["thread/read", false],
     ["thread/turns/list", false],
   ] as const)(
-    "%s preserves failed local history only while native identity is deferred: %s",
+    "%s preserves failed local history with or without native identity: %s",
     async (firstRead, deferred) => {
       const adapter = deferred
         ? new DeferredNativeSessionAdapter(harnessIdSchema.parse("pi"))
@@ -174,9 +631,7 @@ describe("External Thread metadata updates", () => {
             turn: { id: turnId, status: "failed", error: { message: "Native startup failed" } },
           },
         });
-        const expectedTurns = deferred
-          ? [{ id: turnId, status: "failed", error: { message: "Native startup failed" } }]
-          : [];
+        const expectedTurns = [{ id: turnId, status: "failed" }];
         const reads =
           firstRead === "thread/read"
             ? ["thread/read", "thread/turns/list"]
@@ -329,29 +784,39 @@ describe("External Thread metadata updates", () => {
     await stopFixture(fixture);
   });
 
-  it("clears External assignments when official Codex deletes the project", async () => {
-    const fixture = createFixture();
-    answerOfficial(fixture, new Set(["project-a"]));
-    const threadId = await startPiThread(fixture);
-    await updateMetadata(fixture, 40, { threadId, projectId: "project-a" });
-    await fixture.collector.waitFor((message) => method(message, "thread/project/updated"));
+  it.each([false, true])(
+    "clears External assignments when official Codex deletes the project (shared Host: %s)",
+    async (externalOnly) => {
+      const fixture = createFixture({ externalOnly });
+      answerOfficial(fixture, new Set(["project-a"]));
+      if (externalOnly) {
+        await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
+        await expect(
+          fixture.host.handleClientRequest("codexhost/workspace/read", { nativeProjects: true }),
+        ).resolves.toMatchObject({ result: { nativeProjects: true } });
+      }
+      const threadId = await startPiThread(fixture);
+      await updateMetadata(fixture, 40, { threadId, projectId: "project-a" });
+      await fixture.collector.waitFor((message) => method(message, "thread/project/updated"));
 
-    const deleted = {
-      method: "project/changed",
-      params: { projectId: "project-a", changeType: "deleted" },
-    };
-    fixture.official.stdout.write(`${JSON.stringify(deleted)}\n`);
-    await expect(
-      fixture.collector.waitFor((message) => method(message, "project/changed")),
-    ).resolves.toEqual(deleted);
-    await vi.waitFor(() =>
-      expect(
-        fixture.collector.messages.filter((m) => method(m, "thread/project/updated")).at(-1),
-      ).toEqual({ method: "thread/project/updated", params: { threadId, projectId: null } }),
-    );
-    await expect(
-      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
-    ).resolves.not.toHaveProperty("projectId");
-    await stopFixture(fixture);
-  });
+      const deleted = {
+        method: "project/changed",
+        params: { projectId: "project-a", changeType: "deleted" },
+      };
+      fixture.official.stdout.write(`${JSON.stringify(deleted)}\n`);
+      if (!externalOnly)
+        await expect(
+          fixture.collector.waitFor((message) => method(message, "project/changed")),
+        ).resolves.toEqual(deleted);
+      await vi.waitFor(() =>
+        expect(
+          fixture.collector.messages.filter((m) => method(m, "thread/project/updated")).at(-1),
+        ).toEqual({ method: "thread/project/updated", params: { threadId, projectId: null } }),
+      );
+      await expect(
+        fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+      ).resolves.not.toHaveProperty("projectId");
+      await stopFixture(fixture);
+    },
+  );
 });
