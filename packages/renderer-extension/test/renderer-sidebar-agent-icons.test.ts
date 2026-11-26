@@ -176,7 +176,7 @@ describe("Renderer sidebar Agent ownership", () => {
     vi.unstubAllGlobals();
   });
 
-  it("persists external Thread pinning without intercepting the native title button", async () => {
+  it("persists external Thread pinning without intercepting title, tree, or archive clicks", async () => {
     const attributes = {
       "data-app-action-sidebar-thread-row": "",
       "data-app-action-sidebar-thread-id": "local:external-thread",
@@ -188,9 +188,11 @@ describe("Renderer sidebar Agent ownership", () => {
     for (const [name, value] of Object.entries(attributes)) row.setAttribute(name, value);
     row.innerHTML = `
       <div data-thread-title-trigger>
+        <button aria-label="Collapse" data-codexhost-sidebar-tree-toggle="external-thread"><span>⌄</span></button>
         <button data-interactive-row-button><span data-thread-title>Thread</span></button>
       </div>
-      <button aria-label="Pin">Pin</button>`;
+      <button aria-label="Pin">Pin</button>
+      <button aria-label="Archive">Archive</button>`;
     Object.defineProperty(row, "__reactFiber$test", {
       value: {
         memoizedProps: { conversationId: "external-thread", dataAttributes: attributes },
@@ -199,12 +201,21 @@ describe("Renderer sidebar Agent ownership", () => {
     });
     document.body.append(row);
     const title = row.querySelector<HTMLButtonElement>("[data-interactive-row-button]");
+    const chevron = row.querySelector<HTMLElement>("[data-codexhost-sidebar-tree-toggle] span");
     const pin = row.querySelector<HTMLButtonElement>('[aria-label="Pin"]');
-    if (!title || !pin) throw new Error("Expected a title button and a pin button");
+    const archive = row.querySelector<HTMLButtonElement>('[aria-label="Archive"]');
+    if (!title || !chevron || !pin || !archive) throw new Error("Expected all row buttons");
+    for (const button of [title, pin, archive]) {
+      Object.defineProperty(button, "__reactFiber$test", { value: {} });
+    }
     const titleClick = vi.fn();
+    const treeClick = vi.fn();
     const pinClick = vi.fn();
+    const archiveClick = vi.fn();
     title.addEventListener("click", titleClick);
+    chevron.addEventListener("click", treeClick);
     pin.addEventListener("click", pinClick);
+    archive.addEventListener("click", archiveClick);
     const updateThreadPinned = vi.fn(async () => undefined);
     const stop = installRendererSidebarExternalPinning({
       getClient: () => ({ ...clientWith(async () => ({ threads: [] })), updateThreadPinned }),
@@ -212,7 +223,11 @@ describe("Renderer sidebar Agent ownership", () => {
 
     try {
       title.click();
+      chevron.click();
+      archive.click();
       expect(titleClick).toHaveBeenCalledOnce();
+      expect(treeClick).toHaveBeenCalledOnce();
+      expect(archiveClick).toHaveBeenCalledOnce();
       expect(updateThreadPinned).not.toHaveBeenCalled();
       pin.click();
       expect(pinClick).not.toHaveBeenCalled();

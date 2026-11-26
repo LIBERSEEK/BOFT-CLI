@@ -273,6 +273,14 @@ export interface SidebarExternalPinAction {
   isPinned: boolean;
 }
 
+function nativeSidebarPinButton(row: HTMLElement): HTMLButtonElement | null {
+  return (
+    [...row.querySelectorAll<HTMLButtonElement>(SIDEBAR_SHORTCUT_BUTTON_SELECTOR)].find((button) =>
+      Object.getOwnPropertyNames(button).some((name) => name.startsWith("__reactFiber$")),
+    ) ?? null
+  );
+}
+
 /** 从原生侧栏置顶按钮解析 External Thread 的目标状态。 */
 export function sidebarExternalPinActionFromTarget(
   target: EventTarget | null,
@@ -284,8 +292,7 @@ export function sidebarExternalPinActionFromTarget(
     return null;
   }
   // 原生侧栏行的首个快捷操作是置顶/取消置顶；归档按钮必须保持原生行为。
-  if (row.querySelector<HTMLButtonElement>(SIDEBAR_SHORTCUT_BUTTON_SELECTOR) !== button)
-    return null;
+  if (nativeSidebarPinButton(row) !== button) return null;
   const attributes = sidebarThreadAttributes(row);
   const threadId = hostThreadIdSchema.safeParse(threadIdFromSidebarRowElement(row));
   if (!attributes || !threadId.success) return null;
@@ -340,7 +347,7 @@ export function installRendererSidebarExternalPinning(options: {
       return;
     }
     const currentButton =
-      row?.querySelector<HTMLButtonElement>(SIDEBAR_SHORTCUT_BUTTON_SELECTOR) ??
+      (row && nativeSidebarPinButton(row)) ??
       (originalButton.isConnected === false ? null : originalButton);
     if (currentButton) {
       replayingButtons.add(currentButton);
