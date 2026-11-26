@@ -88,10 +88,7 @@ fn quit(app: &AppHandle) {
 pub(crate) fn install(app: &AppHandle, locale: &str) -> tauri::Result<()> {
     let label = |zh, en| if locale.starts_with("zh") { zh } else { en };
     let item = |id, text| MenuItem::with_id(app, id, text, true, None::<&str>);
-    let show = item(
-        "show",
-        label("打开 BOFT CLI 窗口", "Open BOFT CLI Window"),
-    )?;
+    let show = item("show", label("打开 BOFT CLI 窗口", "Open BOFT CLI Window"))?;
     let official = item(
         "official",
         label("打开官方 Codex Desktop", "Open Official Codex Desktop"),
