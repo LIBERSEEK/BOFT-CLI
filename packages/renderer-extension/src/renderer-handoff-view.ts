@@ -13,6 +13,12 @@ import {
   formatRendererHandoffTurnsSummary,
   rendererHarnessMessages,
 } from "./renderer-harness-localization.js";
+import {
+  applyRendererPickerPopoverSurface,
+  PICKER_POPOVER_BACKGROUND,
+  PICKER_POPOVER_BORDER,
+  PICKER_POPOVER_RADIUS,
+} from "./renderer-picker-popover-style.js";
 import type { RendererSettingsLocale } from "./settings/localization.js";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -75,7 +81,10 @@ export function createSwapIcon(ownerDocument: Document, size = 14): SVGSVGElemen
   return svg;
 }
 
-function createChevronIcon(ownerDocument: Document): SVGSVGElement {
+function createChevronIcon(
+  ownerDocument: Document,
+  className = "codexhost-handoff-divider-chevron",
+): SVGSVGElement {
   const svg = ownerDocument.createElementNS(SVG_NS, "svg");
   svg.setAttribute("viewBox", "0 0 16 16");
   svg.setAttribute("width", "12");
@@ -86,7 +95,7 @@ function createChevronIcon(ownerDocument: Document): SVGSVGElement {
   svg.setAttribute("stroke-linecap", "round");
   svg.setAttribute("stroke-linejoin", "round");
   svg.setAttribute("aria-hidden", "true");
-  svg.classList.add("codexhost-handoff-divider-chevron");
+  svg.classList.add(className);
   const path = ownerDocument.createElementNS(SVG_NS, "path");
   path.setAttribute("d", "M4.5 6.25L8 9.75L11.5 6.25");
   svg.append(path);
@@ -100,7 +109,7 @@ function createCheckIcon(ownerDocument: Document): SVGSVGElement {
   svg.setAttribute("height", "14");
   svg.setAttribute("fill", "none");
   svg.setAttribute("stroke", "currentColor");
-  svg.setAttribute("stroke-width", "1.8");
+  svg.setAttribute("stroke-width", "1.6");
   svg.setAttribute("stroke-linecap", "round");
   svg.setAttribute("stroke-linejoin", "round");
   svg.setAttribute("aria-hidden", "true");
@@ -157,7 +166,7 @@ export function ensureRendererHandoffStyle(ownerDocument: Document): void {
       flex: 1 1 auto;
       min-width: 24px;
       height: 1px;
-      background: light-dark(rgba(15, 23, 42, 0.1), rgba(255, 255, 255, 0.11));
+      background: light-dark(rgba(0, 0, 0, 0.09), rgba(255, 255, 255, 0.1));
     }
     .codexhost-handoff-divider-button {
       display: inline-flex;
@@ -169,21 +178,27 @@ export function ensureRendererHandoffStyle(ownerDocument: Document): void {
       border: 0;
       border-radius: 999px;
       background: transparent;
-      color: light-dark(#6b7280, #9ca3af);
-      font: 400 12.5px/1.35 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--color-text-tertiary, light-dark(#737373, #969696));
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 12.5px;
+      font-weight: 400;
+      line-height: 1.35;
       cursor: pointer;
       transition: background-color 120ms ease;
     }
     .codexhost-handoff-divider-button:hover,
     .codexhost-handoff-divider-button[aria-expanded="true"] {
-      background: light-dark(rgba(15, 23, 42, 0.045), rgba(255, 255, 255, 0.07));
+      background: var(
+        --color-token-list-hover-background,
+        light-dark(rgba(0, 0, 0, 0.045), rgba(255, 255, 255, 0.07))
+      );
     }
     .codexhost-handoff-divider-button:focus-visible {
-      outline: 2px solid light-dark(#3b82f6, #60a5fa);
+      outline: 2px solid var(--color-text-secondary, light-dark(#737373, #a1a1a1));
       outline-offset: 2px;
     }
     .codexhost-handoff-divider-title {
-      color: light-dark(#6b7280, #9ca3af);
+      color: var(--color-text-tertiary, light-dark(#737373, #969696));
       white-space: nowrap;
       flex: 0 0 auto;
     }
@@ -195,10 +210,10 @@ export function ensureRendererHandoffStyle(ownerDocument: Document): void {
       font-weight: 500;
     }
     .codexhost-handoff-endpoint--source {
-      color: light-dark(#18181b, #ececec);
+      color: var(--color-text-secondary, light-dark(#525252, #b5b5b5));
     }
     .codexhost-handoff-endpoint--target {
-      color: light-dark(#4f79a8, #7cb3f0);
+      color: var(--color-text-primary, light-dark(#171717, #ececec));
     }
     .codexhost-handoff-endpoint-text {
       overflow: hidden;
@@ -206,7 +221,7 @@ export function ensureRendererHandoffStyle(ownerDocument: Document): void {
       white-space: nowrap;
     }
     .codexhost-handoff-divider-arrow {
-      color: light-dark(#9ca3af, #6b7280);
+      color: var(--color-text-tertiary, light-dark(#8f8f8f, #737373));
       font-size: 12px;
       flex: 0 0 auto;
     }
@@ -222,11 +237,11 @@ export function ensureRendererHandoffStyle(ownerDocument: Document): void {
       margin: 8px auto 0;
       max-width: 680px;
       padding: 12px 14px;
-      border-radius: 12px;
-      border: 1px solid light-dark(rgba(15, 23, 42, 0.09), rgba(255, 255, 255, 0.1));
-      background: light-dark(#f8f9fa, #1d1e22);
-      color: light-dark(#18181b, #ececec);
-      box-shadow: light-dark(0 4px 16px rgba(15, 23, 42, 0.05), 0 6px 20px rgba(0, 0, 0, 0.3));
+      border-radius: 16px;
+      border: 1px solid light-dark(#e5e5e5, #3c3c3c);
+      background: light-dark(#f7f7f7, #262626);
+      color: CanvasText;
+      box-shadow: none;
       box-sizing: border-box;
     }
     .codexhost-handoff-detail[hidden] {
@@ -242,7 +257,7 @@ export function ensureRendererHandoffStyle(ownerDocument: Document): void {
     .codexhost-handoff-turns-summary {
       font-size: 12px;
       line-height: 1.45;
-      color: light-dark(#52525b, #a1a1aa);
+      color: var(--color-text-secondary, light-dark(#676767, #a1a1a1));
     }
     .codexhost-handoff-source-btn {
       display: inline-flex;
@@ -250,30 +265,38 @@ export function ensureRendererHandoffStyle(ownerDocument: Document): void {
       gap: 4px;
       padding: 4px 10px;
       border-radius: 999px;
-      border: 1px solid light-dark(rgba(15, 23, 42, 0.12), rgba(255, 255, 255, 0.14));
-      background: light-dark(#ffffff, #27272a);
-      color: light-dark(#18181b, #ececec);
-      font: 500 12px/1.3 inherit;
+      border: 1px solid light-dark(#e0e0e0, #424242);
+      background: light-dark(#ffffff, #2d2d2d);
+      color: inherit;
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 500;
+      line-height: 1.3;
       cursor: pointer;
+      transition: background-color 100ms ease, border-color 100ms ease;
     }
     .codexhost-handoff-source-btn:hover {
-      background: light-dark(#f1f5f9, #323236);
+      background: light-dark(#f0f0f0, #363636);
+    }
+    .codexhost-handoff-source-btn:focus-visible {
+      outline: 2px solid var(--color-text-secondary, light-dark(#737373, #a1a1a1));
+      outline-offset: 2px;
     }
     .codexhost-handoff-preview-label {
       margin: 10px 0 6px;
       font-size: 11px;
       font-weight: 500;
-      color: light-dark(#71717a, #9ca3af);
+      color: var(--color-text-tertiary, light-dark(#737373, #969696));
     }
     .codexhost-handoff-preview {
       margin: 0;
       padding: 10px 12px;
       max-height: 220px;
       overflow: auto;
-      border-radius: 8px;
-      border: 1px solid light-dark(rgba(15, 23, 42, 0.07), rgba(255, 255, 255, 0.08));
-      background: light-dark(#ffffff, #141518);
-      color: light-dark(#27272a, #d4d4d8);
+      border-radius: 10px;
+      border: 1px solid light-dark(#e8e8e8, #363636);
+      background: light-dark(#ffffff, #1c1c1c);
+      color: var(--color-text-secondary, light-dark(#404040, #d4d4d4));
       font: 400 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
       white-space: pre-wrap;
       word-break: break-word;
@@ -283,12 +306,14 @@ export function ensureRendererHandoffStyle(ownerDocument: Document): void {
       z-index: 2147483647;
       width: ${HANDOFF_POPOVER_WIDTH}px;
       max-width: calc(100vw - 16px);
-      padding: 12px;
-      border-radius: 14px;
-      border: 1px solid light-dark(rgba(15, 23, 42, 0.12), rgba(255, 255, 255, 0.12));
-      background: light-dark(#ffffff, #1e1f23);
-      color: light-dark(#18181b, #ececec);
-      box-shadow: light-dark(0 12px 32px rgba(15, 23, 42, 0.14), 0 14px 36px rgba(0, 0, 0, 0.52));
+      padding: 14px 12px 12px;
+      border-radius: ${PICKER_POPOVER_RADIUS};
+      border: 1px solid ${PICKER_POPOVER_BORDER};
+      background: ${PICKER_POPOVER_BACKGROUND};
+      color: CanvasText;
+      box-shadow: none;
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
       color-scheme: inherit;
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       box-sizing: border-box;
@@ -298,72 +323,99 @@ export function ensureRendererHandoffStyle(ownerDocument: Document): void {
       align-items: center;
       justify-content: space-between;
       gap: 8px;
-      margin-bottom: 10px;
+      padding: 0 4px 2px 10px;
+      margin-bottom: 4px;
     }
     .codexhost-handoff-popover-title {
       display: inline-flex;
       align-items: center;
-      gap: 6px;
-      font-size: 13px;
-      font-weight: 600;
-      color: light-dark(#18181b, #f4f4f5);
+      gap: 7px;
+      font-size: 13.5px;
+      font-weight: 500;
+      line-height: 1.35;
+      color: inherit;
+    }
+    .codexhost-handoff-popover-title > svg {
+      opacity: 0.78;
     }
     .codexhost-handoff-popover-close {
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      width: 24px;
-      height: 24px;
+      width: 26px;
+      height: 26px;
       padding: 0;
       border: 0;
-      border-radius: 6px;
+      border-radius: 999px;
       background: transparent;
-      color: light-dark(#71717a, #a1a1aa);
+      color: var(--color-text-tertiary, light-dark(#737373, #969696));
+      font-family: inherit;
       font-size: 16px;
       line-height: 1;
       cursor: pointer;
+      transition: background-color 100ms ease, color 100ms ease;
     }
-    .codexhost-handoff-popover-close:hover {
-      background: light-dark(rgba(15, 23, 42, 0.06), rgba(255, 255, 255, 0.08));
+    .codexhost-handoff-popover-close:hover:not(:disabled) {
+      background: light-dark(rgba(0, 0, 0, 0.06), rgba(255, 255, 255, 0.08));
+      color: inherit;
+    }
+    .codexhost-handoff-popover-close:focus-visible {
+      outline: 2px solid var(--color-text-secondary, light-dark(#737373, #a1a1a1));
+      outline-offset: 1px;
     }
     .codexhost-handoff-field-label {
       display: block;
-      margin: 8px 0 5px;
-      font-size: 11.5px;
-      font-weight: 500;
-      color: light-dark(#52525b, #a1a1aa);
+      margin: 10px 0 4px;
+      padding: 0 10px;
+      font-size: 12px;
+      font-weight: 400;
+      line-height: 1.35;
+      color: var(--color-text-tertiary, light-dark(#737373, #969696));
     }
     .codexhost-handoff-harness-list {
       display: flex;
       flex-direction: column;
-      gap: 4px;
-      max-height: 176px;
+      gap: 2px;
+      max-height: 184px;
       overflow-y: auto;
+      scrollbar-width: thin;
+      scrollbar-color: light-dark(rgba(0, 0, 0, 0.2), rgba(255, 255, 255, 0.22)) transparent;
     }
     .codexhost-handoff-harness-option {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 10px;
       width: 100%;
-      padding: 7px 9px;
-      border-radius: 9px;
-      border: 1px solid transparent;
+      min-height: 36px;
+      padding: 7px 10px;
+      border-radius: 12px;
+      border: 0;
       background: transparent;
-      color: light-dark(#18181b, #ececec);
-      font: 500 13px/1.25 inherit;
+      color: inherit;
+      font-family: inherit;
+      font-size: 13.5px;
+      font-weight: 400;
+      line-height: 1.3;
       text-align: left;
       cursor: pointer;
       box-sizing: border-box;
+      transition: background-color 100ms ease;
     }
     .codexhost-handoff-harness-option:hover:not(:disabled) {
-      background: light-dark(rgba(15, 23, 42, 0.045), rgba(255, 255, 255, 0.06));
+      background: light-dark(rgba(0, 0, 0, 0.04), rgba(255, 255, 255, 0.05));
     }
     .codexhost-handoff-harness-option[aria-checked="true"] {
-      background: light-dark(rgba(79, 121, 168, 0.1), rgba(124, 179, 240, 0.15));
-      border-color: light-dark(rgba(79, 121, 168, 0.34), rgba(124, 179, 240, 0.34));
+      background: light-dark(rgba(0, 0, 0, 0.07), rgba(255, 255, 255, 0.09));
+    }
+    .codexhost-handoff-harness-option[aria-checked="true"]:hover:not(:disabled) {
+      background: light-dark(rgba(0, 0, 0, 0.09), rgba(255, 255, 255, 0.12));
+    }
+    .codexhost-handoff-harness-option:focus-visible {
+      outline: 2px solid var(--color-text-secondary, light-dark(#737373, #a1a1a1));
+      outline-offset: -2px;
     }
     .codexhost-handoff-harness-option:disabled {
-      opacity: 0.55;
+      opacity: 0.5;
       cursor: not-allowed;
     }
     .codexhost-handoff-harness-name {
@@ -374,30 +426,63 @@ export function ensureRendererHandoffStyle(ownerDocument: Document): void {
       white-space: nowrap;
     }
     .codexhost-handoff-harness-check {
-      color: light-dark(#4f79a8, #7cb3f0);
+      color: var(--color-text-secondary, light-dark(#676767, #a1a1a1));
       display: inline-flex;
       align-items: center;
       flex: 0 0 auto;
     }
+    .codexhost-handoff-select-wrap {
+      position: relative;
+      display: flex;
+      align-items: center;
+      width: 100%;
+    }
     .codexhost-handoff-select {
       width: 100%;
-      height: 32px;
-      padding: 0 8px;
-      border-radius: 8px;
-      border: 1px solid light-dark(rgba(15, 23, 42, 0.14), rgba(255, 255, 255, 0.14));
-      background: light-dark(#f8f9fa, #141518);
-      color: light-dark(#18181b, #ececec);
-      font: 400 12.5px/1.2 inherit;
+      height: 34px;
+      padding: 0 30px 0 10px;
+      appearance: none;
+      -webkit-appearance: none;
+      border-radius: 10px;
+      border: 1px solid light-dark(#e0e0e0, #424242);
+      background: ${PICKER_POPOVER_BACKGROUND};
+      color: inherit;
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 400;
+      line-height: 1.25;
       box-sizing: border-box;
+      cursor: pointer;
+      transition: background-color 100ms ease, border-color 100ms ease;
+    }
+    .codexhost-handoff-select:hover:not(:disabled) {
+      background: light-dark(#f5f5f5, #353535);
+      border-color: light-dark(#d4d4d4, #525252);
+    }
+    .codexhost-handoff-select:focus-visible {
+      outline: 2px solid var(--color-text-secondary, light-dark(#737373, #a1a1a1));
+      outline-offset: 1px;
     }
     .codexhost-handoff-select:disabled {
-      opacity: 0.6;
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .codexhost-handoff-select option {
+      background: ${PICKER_POPOVER_BACKGROUND};
+      color: CanvasText;
+    }
+    .codexhost-handoff-select-chevron {
+      position: absolute;
+      right: 10px;
+      pointer-events: none;
+      color: var(--color-text-tertiary, light-dark(#737373, #969696));
     }
     .codexhost-handoff-error {
-      margin-top: 8px;
-      padding: 6px 9px;
-      border-radius: 8px;
-      background: light-dark(rgba(180, 35, 24, 0.08), rgba(248, 113, 113, 0.13));
+      margin-top: 10px;
+      padding: 7px 10px;
+      border-radius: 10px;
+      border: 1px solid light-dark(rgba(180, 35, 24, 0.18), rgba(248, 113, 113, 0.22));
+      background: light-dark(rgba(180, 35, 24, 0.08), rgba(248, 113, 113, 0.12));
       color: light-dark(#b42318, #fca5a5);
       font-size: 12px;
       line-height: 1.4;
@@ -408,35 +493,42 @@ export function ensureRendererHandoffStyle(ownerDocument: Document): void {
       align-items: center;
       justify-content: flex-end;
       gap: 8px;
-      margin-top: 12px;
+      margin-top: 14px;
     }
     .codexhost-handoff-btn {
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      min-height: 30px;
-      padding: 0 12px;
+      min-height: 32px;
+      padding: 0 14px;
       border-radius: 999px;
-      border: 1px solid light-dark(rgba(15, 23, 42, 0.12), rgba(255, 255, 255, 0.14));
+      border: 1px solid light-dark(#e0e0e0, #424242);
       background: transparent;
-      color: light-dark(#18181b, #ececec);
-      font: 500 12.5px/1 inherit;
+      color: inherit;
+      font-family: inherit;
+      font-size: 12.5px;
+      font-weight: 500;
+      line-height: 1;
       cursor: pointer;
+      transition: background-color 100ms ease, border-color 100ms ease;
     }
     .codexhost-handoff-btn:hover:not(:disabled) {
-      background: light-dark(rgba(15, 23, 42, 0.05), rgba(255, 255, 255, 0.08));
+      background: light-dark(rgba(0, 0, 0, 0.05), rgba(255, 255, 255, 0.08));
+    }
+    .codexhost-handoff-btn:focus-visible {
+      outline: 2px solid var(--color-text-secondary, light-dark(#737373, #a1a1a1));
+      outline-offset: 2px;
     }
     .codexhost-handoff-btn--primary {
       border-color: transparent;
-      background: light-dark(#18181b, #ececec);
-      color: light-dark(#ffffff, #18181b);
+      background: light-dark(#171717, #ececec);
+      color: light-dark(#ffffff, #171717);
     }
     .codexhost-handoff-btn--primary:hover:not(:disabled) {
-      opacity: 0.9;
-      background: light-dark(#18181b, #ececec);
+      background: light-dark(#2e2e2e, #ffffff);
     }
     .codexhost-handoff-btn:disabled {
-      opacity: 0.55;
+      opacity: 0.5;
       cursor: not-allowed;
     }
   `;
@@ -592,6 +684,7 @@ export function renderHandoffPopoverContent(
     onCancel,
   } = options;
   ensureRendererHandoffStyle(ownerDocument);
+  applyRendererPickerPopoverSurface(popover);
   const messages = rendererHarnessMessages(locale);
 
   popover.replaceChildren();
@@ -683,7 +776,14 @@ export function renderHandoffPopoverContent(
     modelSelect.value = selectedModelId;
     modelSelect.addEventListener("change", () => onSelectModel(modelSelect.value));
 
-    popover.append(modelLabel, modelSelect);
+    const modelSelectWrap = ownerDocument.createElement("div");
+    modelSelectWrap.className = "codexhost-handoff-select-wrap";
+    modelSelectWrap.append(
+      modelSelect,
+      createChevronIcon(ownerDocument, "codexhost-handoff-select-chevron"),
+    );
+
+    popover.append(modelLabel, modelSelectWrap);
   }
 
   let selectedModel: HarnessModelCatalog["models"][number] | undefined;
@@ -728,7 +828,14 @@ export function renderHandoffPopoverContent(
     thinkingSelect.value = selectedThinkingOptionId;
     thinkingSelect.addEventListener("change", () => onSelectThinking(thinkingSelect.value));
 
-    popover.append(thinkingLabel, thinkingSelect);
+    const thinkingSelectWrap = ownerDocument.createElement("div");
+    thinkingSelectWrap.className = "codexhost-handoff-select-wrap";
+    thinkingSelectWrap.append(
+      thinkingSelect,
+      createChevronIcon(ownerDocument, "codexhost-handoff-select-chevron"),
+    );
+
+    popover.append(thinkingLabel, thinkingSelectWrap);
   }
 
   if (errorMessage) {
