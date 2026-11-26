@@ -1256,6 +1256,7 @@ export class AppServerHost {
       this.#runSectionOperation(() => this.#threadPins.list()),
     );
     this.#treeWatch = new ThreadTreeWatch({
+      codexHome: this.#officialRuntimeScope.permanentHome,
       tree: this.#threadTree,
       repository: this.#repository,
       events: this.clientEvents,
